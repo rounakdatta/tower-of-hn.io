@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/config"
+	"github.com/rounakdatta/tower-of-hn.io/backend/internal/hnapi"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/server"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/store/filestorage"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/store/postgres"
+	"github.com/rounakdatta/tower-of-hn.io/backend/internal/worker"
 )
 
 func main() {
@@ -34,26 +36,59 @@ func main() {
 	}
 	defer db.Close()
 
-	// Blob storage (local filesystem)
+	// Blob storage
 	blobStore, err := filestorage.NewLocal(cfg.AudioStoragePath)
 	if err != nil {
 		logger.Error("Failed to initialize blob storage", "error", err)
 		os.Exit(1)
 	}
 
-	// Server with all store implementations
+	// Store implementations
+	storyStore := postgres.NewStoryStore(db)
+	commentStore := postgres.NewCommentStore(db)
+	threadStore := postgres.NewThreadStore(db)
+	audioStore := postgres.NewAudioStore(db)
+	sentimentStore := postgres.NewSentimentStore(db)
+	voiceStore := postgres.NewVoiceStore(db)
+	avatarStore := postgres.NewAvatarStore(db)
+
+	// HTTP server
 	srv := server.New(cfg.Port, server.Dependencies{
-		Stories:   postgres.NewStoryStore(db),
-		Threads:   postgres.NewThreadStore(db),
-		Comments:  postgres.NewCommentStore(db),
-		Audio:     postgres.NewAudioStore(db),
+		Stories:   storyStore,
+		Threads:   threadStore,
+		Comments:  commentStore,
+		Audio:     audioStore,
 		Blobs:     blobStore,
-		Sentiment: postgres.NewSentimentStore(db),
-		Voices:    postgres.NewVoiceStore(db),
-		Avatars:   postgres.NewAvatarStore(db),
+		Sentiment: sentimentStore,
+		Voices:    voiceStore,
+		Avatars:   avatarStore,
 	}, logger)
 
-	// Start server in goroutine
+	// HN API clients
+	hnClient := hnapi.NewClient(cfg.HNAPIBaseURL)
+	hnFetcher := hnapi.NewFetcher(hnClient, cfg.HNSyncWorkers)
+	hnStreamer := hnapi.NewStreamer(cfg.HNAPIBaseURL, logger)
+
+	// HN Syncer
+	syncer := worker.NewHNSyncer(
+		hnClient,
+		hnFetcher,
+		hnStreamer,
+		storyStore,
+		commentStore,
+		threadStore,
+		srv.Hub(),
+		logger,
+	)
+
+	// Start HN syncer in background
+	go func() {
+		if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("HN syncer error", "error", err)
+		}
+	}()
+
+	// Start HTTP server
 	go func() {
 		if err := srv.Start(); err != nil {
 			logger.Error("Server error", "error", err)

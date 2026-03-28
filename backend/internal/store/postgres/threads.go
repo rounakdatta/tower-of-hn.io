@@ -60,10 +60,12 @@ func (t *ThreadStoreImpl) GetThread(ctx context.Context, id int64) (*domain.Thre
 
 func (t *ThreadStoreImpl) GetThreadsForStory(ctx context.Context, storyID int64) ([]*domain.Thread, error) {
 	query := `
-		SELECT id, story_id, root_comment_id, comment_count, status, updated_at
-		FROM threads
-		WHERE story_id = @story_id
-		ORDER BY updated_at DESC`
+		SELECT t.id, t.story_id, t.root_comment_id, t.comment_count, t.status, t.updated_at,
+		       c.by_user, c.text_plain
+		FROM threads t
+		JOIN comments c ON c.id = t.root_comment_id
+		WHERE t.story_id = @story_id
+		ORDER BY t.comment_count DESC`
 
 	rows, err := t.db.Pool.Query(ctx, query, pgx.NamedArgs{"story_id": storyID})
 	if err != nil {
@@ -71,7 +73,28 @@ func (t *ThreadStoreImpl) GetThreadsForStory(ctx context.Context, storyID int64)
 	}
 	defer rows.Close()
 
-	return scanThreads(rows)
+	threads := make([]*domain.Thread, 0)
+	for rows.Next() {
+		th := &domain.Thread{}
+		var rootBy, rootText string
+		if err := rows.Scan(
+			&th.ID, &th.StoryID, &th.RootCommentID,
+			&th.CommentCount, &th.Status, &th.UpdatedAt,
+			&rootBy, &rootText,
+		); err != nil {
+			return nil, fmt.Errorf("scanning thread row: %w", err)
+		}
+		th.RootComment = &domain.Comment{
+			ID:        th.RootCommentID,
+			By:        rootBy,
+			TextPlain: rootText,
+		}
+		threads = append(threads, th)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating thread rows: %w", err)
+	}
+	return threads, nil
 }
 
 func (t *ThreadStoreImpl) GetPendingThreads(ctx context.Context, limit int) ([]*domain.Thread, error) {
