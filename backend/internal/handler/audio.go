@@ -39,12 +39,21 @@ func (h *AudioHandler) Stream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer reader.Close()
 
+	// Determine content type from the stored format
+	contentType := "audio/wav"
+	fileName := "conversation.wav"
+	if threadAudio.Format == "mp3" {
+		contentType = "audio/mpeg"
+		fileName = "conversation.mp3"
+	}
+
 	// Check if the reader supports seeking (local files do, S3 streams may not)
 	rs, ok := reader.(io.ReadSeeker)
 	if ok {
-		http.ServeContent(w, r, "conversation.mp3", threadAudio.CreatedAt, rs)
+		w.Header().Set("Content-Type", contentType)
+		http.ServeContent(w, r, fileName, threadAudio.CreatedAt, rs)
 	} else {
-		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Length", strconv.FormatInt(threadAudio.FileSizeBytes, 10))
 		io.Copy(w, reader)
 	}
