@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log/slog"
 	"sort"
 	"time"
@@ -95,22 +96,41 @@ func (b *AudioBuilder) BuildThreadAudio(ctx context.Context, thread *domain.Thre
 			voiceID = tts.VoicePool[0]
 		}
 
-		// Synthesize with retries — root comment is mandatory
-		resp, err := b.synthesizeWithRetry(ctx, oc.comment.TextPlain, voiceID)
-		if err != nil {
-			if oc.isRoot {
-				// Root comment MUST succeed — abort the whole thread
-				return 0, fmt.Errorf("root comment TTS failed after retries: %w", err)
+		segKey := fmt.Sprintf("segments/%d/%d.wav", thread.ID, oc.comment.ID)
+
+		// Check cache: if audio already exists for this comment, reuse it
+		var audioData []byte
+		var durationMs int
+		if cached, err := b.blobs.Read(ctx, segKey); err == nil {
+			data, readErr := io.ReadAll(cached)
+			cached.Close()
+			if readErr == nil && len(data) > 44 {
+				audioData = data
+				// Estimate duration from WAV: (fileSize - 44 header) / (sampleRate * 2 bytes)
+				durationMs = (len(data) - 44) * 1000 / (SampleRate * NumChannels * BitsPerSample / 8)
+				b.logger.Debug("Using cached audio segment",
+					"comment_id", oc.comment.ID, "duration_ms", durationMs)
 			}
-			b.logger.Warn("Skipping comment after TTS failure",
-				"comment_id", oc.comment.ID, "error", err)
-			continue
 		}
 
-		// Store segment blob
-		segKey := fmt.Sprintf("segments/%d/%d.wav", thread.ID, oc.comment.ID)
-		if err := b.blobs.Write(ctx, segKey, resp.AudioData); err != nil {
-			return 0, fmt.Errorf("storing segment %d: %w", oc.comment.ID, err)
+		// Generate TTS only if not cached
+		if audioData == nil {
+			resp, err := b.synthesizeWithRetry(ctx, oc.comment.TextPlain, voiceID)
+			if err != nil {
+				if oc.isRoot {
+					return 0, fmt.Errorf("root comment TTS failed after retries: %w", err)
+				}
+				b.logger.Warn("Skipping comment after TTS failure",
+					"comment_id", oc.comment.ID, "error", err)
+				continue
+			}
+			audioData = resp.AudioData
+			durationMs = resp.DurationMs
+
+			// Cache the segment to disk
+			if err := b.blobs.Write(ctx, segKey, audioData); err != nil {
+				return 0, fmt.Errorf("storing segment %d: %w", oc.comment.ID, err)
+			}
 		}
 
 		// Silence gap
@@ -126,8 +146,8 @@ func (b *AudioBuilder) BuildThreadAudio(ctx context.Context, thread *domain.Thre
 		seg := wavSegment{
 			commentID:       oc.comment.ID,
 			voiceID:         voiceID,
-			audioData:       resp.AudioData,
-			durationMs:      resp.DurationMs,
+			audioData:       audioData,
+			durationMs:      durationMs,
 			silenceBeforeMs: silenceMs,
 			sequenceOrder:   len(segments),
 		}
@@ -139,15 +159,15 @@ func (b *AudioBuilder) BuildThreadAudio(ctx context.Context, thread *domain.Thre
 			VoiceID:        voiceID,
 			FilePath:       segKey,
 			StorageBackend: "local",
-			DurationMs:     resp.DurationMs,
+			DurationMs:     durationMs,
 			SequenceOrder:  seg.sequenceOrder,
 			Format:         "wav",
-			FileSizeBytes:  int64(len(resp.AudioData)),
+			FileSizeBytes:  int64(len(audioData)),
 		}); err != nil {
 			b.logger.Warn("Failed to save segment metadata", "comment_id", oc.comment.ID, "error", err)
 		}
 
-		totalDurationMs += silenceMs + resp.DurationMs
+		totalDurationMs += silenceMs + durationMs
 	}
 
 	if len(segments) == 0 {
