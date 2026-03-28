@@ -12,24 +12,26 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 24000
 
-# Map our voice IDs to edge-tts voice names.
-# These are diverse, natural-sounding voices.
+# Map our voice IDs to currently available edge-tts voices.
+# These are verified working as of March 2026.
 VOICE_MAP = {
-    "af_heart": "en-US-AvaMultilingualNeural",
-    "af_bella": "en-US-JennyNeural",
-    "af_nicole": "en-US-AriaNeural",
-    "af_sarah": "en-US-SaraNeural",
-    "af_sky": "en-US-AnaNeural",
-    "am_fenrir": "en-US-GuyNeural",
-    "am_michael": "en-US-ChristopherNeural",
-    "am_puck": "en-US-EricNeural",
-    "am_eric": "en-US-RogerNeural",
-    "am_adam": "en-US-SteffanNeural",
-    "bf_emma": "en-GB-SoniaNeural",
-    "bf_isabella": "en-GB-MaisieNeural",
+    "af_heart": "en-US-AvaNeural",
+    "af_bella": "en-US-EmmaNeural",
+    "af_nicole": "en-AU-NatashaNeural",
+    "af_sarah": "en-CA-ClaraNeural",
+    "af_sky": "en-NZ-MollyNeural",
+    "am_fenrir": "en-US-AndrewNeural",
+    "am_michael": "en-US-BrianNeural",
+    "am_puck": "en-AU-WilliamMultilingualNeural",
+    "am_eric": "en-CA-LiamNeural",
+    "am_adam": "en-IN-PrabhatNeural",
+    "bf_emma": "en-GB-LibbyNeural",
+    "bf_isabella": "en-IE-EmilyNeural",
     "bm_george": "en-GB-RyanNeural",
-    "bm_fable": "en-GB-ThomasNeural",
+    "bm_fable": "en-IE-ConnorNeural",
 }
+
+DEFAULT_VOICE = "en-US-BrianNeural"
 
 VOICE_POOL = [
     {"id": k, "gender": "female" if k.startswith(("af_", "bf_")) else "male",
@@ -46,53 +48,51 @@ class EdgeTTSProvider(TTSProvider):
         logger.info("Edge TTS provider initialized")
 
     async def synthesize(self, text: str, voice_id: str, speed: float) -> tuple:
-        # Map our voice ID to edge-tts voice name
-        edge_voice = VOICE_MAP.get(voice_id, "en-US-GuyNeural")
+        edge_voice = VOICE_MAP.get(voice_id, DEFAULT_VOICE)
 
         # Truncate very long texts
         if len(text) > 3000:
             text = text[:3000] + "..."
 
-        # Build rate string (e.g., "+0%", "+20%", "-10%")
+        # Build rate string
         rate_pct = int((speed - 1.0) * 100)
         rate_str = f"{rate_pct:+d}%"
 
-        communicate = edge_tts.Communicate(text, edge_voice, rate=rate_str)
+        try:
+            audio_data = await self._generate(text, edge_voice, rate_str)
+        except Exception as e:
+            # Fallback to default voice if specific voice fails
+            logger.warning("Voice %s failed (%s), falling back to %s", edge_voice, e, DEFAULT_VOICE)
+            if edge_voice != DEFAULT_VOICE:
+                audio_data = await self._generate(text, DEFAULT_VOICE, rate_str)
+            else:
+                raise
 
-        # Collect audio chunks
+        return audio_data
+
+    async def _generate(self, text: str, voice: str, rate: str) -> tuple:
+        communicate = edge_tts.Communicate(text, voice, rate=rate)
         audio_chunks = []
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 audio_chunks.append(chunk["data"])
 
         if not audio_chunks:
-            raise RuntimeError(f"Edge TTS produced no audio for voice {edge_voice}")
+            raise RuntimeError(f"Edge TTS produced no audio for voice {voice}")
 
         mp3_data = b"".join(audio_chunks)
 
-        # Edge TTS returns MP3 — convert to WAV for consistency
-        # Use soundfile to read the MP3 and re-encode as WAV
-        try:
-            audio_array, sr = sf.read(io.BytesIO(mp3_data))
+        # Convert MP3 to 16-bit WAV
+        audio_array, sr = sf.read(io.BytesIO(mp3_data))
+        if len(audio_array.shape) > 1:
+            audio_array = audio_array.mean(axis=1)
 
-            # Resample to 24kHz mono if needed
-            if len(audio_array.shape) > 1:
-                audio_array = audio_array.mean(axis=1)  # stereo to mono
+        buf = io.BytesIO()
+        sf.write(buf, audio_array, sr, format="WAV", subtype="PCM_16")
+        wav_bytes = buf.getvalue()
+        duration_ms = int(len(audio_array) / sr * 1000)
 
-            # Write as 16-bit WAV
-            buf = io.BytesIO()
-            sf.write(buf, audio_array, sr, format="WAV", subtype="PCM_16")
-            wav_bytes = buf.getvalue()
-
-            duration_ms = int(len(audio_array) / sr * 1000)
-            return wav_bytes, duration_ms
-
-        except Exception as e:
-            # If soundfile can't read MP3, return raw MP3 with estimated duration
-            logger.warning("Could not convert MP3 to WAV: %s, returning MP3", e)
-            # Rough estimate: MP3 at 48kbps
-            duration_ms = int(len(mp3_data) / 6000 * 1000)
-            return mp3_data, duration_ms
+        return wav_bytes, duration_ms
 
     def list_voices(self) -> list:
         return VOICE_POOL
