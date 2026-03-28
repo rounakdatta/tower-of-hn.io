@@ -10,7 +10,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/rounakdatta/tower-of-hn.io/backend/internal/avatar"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/domain"
+	"github.com/rounakdatta/tower-of-hn.io/backend/internal/sentiment"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/store"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/tts"
 )
@@ -29,29 +31,38 @@ const (
 )
 
 type AudioBuilder struct {
-	comments  store.CommentStore
-	voices    store.VoiceStore
-	audio     store.AudioStore
-	blobs     store.BlobStore
-	ttsClient *tts.Client
-	logger    *slog.Logger
+	comments   store.CommentStore
+	voices     store.VoiceStore
+	audio      store.AudioStore
+	sentiments store.SentimentStore
+	avatars    store.AvatarStore
+	blobs      store.BlobStore
+	ttsClient  *tts.Client
+	analyzer   sentiment.Analyzer
+	logger     *slog.Logger
 }
 
 func NewAudioBuilder(
 	comments store.CommentStore,
 	voices store.VoiceStore,
 	audio store.AudioStore,
+	sentiments store.SentimentStore,
+	avatars store.AvatarStore,
 	blobs store.BlobStore,
 	ttsClient *tts.Client,
+	analyzer sentiment.Analyzer,
 	logger *slog.Logger,
 ) *AudioBuilder {
 	return &AudioBuilder{
-		comments:  comments,
-		voices:    voices,
-		audio:     audio,
-		blobs:     blobs,
-		ttsClient: ttsClient,
-		logger:    logger,
+		comments:   comments,
+		voices:     voices,
+		audio:      audio,
+		sentiments: sentiments,
+		avatars:    avatars,
+		blobs:      blobs,
+		ttsClient:  ttsClient,
+		analyzer:   analyzer,
+		logger:     logger,
 	}
 }
 
@@ -108,6 +119,25 @@ func (b *AudioBuilder) BuildThreadAudio(ctx context.Context, thread *domain.Thre
 		if err != nil {
 			voiceID = tts.VoicePool[0]
 		}
+
+		// Sentiment analysis (cached — check DB first)
+		sentimentLabel := "neutral"
+		cached, _ := b.sentiments.GetSentiment(ctx, oc.comment.ID)
+		if cached != nil {
+			sentimentLabel = cached.Label
+		} else if b.analyzer != nil {
+			s, err := b.analyzer.Analyze(ctx, oc.comment.TextPlain)
+			if err == nil && s != nil {
+				sentimentLabel = s.Label
+				s.CommentID = oc.comment.ID
+				_ = b.sentiments.UpsertSentiment(ctx, s)
+				b.logger.Debug("Sentiment analyzed", "comment_id", oc.comment.ID, "sentiment", sentimentLabel)
+			}
+		}
+
+		// Generate and cache avatar state
+		avatarState := avatar.Generate(oc.comment.ID, oc.comment.By, sentimentLabel)
+		_ = b.avatars.UpsertAvatarState(ctx, avatarState)
 
 		segKey := fmt.Sprintf("segments/%d/%d.wav", thread.ID, oc.comment.ID)
 

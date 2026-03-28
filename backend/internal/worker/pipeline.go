@@ -51,7 +51,7 @@ func NewPipeline(
 	hub *server.Hub,
 	logger *slog.Logger,
 ) *Pipeline {
-	builder := NewAudioBuilder(comments, voices, audio, blobs, ttsClient, logger)
+	builder := NewAudioBuilder(comments, voices, audio, sentimentStore, avatars, blobs, ttsClient, analyzer, logger)
 
 	return &Pipeline{
 		threads:   threads,

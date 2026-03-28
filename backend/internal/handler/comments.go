@@ -13,14 +13,15 @@ import (
 )
 
 type ThreadHandler struct {
-	threads  store.ThreadStore
-	comments store.CommentStore
-	audio    store.AudioStore
-	voices   store.VoiceStore
+	threads    store.ThreadStore
+	comments   store.CommentStore
+	audio      store.AudioStore
+	voices     store.VoiceStore
+	sentiments store.SentimentStore
 }
 
-func NewThreadHandler(threads store.ThreadStore, comments store.CommentStore, audio store.AudioStore, voices store.VoiceStore) *ThreadHandler {
-	return &ThreadHandler{threads: threads, comments: comments, audio: audio, voices: voices}
+func NewThreadHandler(threads store.ThreadStore, comments store.CommentStore, audio store.AudioStore, voices store.VoiceStore, sentiments store.SentimentStore) *ThreadHandler {
+	return &ThreadHandler{threads: threads, comments: comments, audio: audio, voices: voices, sentiments: sentiments}
 }
 
 func (h *ThreadHandler) ListForStory(w http.ResponseWriter, r *http.Request) {
@@ -74,10 +75,11 @@ func (h *ThreadHandler) Get(w http.ResponseWriter, r *http.Request) {
 			c.VoiceID = tts.AssignVoice(c.By)
 		}
 
-		// Generate avatar with sentiment (default to neutral for now, sentiment enrichment comes from pipeline)
+		// Load cached sentiment from DB (populated by pipeline)
 		sentimentLabel := "neutral"
-		if c.Sentiment != nil {
-			sentimentLabel = c.Sentiment.Label
+		if cached, err := h.sentiments.GetSentiment(r.Context(), c.ID); err == nil && cached != nil {
+			sentimentLabel = cached.Label
+			c.Sentiment = cached
 		}
 		c.Avatar = &domain.AvatarState{
 			CommentID: c.ID,
