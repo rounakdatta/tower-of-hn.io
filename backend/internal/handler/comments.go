@@ -7,7 +7,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/avatar"
-	"github.com/rounakdatta/tower-of-hn.io/backend/internal/domain"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/store"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/tts"
 )
@@ -81,13 +80,7 @@ func (h *ThreadHandler) Get(w http.ResponseWriter, r *http.Request) {
 			sentimentLabel = cached.Label
 			c.Sentiment = cached
 		}
-		c.Avatar = &domain.AvatarState{
-			CommentID: c.ID,
-			Username:  c.By,
-			Emotion:   avatar.SentimentToEmotion[sentimentLabel],
-			Pose:      avatar.SentimentToPose[sentimentLabel],
-			AvatarURL: avatar.BuildComicGenURL(c.By, sentimentLabel, false),
-		}
+		c.Avatar = avatar.Generate(c.ID, c.By, c.VoiceID, sentimentLabel)
 	}
 
 	// Load audio segments if thread is ready

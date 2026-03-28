@@ -136,7 +136,7 @@ func (b *AudioBuilder) BuildThreadAudio(ctx context.Context, thread *domain.Thre
 		}
 
 		// Generate and cache avatar state
-		avatarState := avatar.Generate(oc.comment.ID, oc.comment.By, sentimentLabel)
+		avatarState := avatar.Generate(oc.comment.ID, oc.comment.By, voiceID, sentimentLabel)
 		_ = b.avatars.UpsertAvatarState(ctx, avatarState)
 
 		segKey := fmt.Sprintf("segments/%d/%d.wav", thread.ID, oc.comment.ID)
