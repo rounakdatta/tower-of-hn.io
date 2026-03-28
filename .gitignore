@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+vendor/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build outputs
+backend/server
+backend/tmp/
+frontend/.next/
+frontend/out/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Data
+data/audio/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test coverage
+coverage/
+*.cover
+*.out
+
+# Python
+dist/
+*.egg-info/
+.eggs/
+
+# Kokoro model cache
+tts-service/models/

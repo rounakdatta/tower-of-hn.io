@@ -1,0 +1,10 @@
+
+The idea is to build an alternate interface for HackerNews. Today it's a single page containing a list of URLs and then comments in there. To do better, we can have a game like interface, where we come across a tall building akin to the website, and aa of each floor being the hotbed of discussion of every top entry. Let's say the top 10 floors correspond to the top 10 links on HackerNews.
+
+You can reach for any of the floors and look at the discussions happening. Every parent thread in the discussion essentially is one table. And then, we kinda convert what complex nested thread into a voice discussion. One person speaks to another and debate, just like they do on text. And imagine building this on top of a hosepipe HackerNews API (https://github.com/HackerNews/API- this already exists and we need to integrate this tightly) which gives a continuous dump of whatever posts, comments are coming in, all in realtime.
+
+We can do a lot of things like sentiment processing to understand the tone of the statement. There's a website called Gramener ComicGen (https://gramener.com/comicgen/v1/#name=aavatar&gender=male&character=englishmoustache&facestyle=thinlines&emotion=happy&attire=formalsuit&pose=handsfolded&face=%23eeddc5&shirt=%2366a1ff&pant=%233a4e5c&box=&boxcolor=%23000000&boxgap=&mirror=), where you can create characters with different expressions and actions. Imagine if we could hook that up with sentiment analysis, it can feel as if the actual person is talking.
+
+Heck, we can also do speech to text to allow you to say out a reply and that gets posted onto HackerNews as your reply in that thread.
+
+There have been incredible progress in the field of TTS and STT, and just lately this model dropped - it's effectively free. I'm excited to use this to build this project, and am sure there'll be much better and cheaper models coming out in the next many many months.

@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: tower_hn
+      POSTGRES_USER: tower
+      POSTGRES_PASSWORD: tower_dev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tower"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://tower:tower_dev@postgres:5432/tower_hn?sslmode=disable
+      TTS_SERVICE_URL: http://tts-service:8000
+      AUDIO_STORAGE_PATH: /data/audio
+      HN_API_BASE_URL: https://hacker-news.firebaseio.com/v0
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      BACKEND_PORT: "8080"
+      FRONTEND_URL: http://localhost:3000
+    volumes:
+      - audio_data:/data/audio
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  tts-service:
+    build:
+      context: ./tts-service
+    ports:
+      - "8000:8000"
+    environment:
+      KOKORO_LANG_CODE: a
+      DEVICE: cpu
+      MAX_WORKERS: "2"
+    volumes:
+      - kokoro_models:/models/kokoro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+      NEXT_PUBLIC_WS_URL: ws://localhost:8080/ws
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  audio_data:
+  kokoro_models:
