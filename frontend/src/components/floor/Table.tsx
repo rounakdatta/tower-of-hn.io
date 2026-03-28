@@ -150,7 +150,7 @@ export function Table({ thread }: TableProps) {
             <span className={`text-xs font-semibold ${color}`}>{comment.by}</span>
           </div>
           <p className={`mt-0.5 text-xs leading-relaxed ${isSpeaking ? "text-neutral-100" : "text-neutral-500"}`}>
-            {comment.text_plain.length > 200 ? comment.text_plain.slice(0, 200) + "..." : comment.text_plain}
+            {comment.text_plain}
           </p>
         </div>
         {children.map((child: HNComment) => renderComment(child, depth + 1))}

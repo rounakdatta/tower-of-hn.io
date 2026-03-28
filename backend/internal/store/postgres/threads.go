@@ -22,7 +22,6 @@ func (t *ThreadStoreImpl) UpsertThread(ctx context.Context, thread *domain.Threa
 		VALUES (@story_id, @root_comment_id, @comment_count, @status, NOW())
 		ON CONFLICT (root_comment_id) DO UPDATE SET
 			comment_count = EXCLUDED.comment_count,
-			status        = EXCLUDED.status,
 			updated_at    = NOW()
 		RETURNING id`
 
@@ -103,12 +102,16 @@ func (t *ThreadStoreImpl) GetPendingThreads(ctx context.Context, limit int) ([]*
 		UPDATE threads SET status = 'pending', updated_at = NOW()
 		WHERE status = 'processing' AND updated_at < NOW() - INTERVAL '2 minutes'`)
 
-	// Prioritize smaller threads (faster to complete, quicker feedback)
+	// Prioritize by story rank (top stories first), then smaller threads
 	query := `
-		SELECT id, story_id, root_comment_id, comment_count, status, updated_at
-		FROM threads
-		WHERE status = 'pending'
-		ORDER BY comment_count ASC, updated_at ASC
+		SELECT t.id, t.story_id, t.root_comment_id, t.comment_count, t.status, t.updated_at
+		FROM threads t
+		LEFT JOIN stories s ON s.id = t.story_id
+		WHERE t.status = 'pending'
+		ORDER BY
+			COALESCE(s.rank, 999) ASC,
+			t.comment_count ASC,
+			t.updated_at ASC
 		LIMIT @limit`
 
 	rows, err := t.db.Pool.Query(ctx, query, pgx.NamedArgs{"limit": limit})

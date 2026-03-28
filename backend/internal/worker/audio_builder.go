@@ -23,6 +23,9 @@ const (
 	NumChannels          = 1
 	MaxTTSRetries        = 3
 	TTSRetryDelay        = 2 * time.Second
+	// Max comments to TTS per thread. Keeps large threads from blocking the pipeline.
+	// Root + direct replies + some nesting = plenty for a listenable conversation.
+	MaxCommentsPerThread = 15
 )
 
 type AudioBuilder struct {
@@ -80,6 +83,16 @@ func (b *AudioBuilder) BuildThreadAudio(ctx context.Context, thread *domain.Thre
 		"thread_id", thread.ID,
 		"sequenced_count", len(ordered),
 	)
+
+	// Cap the sequence to avoid spending forever on huge threads
+	if len(ordered) > MaxCommentsPerThread {
+		b.logger.Info("Capping thread to max comments",
+			"thread_id", thread.ID,
+			"total", len(ordered),
+			"capped_to", MaxCommentsPerThread,
+		)
+		ordered = ordered[:MaxCommentsPerThread]
+	}
 
 	// 2. Generate TTS for each comment with retries
 	var segments []wavSegment
