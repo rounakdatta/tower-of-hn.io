@@ -184,7 +184,9 @@ func (b *AudioBuilder) BuildThreadAudio(ctx context.Context, thread *domain.Thre
 	}
 
 	if len(segments) == 0 {
-		return 0, fmt.Errorf("no audio segments generated for thread %d", thread.ID)
+		b.logger.Info("No speakable comments in thread (deleted/flagged), skipping",
+			"thread_id", thread.ID)
+		return 0, nil
 	}
 
 	// 3. Stitch into single WAV

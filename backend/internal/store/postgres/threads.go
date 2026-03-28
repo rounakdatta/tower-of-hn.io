@@ -97,10 +97,11 @@ func (t *ThreadStoreImpl) GetThreadsForStory(ctx context.Context, storyID int64)
 }
 
 func (t *ThreadStoreImpl) GetPendingThreads(ctx context.Context, limit int) ([]*domain.Thread, error) {
-	// Also recover threads stuck in "processing" for over 2 minutes
+	// Recover stuck "processing" threads (>2 min) and retry "error" threads (>5 min cooldown)
 	_, _ = t.db.Pool.Exec(ctx, `
 		UPDATE threads SET status = 'pending', updated_at = NOW()
-		WHERE status = 'processing' AND updated_at < NOW() - INTERVAL '2 minutes'`)
+		WHERE (status = 'processing' AND updated_at < NOW() - INTERVAL '2 minutes')
+		   OR (status = 'error' AND updated_at < NOW() - INTERVAL '5 minutes')`)
 
 	// Prioritize by story rank (top stories first), then smaller threads
 	query := `
