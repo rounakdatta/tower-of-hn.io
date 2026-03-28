@@ -7,7 +7,7 @@ import {
   getThreadConversation,
   ThreadConversation,
 } from "@/lib/api";
-import { Roundtable } from "./Roundtable";
+import { Roundtable, buildParticipants } from "./Roundtable";
 
 interface TableProps {
   thread: Thread;
@@ -118,15 +118,9 @@ export function Table({ thread }: TableProps) {
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
   const comments = conversation?.comments || [];
 
-  // Build unique participants for the roundtable
-  const uniqueSpeakers = [...new Set(
-    comments.filter((c: HNComment) => c.by && c.by !== "[deleted]").map((c: HNComment) => c.by)
-  )];
-  const participants = uniqueSpeakers.map((username) => ({
-    username,
-    color: getSpeakerColor(username, speakerMapRef.current),
-    isSpeaking: activeSpeaker === username,
-  }));
+  // Build participants with ComicGen avatar URLs
+  const participants = buildParticipants(comments, activeSpeaker, activeCommentId);
+  const uniqueSpeakers = participants.map((p) => p.username);
 
   // Build comment tree
   const commentById = new Map(comments.map((c: HNComment) => [c.id, c]));

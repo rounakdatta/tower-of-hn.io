@@ -6,6 +6,8 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rounakdatta/tower-of-hn.io/backend/internal/avatar"
+	"github.com/rounakdatta/tower-of-hn.io/backend/internal/domain"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/store"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/tts"
 )
@@ -63,13 +65,26 @@ func (h *ThreadHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enrich comments with voice assignments
+	// Enrich comments with voice assignments and avatar URLs
 	for _, c := range comments {
 		voiceID, err := h.voices.GetVoice(r.Context(), c.By)
 		if err == nil && voiceID != "" {
 			c.VoiceID = voiceID
 		} else {
 			c.VoiceID = tts.AssignVoice(c.By)
+		}
+
+		// Generate avatar with sentiment (default to neutral for now, sentiment enrichment comes from pipeline)
+		sentimentLabel := "neutral"
+		if c.Sentiment != nil {
+			sentimentLabel = c.Sentiment.Label
+		}
+		c.Avatar = &domain.AvatarState{
+			CommentID: c.ID,
+			Username:  c.By,
+			Emotion:   avatar.SentimentToEmotion[sentimentLabel],
+			Pose:      avatar.SentimentToPose[sentimentLabel],
+			AvatarURL: avatar.BuildComicGenURL(c.By, sentimentLabel, false),
 		}
 	}
 
