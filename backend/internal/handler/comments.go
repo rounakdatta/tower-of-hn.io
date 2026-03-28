@@ -7,15 +7,18 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/store"
+	"github.com/rounakdatta/tower-of-hn.io/backend/internal/tts"
 )
 
 type ThreadHandler struct {
 	threads  store.ThreadStore
 	comments store.CommentStore
+	audio    store.AudioStore
+	voices   store.VoiceStore
 }
 
-func NewThreadHandler(threads store.ThreadStore, comments store.CommentStore) *ThreadHandler {
-	return &ThreadHandler{threads: threads, comments: comments}
+func NewThreadHandler(threads store.ThreadStore, comments store.CommentStore, audio store.AudioStore, voices store.VoiceStore) *ThreadHandler {
+	return &ThreadHandler{threads: threads, comments: comments, audio: audio, voices: voices}
 }
 
 func (h *ThreadHandler) ListForStory(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +56,61 @@ func (h *ThreadHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Load full comment tree for this thread
+	comments, err := h.comments.GetThreadComments(r.Context(), thread.RootCommentID)
+	if err != nil {
+		http.Error(w, "Failed to load comments", http.StatusInternalServerError)
+		return
+	}
+
+	// Enrich comments with voice assignments
+	for _, c := range comments {
+		voiceID, err := h.voices.GetVoice(r.Context(), c.By)
+		if err == nil && voiceID != "" {
+			c.VoiceID = voiceID
+		} else {
+			c.VoiceID = tts.AssignVoice(c.By)
+		}
+	}
+
+	// Load audio segments if thread is ready
+	var audioMeta interface{}
+	if thread.Status == "ready" {
+		segments, _ := h.audio.GetSegments(r.Context(), threadID)
+		threadAudio, _ := h.audio.GetThreadAudio(r.Context(), threadID)
+
+		// Build segment timing map (comment_id -> timing)
+		segmentMap := make(map[int64]map[string]int)
+		runningMs := 0
+		for _, seg := range segments {
+			segmentMap[seg.CommentID] = map[string]int{
+				"sequence_order": seg.SequenceOrder,
+				"start_ms":       runningMs,
+				"duration_ms":    seg.DurationMs,
+			}
+			runningMs += seg.DurationMs + 600 // approximate silence gap
+		}
+
+		// Attach timing to comments
+		for _, c := range comments {
+			if timing, ok := segmentMap[c.ID]; ok {
+				c.SetAudioTiming(timing["sequence_order"], timing["start_ms"], timing["duration_ms"])
+			}
+		}
+
+		if threadAudio != nil {
+			audioMeta = map[string]interface{}{
+				"total_duration_ms": threadAudio.TotalDurationMs,
+				"segment_count":     threadAudio.SegmentCount,
+				"stream_url":        "/api/audio/" + threadIDStr + "/stream",
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"thread": thread})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"thread":   thread,
+		"comments": comments,
+		"audio":    audioMeta,
+	})
 }

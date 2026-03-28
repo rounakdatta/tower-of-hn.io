@@ -29,3 +29,12 @@ type AudioTiming struct {
 	StartMs       int `json:"start_ms"`
 	DurationMs    int `json:"duration_ms"`
 }
+
+// Ensure Audio field uses the AudioTiming type properly
+func (c *Comment) SetAudioTiming(seq, startMs, durationMs int) {
+	c.Audio = &AudioTiming{
+		SequenceOrder: seq,
+		StartMs:       startMs,
+		DurationMs:    durationMs,
+	}
+}

@@ -15,9 +15,11 @@ import (
 
 const (
 	// How many threads to process per poll cycle.
-	batchSize = 5
+	batchSize = 10
 	// How often to check for pending threads.
-	pipelineInterval = 10 * time.Second
+	pipelineInterval = 5 * time.Second
+	// Threads stuck in "processing" for longer than this get reset.
+	processingTimeout = 2 * time.Minute
 )
 
 // Pipeline processes pending threads: TTS generation → audio stitching.

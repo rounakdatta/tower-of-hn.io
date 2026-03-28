@@ -42,7 +42,7 @@ func New(port int, deps Dependencies, logger *slog.Logger) *Server {
 	r.Use(corsMiddleware)
 
 	storyHandler := handler.NewStoryHandler(deps.Stories)
-	threadHandler := handler.NewThreadHandler(deps.Threads, deps.Comments)
+	threadHandler := handler.NewThreadHandler(deps.Threads, deps.Comments, deps.Audio, deps.Voices)
 	audioHandler := handler.NewAudioHandler(deps.Audio, deps.Blobs)
 
 	r.Route("/api", func(r chi.Router) {

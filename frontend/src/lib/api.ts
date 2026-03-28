@@ -1,4 +1,4 @@
-import { Story, Thread, ThreadDetail } from "./types";
+import { Story, Thread, ThreadDetail, Comment } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
@@ -27,6 +27,22 @@ export async function getThreadsForStory(
 }
 
 export async function getThread(threadId: number): Promise<ThreadDetail> {
+  return fetchJSON(`/api/threads/${threadId}`);
+}
+
+export interface ThreadConversation {
+  thread: Thread;
+  comments: Comment[];
+  audio: {
+    total_duration_ms: number;
+    segment_count: number;
+    stream_url: string;
+  } | null;
+}
+
+export async function getThreadConversation(
+  threadId: number
+): Promise<ThreadConversation> {
   return fetchJSON(`/api/threads/${threadId}`);
 }
 
