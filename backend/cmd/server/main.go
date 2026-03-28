@@ -10,9 +10,11 @@ import (
 
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/config"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/hnapi"
+	"github.com/rounakdatta/tower-of-hn.io/backend/internal/sentiment"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/server"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/store/filestorage"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/store/postgres"
+	"github.com/rounakdatta/tower-of-hn.io/backend/internal/tts"
 	"github.com/rounakdatta/tower-of-hn.io/backend/internal/worker"
 )
 
@@ -81,10 +83,36 @@ func main() {
 		logger,
 	)
 
+	// TTS client + sentiment analyzer
+	ttsClient := tts.NewClient(cfg.TTSServiceURL)
+	analyzer := sentiment.NewGeminiAnalyzer(cfg.GeminiAPIKey)
+
+	// Audio pipeline
+	pipeline := worker.NewPipeline(
+		threadStore,
+		commentStore,
+		audioStore,
+		sentimentStore,
+		voiceStore,
+		avatarStore,
+		blobStore,
+		ttsClient,
+		analyzer,
+		srv.Hub(),
+		logger,
+	)
+
 	// Start HN syncer in background
 	go func() {
 		if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("HN syncer error", "error", err)
+		}
+	}()
+
+	// Start audio pipeline in background
+	go func() {
+		if err := pipeline.Run(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("Audio pipeline error", "error", err)
 		}
 	}()
 

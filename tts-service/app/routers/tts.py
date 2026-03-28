@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
@@ -6,7 +8,7 @@ from app.services.registry import ProviderRegistry
 
 router = APIRouter()
 
-registry: ProviderRegistry | None = None
+registry: Optional[ProviderRegistry] = None
 
 
 def set_registry(reg: ProviderRegistry) -> None:
