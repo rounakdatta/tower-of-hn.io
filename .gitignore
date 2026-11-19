@@ -53,3 +53,5 @@ dist/
 spikes/*/data/
 spikes/*/out/
 spikes/live-out/
+var/
+apps/client/dist/

@@ -61,3 +61,18 @@ test('a voice is fixed at first sight: a late reply that reshuffles seats cannot
   assert.equal(live.voiceOf('b'), vb);                        // b's existing audio stays valid
   assert.equal(live.voiceOf('a'), t[0].voice);
 });
+
+test('a voiced comment bumps its floor and travels in the delta; head carries titles and activity', () => {
+  const live = new Live({ snapshotEvery: 1 });
+  const now = Date.now();
+  for (const it of [story, { ...c(101, 100, 'a'), time: Math.floor(now / 1000) - 60 }, c(104, 100, 'c')]) live.upsert(it);
+  live.setTower([100]);
+  const first = live.tick(now);
+  assert.equal(first.head.stories[100][0], 'Show HN: a tower');
+  assert.equal(first.head.act[100], 1);
+  live.markVoiced(101, 'c/101.ab12.json', 7.5);
+  const out = live.tick(now + 2000);
+  assert.deepEqual(out.delta?.voiced, [{ id: 101, v: ['c/101.ab12.json', 7.5] }]);
+  assert.equal(out.head.floors[100], 2);
+  assert.deepEqual(out.snapshots[0].tables[0].turns[0].v, ['c/101.ab12.json', 7.5]);
+});

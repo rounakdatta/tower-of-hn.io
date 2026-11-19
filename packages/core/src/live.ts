@@ -14,9 +14,9 @@ export interface Item {
   dead?: boolean; deleted?: boolean;
 }
 export interface StoryMeta { id: number; title: string; url?: string; by?: string; score: number; comments: number }
-export interface TurnOut { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number }
+export interface TurnOut { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; /** voiced: [sidecar path, seconds] */ v?: [string, number] }
 export interface TableOut { root: number; turns: TurnOut[]; seated: string[]; standing: string[] }
-export interface FloorSnapshot { story: StoryMeta; rev: number; tables: TableOut[] }
+export interface FloorSnapshot { story: StoryMeta; rev: number; epoch: number; tables: TableOut[] }
 export interface Delta {
   epoch: number;
   tower?: number[];                                    // new order, only when it changed
@@ -24,8 +24,15 @@ export interface Delta {
   turns?: { story: number; table: number; at: number; turn: TurnOut }[];  // new or re-voiced turns, with their index
   gone?: number[];                                     // comments to drop (deleted, dead, flagged)
   floors?: Record<number, number>;                     // story -> latest snapshot rev
+  voiced?: { id: number; v: [string, number] }[];      // turns whose audio just became ready
 }
-export interface Head { epoch: number; at: number; tower: number[]; floors: Record<number, number>; snapshotEvery: number }
+export interface Head {
+  epoch: number; at: number; tower: number[]; floors: Record<number, number>; snapshotEvery: number;
+  /** id -> [title, score, comments, by, url] for every floor, so the tower renders from head alone */
+  stories: Record<number, [string, number, number, string, string]>;
+  /** id -> comments in the last 15 minutes (lights the windows) */
+  act: Record<number, number>;
+}
 
 export const VOICE_POOL = 115;
 const MAX_TABLES = 60;
@@ -41,6 +48,8 @@ export class Live {
   private sinceSnapshot = new Map<number, number>();
   /** user -> voice, assigned the first time we ever see them and never changed (their packs depend on it) */
   voices = new Map<string, number>();
+  /** comment -> its voiced sidecar, filled in by the voice worker */
+  voiced = new Map<number, [string, number]>();
 
   private opts: { snapshotEvery: number };
   constructor(opts = { snapshotEvery: 30 }) { this.opts = opts; }
@@ -55,6 +64,16 @@ export class Live {
     if (it.type === 'story' && this.tower.includes(it.id) && prev && (prev.title !== it.title || prev.score !== it.score || prev.descendants !== it.descendants)) {
       (this.pending.stories ??= []).push(meta(it));
     }
+  }
+
+  /** The voice worker finished a comment: its audio is ready for everyone. */
+  markVoiced(id: number, path: string, dur: number): void {
+    const prev = this.voiced.get(id);
+    if (prev && prev[0] === path) return;
+    this.voiced.set(id, [path, dur]);
+    (this.pending.voiced ??= []).push({ id, v: [path, dur] });
+    const story = this.storyOf(id);
+    if (story !== undefined) this.dirtyStories.add(story);
   }
 
   /** HN's current front page, best first. */
@@ -74,29 +93,41 @@ export class Live {
       if (!next) continue;
       const prev = this.floors.get(sid);
       const added = diffTurns(prev, next);
-      if (added.length || !prev) {
+      if (added.length || !prev || voicedCount(prev) !== voicedCount(next)) {
         const rev = (this.revs.get(sid) ?? 0) + 1;
         this.revs.set(sid, rev);
         next.rev = rev;
+        next.epoch = this.epoch + 1;
         this.floors.set(sid, next);
         (this.pending.turns ??= []).push(...added.map((a) => ({ story: sid, ...a })));
         (this.pending.floors ??= {})[sid] = rev;
-        const n = (this.sinceSnapshot.get(sid) ?? Infinity) + added.length;
+        const n = (this.sinceSnapshot.get(sid) ?? Infinity) + Math.max(1, added.length);
         if (!prev || n >= this.opts.snapshotEvery) { snapshots.push(next); this.sinceSnapshot.set(sid, 0); }
         else this.sinceSnapshot.set(sid, n);
       }
     }
     this.dirtyStories.clear();
     const p = this.pending;
-    const changed = p.tower || p.stories?.length || p.turns?.length || p.gone?.length || p.floors;
+    const changed = p.tower || p.stories?.length || p.turns?.length || p.gone?.length || p.floors || p.voiced?.length;
     let delta: Delta | undefined;
     if (changed) {
       delta = { ...p, epoch: ++this.epoch };
       this.pending = { epoch: 0 };
     }
-    const floors: Record<number, number> = {};
-    for (const id of this.tower) if (this.revs.has(id)) floors[id] = this.revs.get(id)!;
-    return { delta, head: { epoch: this.epoch, at: now, tower: this.tower.slice(), floors, snapshotEvery: this.opts.snapshotEvery }, snapshots };
+    const floors: Record<number, number> = {}, stories: Head['stories'] = {}, act: Record<number, number> = {};
+    const since = now / 1000 - 900;
+    for (const id of this.tower) {
+      if (this.revs.has(id)) floors[id] = this.revs.get(id)!;
+      const st = this.items.get(id);
+      if (st) stories[id] = [st.title ?? '', st.score ?? 0, st.descendants ?? 0, st.by ?? '', st.url ?? ''];
+      act[id] = 0;
+    }
+    for (const it of this.items.values()) {
+      if (it.type !== 'comment' || (it.time ?? 0) < since || it.dead || it.deleted) continue;
+      const sid = this.storyOf(it.id);
+      if (sid !== undefined && sid in act) act[sid]++;
+    }
+    return { delta, head: { epoch: this.epoch, at: now, tower: this.tower.slice(), floors, snapshotEvery: this.opts.snapshotEvery, stories, act }, snapshots };
   }
 
   /** The story a comment belongs to: walk parents until a story. */
@@ -129,14 +160,20 @@ export class Live {
       const turns = playOrder(root);
       if (!turns.length) continue;
       const { seated, standing } = seat(turns);
-      tables.push({ root: rootId, seated, standing, turns: turns.map((t) => ({ ...t, voice: this.voiceOf(t.by) })) });
+      tables.push({ root: rootId, seated, standing, turns: turns.map((t) => ({ ...t, voice: this.voiceOf(t.by), v: this.voiced.get(t.id) })) });
     }
-    return { story: meta(st), rev: 0, tables };
+    return { story: meta(st), rev: 0, epoch: 0, tables };
   }
 }
 
 function meta(it: Item): StoryMeta {
   return { id: it.id, title: it.title ?? '', url: it.url, by: it.by, score: it.score ?? 0, comments: it.descendants ?? 0 };
+}
+
+function voicedCount(f: FloorSnapshot): number {
+  let n = 0;
+  for (const t of f.tables) for (const u of t.turns) if (u.v) n++;
+  return n;
 }
 
 /** Turns present in `next` but not in `prev`, with their table and position (late replies land mid-table). */
