@@ -17,6 +17,7 @@ const params = new URLSearchParams(location.search);
 const DATA = params.get('data') ?? `http://${location.hostname || 'localhost'}:8787/live/`;
 const recording = params.has('record');
 const autopilot = params.has('auto') || recording;
+let leanBack = autopilot;            // hands-free: floor to floor, table to table
 
 // ---------------------------------------------------------------- renderer + post
 const renderer = new THREE.WebGPURenderer({ antialias: true, forceWebGL: params.has('webgl') });
@@ -146,7 +147,7 @@ async function enterFloor(sid: number) {
     ui.tableLabels(spots, roomY, (s) => sit(s));
     after(2.0, () => { if (mode === 'floor') ui.showLabels(true); });
     ui.hint('Pick a table to sit down and listen');
-    if (autopilot || deepLinked) after(deepLinked ? 1.8 : 3.2, () => { if (mode === 'floor') sit(bestSpot()); deepLinked = false; });
+    if (leanBack || deepLinked) after(deepLinked ? 1.8 : 3.2, () => { if (mode === 'floor') sit(bestSpot()); deepLinked = false; });
   });
   sync.watch(sid, (f) => {
     activeFloor = f;
@@ -194,10 +195,21 @@ function nextTable() {
   const k = convo.findIndex((s) => s.table.root === director.spot!.table.root);
   sit(convo[(k + 1) % convo.length]);
 }
-director.onEnd = () => { if (mode === 'table') nextTable(); };
+director.onEnd = () => {
+  if (mode !== 'table') return;
+  const convo = spots.filter((s) => !s.bar && s.table.turns.some((t) => t.v));
+  const k = convo.findIndex((s) => s.table.root === director.spot?.table.root);
+  if (leanBack && sync.head && (k < 0 || k >= Math.min(convo.length, 3) - 1)) {
+    // done with this floor's best tables: ride to the next floor down the ranking
+    const order = sync.head.tower, next = order[(order.indexOf(activeStory) + 1) % Math.min(order.length, 10)];
+    leaveFloor();
+    after(2.6, () => enterFloor(next));
+  } else nextTable();
+};
 director.onNewReply = (by) => ui.toast(`<b>${by}</b> just replied on Hacker News`);
 
 function standUp() {
+  leanBack = false;
   director.stop(); setDof(false);
   mode = 'floor'; ui.mode('floor'); audio.setMode('floor');
   ui.hint('Pick a table to sit down and listen');
@@ -221,7 +233,15 @@ function leaveFloor() {
   });
 }
 
-document.getElementById('back')!.onclick = () => leaveFloor();
+document.getElementById('back')!.onclick = () => { leanBack = false; leaveFloor(); };
+document.getElementById('lean')!.onclick = () => {
+  audio.ensure();
+  const h = sync.head;
+  if (!h) return;
+  leanBack = true;
+  const busiest = h.tower.slice(0, 10).reduce((a, b) => ((h.act[b] ?? 0) > (h.act[a] ?? 0) ? b : a), h.tower[0]);
+  enterFloor(busiest);
+};
 document.getElementById('leave')!.onclick = () => standUp();
 document.getElementById('next')!.onclick = () => nextTable();
 document.getElementById('pause')!.onclick = (e) => { director.togglePause(); (e.target as HTMLElement).textContent = director.paused ? 'Play' : 'Pause'; };
