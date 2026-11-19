@@ -24,7 +24,7 @@ const fs = require('fs');
   };
   for (let i = 0; i < 4 * fps; i++) await page.evaluate((d) => window.__tohn.frame(d, false), dt);   // let the tower settle
   const clock0 = await page.evaluate(() => window.__tohn.clock()) + dt;
-  for (let i = 0; i < 6 * fps; i++) { await page.evaluate((a) => window.__tohn.orbit(a), 0.5 + i * 0.0035); await shoot(); }
+  if (!process.env.NO_INTRO) for (let i = 0; i < 6 * fps; i++) { await page.evaluate((a) => window.__tohn.orbit(a), 0.5 + i * 0.0035); await shoot(); }
   await page.evaluate((r) => window.__tohn.enter(r), Number(process.argv[7] || 0));
   const n = Math.round((5 + tableSecs) * fps);
   for (let i = 0; i < n; i++) { await shoot(); if (i % 200 === 0) console.log('frame', f, await page.evaluate(() => window.__tohn.mode())); }
