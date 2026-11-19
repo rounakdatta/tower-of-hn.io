@@ -155,9 +155,9 @@ export class Director {
     const t = floor.tables.find((x) => x.root === this.spot!.table.root);
     if (!t) return;
     const played = new Set(this.spot.table.turns.slice(0, this.turnIdx).map((u) => u.id));
+    const known = new Set(this.spot.table.turns.map((u) => u.id));
     this.spot.table = t;
     // keep our place: the first turn we haven't scheduled yet (late replies slot in here)
-    const known = new Set(this.spot.table.turns.map((u) => u.id));
     for (const u of t.turns) if (!known.has(u.id)) this.onNewReply(u.by);
     this.turnIdx = t.turns.findIndex((u) => !played.has(u.id));
     if (this.turnIdx < 0) this.turnIdx = t.turns.length;
@@ -377,7 +377,7 @@ export class Director {
     const riser = this.crowd.headPos(plan.S).add(new THREE.Vector3(0, 0.3, 0));
     const here = new Set(this.seatOf.values());
     for (let j = 0; j < this.crowd.people.length; j++) {
-      if (here.has(j) || this.crowd.seed(j, 11) > 0.72) continue;
+      if (here.has(j) || this.crowd.seed(j, 11) > 0.72 || this.glances.some((g) => g.i === j)) continue;
       const d = this.crowd.headPos(j).distanceTo(riser);
       if (d > 7) continue;
       const from = now + push + 0.15 + d * 0.11 + this.crowd.seed(j, 12) * 0.5;
