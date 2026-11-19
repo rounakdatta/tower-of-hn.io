@@ -19,6 +19,8 @@ const LIVE = join(VAR, 'live'), JOBS = join(VAR, 'jobs'), VOICED = join(VAR, 'vo
 const FLOORS = 30;
 const PRE = { floors: Number(process.env.PREWARM_FLOORS ?? 6), tables: Number(process.env.PREWARM_TABLES ?? 4), turns: Number(process.env.PREWARM_TURNS ?? 14), bar: Number(process.env.PREWARM_BAR ?? 6) };
 const MAX_QUEUED = 12;
+/** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
+const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v2';
 for (const d of [LIVE, JOBS]) mkdirSync(d, { recursive: true });
 
 // ---------------------------------------------------------------- HN access
@@ -46,6 +48,7 @@ const live = new Live({ snapshotEvery: 1 });
 const floors = new Map<number, FloorSnapshot>();
 const demand = new Map<number, number>();            // comment id -> priority (lower = sooner)
 const queued = new Map<number, string>();            // comment id -> job file name
+const stale = new Set<number>();                     // voiced with an older VOICE_VERSION: re-voice in the background
 let voicedOffset = 0;
 
 function readVoiced() {
@@ -61,7 +64,15 @@ function readVoiced() {
   for (const line of text.slice(0, lastNl).split('\n')) {
     try {
       const v = JSON.parse(line);
+      const prev = live.voiced.get(v.id);
+      const want = revOf(v.id), got = String(v.path).split('.')[1];
+      if (want && got !== want) {                   // an older version: use it until the new one lands
+        if (!prev) live.markVoiced(v.id, v.path, v.dur);
+        stale.add(v.id);
+        continue;
+      }
       live.markVoiced(v.id, v.path, v.dur);
+      stale.delete(v.id);
       queued.delete(v.id);
       demand.delete(v.id);
     } catch { /* partial line */ }
@@ -82,7 +93,12 @@ function wanted(): [number, number][] {
       if (!out.has(t.turns[0].id)) out.set(t.turns[0].id, 1000 + fi * 100 + 80 + k);
     });
   });
-  return [...out].filter(([id]) => !live.voiced.has(id)).sort((a, b) => a[1] - b[1]);
+  return [...out].filter(([id]) => !live.voiced.has(id) || stale.has(id)).sort((a, b) => a[1] - b[1]);
+}
+
+function revOf(id: number): string | undefined {
+  const t = live.items.get(id)?.text;
+  return t ? createHash('sha1').update(VOICE_VERSION + ':' + t).digest('hex').slice(0, 8) : undefined;
 }
 
 function jobFor(id: number, prio: number) {
@@ -95,7 +111,7 @@ function jobFor(id: number, prio: number) {
   const table = f ? f.tables.findIndex((t) => t.turns.some((u) => u.id === id)) : -1;
   return {
     id, prio, story: sid, table, by: it.by, parentBy: parent?.type === 'comment' ? parent.by : undefined,
-    rev: createHash('sha1').update(it.text).digest('hex').slice(0, 8),
+    rev: revOf(id)!,
     segments: sp.segments,
   };
 }

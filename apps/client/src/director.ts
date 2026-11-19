@@ -23,6 +23,34 @@ const FACE: Record<string, Partial<Expr>> = {
 };
 
 interface Scheduled { clip: Clip; side: Sidecar; turn: Turn; start: number; end: number; who: number; src: AudioScheduledSourceNode }
+type Gesture = 'point' | 'palms' | 'shrug' | 'chin' | 'cross' | 'arms-up' | 'facepalm';
+interface Plan { S: number; A: number; start: number; end: number; stand: boolean; gesture: Gesture | null; gestureLen: number; laughEnd: boolean; E: string; I: number; ST: string; C: string[] }
+
+/** vibe-testing only: ?force=angry|joke|question|uncertain|excited|sad makes every turn play that way */
+const FORCE = new URLSearchParams(location.search).get('force');
+function tone(side: Sidecar) {
+  if (!FORCE) return { E: side.emotion, I: side.intensity ?? 0.4, ST: side.stance, C: side.cues ?? [] };
+  const m: Record<string, [string, string, number, string[]]> = {
+    angry: ['angry', 'disagree', 0.9, ['frustrated']], joke: ['joyful', 'joke', 0.6, ['joke']], question: ['contemplative', 'question', 0.5, ['question']],
+    uncertain: ['contemplative', 'inform', 0.4, ['uncertain']], excited: ['excited', 'agree', 0.85, []], sad: ['sad', 'inform', 0.6, ['frustrated']],
+  };
+  const [E, ST, I, C] = m[FORCE] ?? m.angry;
+  return { E, I, ST, C };
+}
+const smooth01 = (x: number) => { const c = Math.max(0, Math.min(1, x)); return c * c * (3 - 2 * c); };
+/** A gesture as arm/head targets at phase k (0..1): it eases in, holds, and eases out. */
+function pose(g: Gesture, t: Expr, k: number, aim: number, flip: boolean) {
+  const w = smooth01(k / 0.16) * (1 - smooth01((k - 0.84) / 0.16));
+  switch (g) {
+    case 'point': t.armR = 1.32 * w; t.spreadR = 0.06 * w; t.aimR = aim * w; t.armL = 0.12 * w; break;
+    case 'palms': t.armL = t.armR = 0.62 * w; t.spreadL = t.spreadR = 0.38 * w; t.tilt = (flip ? -0.35 : 0.35) * w; break;
+    case 'shrug': t.armL = t.armR = 0.38 * w; t.spreadL = t.spreadR = 0.95 * w; t.tilt = (flip ? -0.5 : 0.5) * w; t.brow = Math.max(t.brow, 0.6 * w); t.nod = -0.18 * w; break;
+    case 'chin': t.armR = 2.25 * w; t.spreadR = -0.5 * w; t.tilt = 0.25 * w; t.lid = Math.min(t.lid, 0.85); t.nod = 0.12 * w; break;
+    case 'cross': t.armL = t.armR = 0.8 * w; t.spreadL = t.spreadR = -0.62 * w; break;
+    case 'arms-up': t.armL = t.armR = 2.65 * w; t.spreadL = t.spreadR = 0.3 * w; t.smile = Math.max(t.smile, 0.7); break;
+    case 'facepalm': t.armR = 2.4 * w; t.spreadR = -0.34 * w; t.nod = 0.45 * w; break;
+  }
+}
 
 export class Director {
   floor: Floor | null = null;
@@ -38,6 +66,9 @@ export class Director {
   private shotUntil = 0;
   private reactionAt = 0;
   private gesture = new Map<number, number>();
+  private plans = new Map<number, Plan>();
+  private heroAt = 0;
+  private heroWho = -1;
   playing = false;
   paused = false;
   others: { pos: THREE.Vector3; turns: Turn[] }[] = [];      // other tables on this floor, for the murmur
@@ -51,6 +82,7 @@ export class Director {
     this.stop();
     this.floor = floor; this.spot = spot; this.roomY = roomY;
     this.turnIdx = 0; this.playing = true; this.paused = false;
+    this.plans.clear(); this.heroAt = 0;
     this.cursor = this.audio.now() + 1.6;           // let the establishing shot breathe
     for (const s of spot.seats) { const i = this.crowd.index(s.name); if (i >= 0) this.crowd.active.add(i); }
     this.wide(now, true);
@@ -147,7 +179,7 @@ export class Director {
         const pos = who >= 0 ? this.crowd.headPos(who) : new THREE.Vector3(this.spot!.pos.x, this.roomY + 1.1, this.spot!.pos.z);
         const src = this.audio.voice(r.bufs[k], t, pos, this.sync.url(clip.u));
         this.sched.push({ clip, side: r.side, turn, start: t, end: t + clip.d, who, src });
-        t += clip.d + (k < r.side.clips.length - 1 ? 0.12 : 0);
+        t += clip.d + (k < r.side.clips.length - 1 ? 0.06 : 0);
       });
       this.cursor = t;
       this.turnIdx++;
@@ -186,6 +218,7 @@ export class Director {
       else this.ui.subtitle(null);
     }
     this.animate(cur, at, now, dt);
+    if (this.heroAt && now > this.heroAt) { this.heroAt = 0; this.hero(this.heroWho); return; }
     // a cutaway to a listener in the middle of a long clip, then back
     if (cur && this.reactionAt && now > this.reactionAt) {
       this.reactionAt = 0;
@@ -217,6 +250,14 @@ export class Director {
     this.ui.code(s.side.code.find((c) => c.startsWith(s.clip.t.slice(0, 40))) ?? null);
     // pick a shot
     const first = s.side.clips[0] === s.clip;
+    const plan = this.planFor(s);
+    if (first && plan.stand) {
+      // a beat on the person being confronted, then the speaker rising over the table
+      if (plan.A >= 0) this.single(plan.A, -1, now);
+      this.heroAt = now + (plan.A >= 0 ? 0.9 : 0.05); this.heroWho = plan.S;
+      this.shotUntil = 0; this.reactionAt = 0;
+      return;
+    }
     if (now < this.shotUntil && first && this.sched.indexOf(s) === 0) return;          // the establishing shot is still running
     const replyTo = s.turn.replyTo ? this.authorOf(s.turn.replyTo) : undefined;
     const turnNo = this.spot!.table.turns.indexOf(s.turn);
@@ -229,58 +270,117 @@ export class Director {
     this.reactionAt = s.end - s.start > 7 ? now + (s.end - s.start) * 0.55 : 0;
   }
 
-  // ---------------------------------------------------------------- performance
+  // ---------------------------------------------------------------- performance: blocking, gestures, reactions
+  /** Each turn gets a plan: who performs it, to whom, whether they stand, their signature gesture. */
+  private planFor(s: Scheduled): Plan {
+    const clips = this.sched.filter((x) => x.turn.id === s.turn.id);
+    const start = Math.min(s.start, ...clips.map((x) => x.start)), end = Math.max(s.end, ...clips.map((x) => x.end));
+    let p = this.plans.get(s.turn.id);
+    if (p) { p.start = Math.min(p.start, start); p.end = Math.max(p.end, end); return p; }
+    const S = this.crowd.index(s.turn.by);
+    let A = s.turn.replyTo ? this.authorOf(s.turn.replyTo) ?? -1 : -1;
+    if (A === S) A = -1;
+    if (A < 0) {                                         // nobody to answer here: address whoever spoke last
+      const prev = [...this.sched].reverse().find((x) => x.start < start && x.who !== S && x.who >= 0);
+      A = prev?.who ?? -1;
+    }
+    const { E, I, ST, C } = tone(s.side);
+    const heated = (E === 'angry' && I >= 0.45) || (I >= 0.82 && (ST === 'disagree' || ST === 'correct'));
+    let gesture: Gesture | null = null, len = 2.4;
+    if (heated || ((ST === 'disagree' || ST === 'correct') && I >= 0.5)) gesture = 'point';
+    else if (C.includes('uncertain')) gesture = 'shrug';
+    else if (C.includes('question') || ST === 'question') gesture = 'palms';
+    else if (E === 'excited' && I >= 0.6) { gesture = 'arms-up'; len = 1.5; }
+    else if (C.includes('frustrated') || E === 'sad') gesture = 'facepalm';
+    else if (E === 'contemplative') { gesture = 'chin'; len = Math.max(2.4, Math.min(6, end - start - 0.4)); }
+    else if (ST === 'agree' || ST === 'praise') gesture = 'palms';
+    p = { S, A, start, end, stand: heated && S >= 0 && !!this.crowd.people[S]?.pose.seated, gesture, gestureLen: len,
+      laughEnd: ST === 'joke' || C.includes('joke'), E, I, ST, C };
+    this.plans.set(s.turn.id, p);
+    return p;
+  }
+
   private animate(cur: Scheduled | null, at: number, now: number, dt: number) {
     if (!this.spot) return;
-    const speaker = cur?.who ?? -1;
-    const sp = speaker >= 0 ? this.crowd.headPos(speaker) : null;
+    // the turn in play: the current clip's, or the next one about to start (people turn before they speak)
+    const next = cur ? null : this.sched.find((x) => x.start > at && x.start - at < 0.7) ?? null;
+    const live = cur ?? next;
+    const plan = live ? this.planFor(live) : null;
+    const inTurn = !!plan && at >= plan.start - 0.7 && at <= plan.end + 0.6;
+    const speaking = cur?.who ?? -1;
     const env = cur ? (cur.clip.env[Math.floor((at - cur.start) * 30)] ?? 0) / 255 : 0;
     const shape = cur ? ((cur.clip.shape[Math.floor((at - cur.start) * 30)] ?? 127) / 127.5 - 1) : 0;
-    const emo = FACE[cur?.side.emotion ?? 'mundane'] ?? FACE.mundane;
-    const stance = cur?.side.stance ?? 'inform';
-    const replyTo = cur?.turn.replyTo ? this.authorOf(cur.turn.replyTo) : undefined;
-    // who speaks next? if their reply disagrees, they're already frowning
+    const focus = speaking >= 0 ? speaking : plan?.S ?? -1;
+    const focusHead = focus >= 0 ? this.crowd.headPos(focus) : null;
+    const voice = cur ? FACE[tone(cur.side).E] ?? FACE.mundane : FACE.mundane;
+    // who speaks next? if their reply pushes back, they're already narrowing their eyes
     const upcoming = new Map<number, string>();
     for (let k = this.turnIdx; k < Math.min(this.turnIdx + 3, this.spot.table.turns.length); k++) {
       const t = this.spot.table.turns[k], r = this.ready.get(t.id), i = this.crowd.index(t.by);
-      if (r && i >= 0 && !upcoming.has(i)) upcoming.set(i, r.side.stance);
+      if (r && i >= 0 && !upcoming.has(i)) upcoming.set(i, tone(r.side).ST);
     }
     for (const seat of this.spot.seats) {
-      const i = this.crowd.index(seat.name);
-      const t = this.crowd.target(i);
-      if (!t) continue;
-      if (i === speaker) {
+      const i = this.crowd.index(seat.name), t = this.crowd.target(i);
+      if (!t || i < 0) continue;
+      // everyone starts the frame as a calm listener, turned to whoever has the floor
+      t.open = 0; t.shape = 0; t.turn = 0; t.stand = 0; t.bounce = 0;
+      t.armL = 0; t.armR = 0; t.spreadL = 0; t.spreadR = 0; t.aimR = 0;
+      t.lean = 0.05; t.brow = 0; t.smile = 0.15; t.lid = 1;
+      t.tilt = Math.sin(at * 0.4 + i) * 0.08;
+      t.nod = Math.sin(at * 0.9 + i * 1.7) * 0.03;
+      t.yaw = focusHead && focus !== i ? this.crowd.yawTo(i, focusHead) : Math.sin(at * 0.3 + i) * 0.3;
+      const performing = !!plan && inTurn && i === plan.S;
+      if (performing) {
+        // square up to the person being answered: shoulders part of the way, the head the rest
+        const total = plan.A >= 0 ? this.crowd.yawTo(i, this.crowd.headPos(plan.A)) : Math.sin(at * 0.35 + i) * 0.45;
+        t.turn = Math.max(-0.85, Math.min(0.85, total * 0.55));
+        t.yaw = total - t.turn;
+        t.stand = plan.stand ? 1 : 0;
+        const em = FACE[plan.E] ?? FACE.mundane;
+        t.lean = (em.lean ?? 0.15) + (plan.stand ? 0.22 : 0);
+        if (at < plan.start) { t.lean += 0.08; t.brow = 0.15; }                           // the breath before speaking
+        const gk = (at - plan.start - 0.25) / plan.gestureLen;
+        if (plan.gesture && gk >= 0 && gk <= 1) pose(plan.gesture, t, gk, t.yaw, this.crowd.seed(i, 3) > 0.5);
+        else if (i === speaking) {
+          // beats on loud syllables, bigger when heated
+          const g = this.gesture.get(i) ?? 0;
+          if (env > 0.7 && g < 0.15) this.gesture.set(i, 1);
+          const gv = Math.max(0, g - dt * 1.8);
+          this.gesture.set(i, gv);
+          const amp = 0.55 + plan.I * 0.6 + (plan.E === 'angry' ? 0.3 : 0);
+          const right = this.crowd.seed(i, Math.floor(at * 0.5)) > 0.5;
+          t.armR = (right ? gv : gv * 0.3) * amp; t.armL = (right ? gv * 0.3 : gv) * amp;
+          t.spreadR = t.spreadL = gv * 0.15;
+        }
+        if (plan.laughEnd && at > plan.end - 1.1) { t.bounce = 1; t.smile = 1; t.lid = 0.6; }
+      }
+      if (i === speaking) {
         t.open = Math.min(1, env * 1.15);
         t.shape = shape;
-        t.brow = (emo.brow ?? 0) + env * 0.15;
-        t.smile = emo.smile ?? 0.15;
-        t.lid = emo.lid ?? 1;
-        t.lean = (emo.lean ?? 0.15) + env * 0.1;
-        t.nod = Math.sin(at * 7.3) * env * 0.18;
-        // look at whoever they are answering, otherwise around the table
-        const look = replyTo !== undefined && replyTo >= 0 && replyTo !== i ? this.crowd.headPos(replyTo) : null;
-        t.yaw = look ? this.crowd.yawTo(i, look) : Math.sin(at * 0.35 + i) * 0.45;
-        // beat gestures on loud syllables
-        const g = this.gesture.get(i) ?? 0;
-        if (env > 0.72 && g < 0.15) this.gesture.set(i, 1);
-        const gv = Math.max(0, g - dt * 1.8);
-        this.gesture.set(i, gv);
-        const side = this.crowd.seed(i, Math.floor(at * 0.5)) > 0.5;
-        t.armR = side ? gv * 0.9 : gv * 0.25; t.armL = side ? gv * 0.25 : gv * 0.9;
-      } else {
-        t.open = 0; t.shape = 0;
-        t.yaw = sp ? this.crowd.yawTo(i, sp) : 0;
-        t.lean = 0.05; t.armL = 0; t.armR = 0;
-        let brow = 0, smile = 0.15, lid = 1;
-        if (stance === 'joke' || cur?.side.emotion === 'joyful') { smile = 0.75; lid = 0.9; }
-        if (stance === 'question') brow = 0.3;
-        if (i === replyTo && (stance === 'disagree' || stance === 'correct')) { brow = -0.45; smile = -0.1; }
-        const next = upcoming.get(i);
-        if (next === 'disagree' || next === 'correct') { brow = -0.35; lid = 0.85; }   // foreshadowing
-        if (stance === 'agree' || stance === 'praise') t.nod = Math.max(0, Math.sin(at * 2.2 + i)) * 0.12;
-        else t.nod = Math.sin(at * 0.9 + i * 1.7) * 0.03;
-        t.brow = brow; t.smile = smile; t.lid = lid;
+        t.brow = (voice.brow ?? 0) + env * 0.15 + (t.brow > 0.3 ? t.brow * 0.5 : 0);
+        t.smile = plan?.laughEnd && plan && at > plan.end - 1.1 ? 1 : voice.smile ?? 0.15;
+        t.lid = voice.lid ?? 1;
+        t.nod += Math.sin(at * 7.3) * env * 0.18;
+        if (!performing && plan && plan.S >= 0) t.yaw = this.crowd.yawTo(i, this.crowd.headPos(plan.S));   // a quoted line, said to its quoter
+        continue;
       }
+      if (performing) continue;
+      // listeners react to what's being said, and to whom
+      if (plan && inTurn) {
+        const strong = plan.I >= 0.6, pushback = plan.ST === 'disagree' || plan.ST === 'correct' || plan.E === 'angry';
+        if (i === plan.A) {
+          if (pushback && plan.E === 'angry' && strong) { t.brow = 0.55; t.lid = 1.22; t.lean = -0.3; t.smile = -0.1; }     // taken aback
+          else if (pushback) { t.brow = -0.5; t.smile = -0.15; t.lean = -0.12; if (plan.ST === 'correct' && !strong) pose('cross', t, 0.5, 0, false); }
+          else if (plan.ST === 'agree' || plan.ST === 'praise') { t.smile = 0.65; t.nod = Math.max(0, Math.sin(at * 2.4 + i)) * 0.14; }
+          else if (plan.ST === 'question') { t.tilt = 0.35; t.brow = 0.25; }
+        } else if (plan.E === 'angry' && strong) { t.brow = 0.45; t.lid = 1.15; t.lean = -0.2; }                            // whoa
+        else if (plan.ST === 'joke' || plan.E === 'joyful') t.smile = 0.6;
+        else if (plan.ST === 'question') t.tilt = 0.18;
+        else if (plan.ST === 'agree') t.nod = Math.max(0, Math.sin(at * 1.8 + i)) * 0.08;
+        if (plan.laughEnd && at > plan.end - 1.1 && this.crowd.seed(i, 7) < 0.65) { t.bounce = 1; t.smile = 1; t.lid = 0.55; }
+      }
+      const coming = upcoming.get(i);
+      if ((coming === 'disagree' || coming === 'correct') && t.brow >= 0 && i !== plan?.A) { t.brow = -0.35; t.lid = 0.85; }   // foreshadowing
     }
   }
 
@@ -289,18 +389,30 @@ export class Director {
 
   /** How good is a camera at p looking at `target`? -Infinity if it sits inside someone or outside the room. */
   private score(p: THREE.Vector3, target: THREE.Vector3, skip: Set<number>) {
-    if (p.x * p.x + p.z * p.z > (R - 0.35) ** 2 || p.y > this.roomY + FLOOR_H * 0.88 || p.y < this.roomY + 0.6) return -Infinity;
+    if (p.x * p.x + p.z * p.z > (R - 0.35) ** 2 || p.y > this.roomY + FLOOR_H * 0.88 || p.y < this.roomY + 0.55) return -Infinity;
     let sc = 0;
-    const seg = new THREE.Line3(p, target), q = new THREE.Vector3();
+    const seg = new THREE.Line3(p, target), axis = new THREE.Line3(), q = new THREE.Vector3(), q2 = new THREE.Vector3();
+    const view = target.clone().sub(p).normalize();
     for (let j = 0; j < this.crowd.people.length; j++) {
       const head = this.crowd.headPos(j), pose = this.crowd.people[j].pose;
-      const body = new THREE.Vector3(pose.pos.x, this.roomY + 0.75, pose.pos.z);
-      const near = Math.min(p.distanceTo(head), p.distanceTo(body));
-      if (skip.has(j)) { if (near < 0.32) return -Infinity; continue; }
-      if (near < 0.55) return -Infinity;
+      const stand = this.crowd.target(j)?.stand ?? 0;
+      const bottom = this.roomY + (pose.seated ? 0.42 * (1 - stand) : 0);
+      // each person is a capsule from seat (or floor) to the neck, plus a head
+      axis.start.set(head.x, bottom, head.z); axis.end.set(head.x, head.y - 0.2, head.z);
+      axis.closestPointToPoint(p, true, q);
+      const inBody = p.distanceTo(q) < 0.24 + 0.3, inHead = p.distanceTo(head) < 0.22 + 0.33;
+      if (skip.has(j)) { if (p.distanceTo(head) < 0.4 || p.distanceTo(q) < 0.3) return -Infinity; continue; }
+      if (inBody || inHead) return -Infinity;
+      // heads or torsos between the lens and the subject
       seg.closestPointToPoint(head, true, q);
       const d = q.distanceTo(head);
-      if (d < 0.3 && q.distanceTo(target) > 0.35) sc -= (0.3 - d) * 12;
+      if (d < 0.32 && q.distanceTo(target) > 0.35) sc -= (0.32 - d) * 12;
+      axis.closestPointToPoint(q.copy(target), true, q2);
+      seg.closestPointToPoint(q2, true, q);
+      if (q.distanceTo(q2) < 0.22 && q.distanceTo(target) > 0.4) sc -= 1.5;
+      // big out-of-focus heads looming in the near foreground
+      const rel = head.clone().sub(p), dist = rel.length();
+      if (dist < 1.1 && rel.normalize().dot(view) > 0.9) sc -= (1.1 - dist) * 4;
     }
     return sc;
   }
@@ -342,8 +454,17 @@ export class Director {
     const f = this.crowd.people[i].pose.facing + (this.crowd.target(i)?.yaw ?? 0) * 0.7;
     const face = new THREE.Vector3(Math.sin(f), 0, Math.cos(f));   // where their face is turned
     const target = head.clone().add(new THREE.Vector3(0, -0.05, 0));
-    this.frame(target, face.applyAxisAngle(new THREE.Vector3(0, 1, 0), i % 2 ? 0.3 : -0.3), 1.3, 0.06, 30, new Set([i]));
+    this.frame(target, face.applyAxisAngle(new THREE.Vector3(0, 1, 0), i % 2 ? 0.3 : -0.3), 1.45, 0.06, 31, new Set([i]));
     void now;
+  }
+
+  /** Low and a little wide: someone stood up to make their point. */
+  private hero(i: number) {
+    if (!this.spot || i < 0 || !this.crowd.people[i]) return;
+    const head = this.crowd.headPos(i), tg = this.crowd.target(i);
+    const f = this.crowd.people[i].pose.facing + (tg?.turn ?? 0) + (tg?.yaw ?? 0) * 0.5;
+    const target = head.clone().add(new THREE.Vector3(0, -0.12, 0));
+    this.frame(target, new THREE.Vector3(Math.sin(f), 0, Math.cos(f)), 1.9, -0.32, 40, new Set([i]));
   }
 
   private overShoulder(listener: number, speaker: number, now: number) {

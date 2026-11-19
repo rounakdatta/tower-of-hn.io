@@ -21,6 +21,8 @@ import soundfile as sf
 FPS = 30
 EMOTIONS = ["angry", "contemplative", "excited", "joyful", "mundane", "nervous", "sad", "stern", "surprised", "tender"]
 STANCES = ["agree", "disagree", "correct", "question", "joke", "inform", "expand", "praise"]
+CUES = ["question", "uncertain", "joke", "sarcasm", "frustrated", "insult", "praise", "list", "story"]
+SPEECH_PACE = float(os.environ.get("PACE", "1.12"))   # everyone talks a little brisker than Kokoro's default
 SPEED = {"excited": 1.07, "joyful": 1.04, "angry": 1.05, "nervous": 1.08, "surprised": 1.04,
          "contemplative": 0.95, "sad": 0.93, "tender": 0.95, "stern": 0.99, "mundane": 1.0}
 FEMALE = ["af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole", "af_nova", "af_river",
@@ -48,7 +50,7 @@ class Voices:
             w = 0.55 + (h32(user, "w") % 1000) / 1000 * 0.35
             style = self.k.get_voice_style(a) * w + self.k.get_voice_style(b) * (1 - w)
             lang = "en-gb" if a.startswith("b") else "en-us"
-            pace = 0.96 + (h32(user, "p") % 1000) / 1000 * 0.1
+            pace = (0.96 + (h32(user, "p") % 1000) / 1000 * 0.1) * SPEECH_PACE
             self.cache[user] = (style.astype(np.float32), lang, pace, f"{a}+{b}@{w:.2f}")
         return self.cache[user]
 
@@ -88,7 +90,7 @@ class OpenAITTS:
         voice, who_desc = persona(who)
         body = {"model": "gpt-4o-mini-tts", "voice": voice, "input": text, "response_format": "wav",
                 "instructions": f"You are {who_desc}. Read this comment you wrote, aloud, as your turn in a lively conversation at a table. "
-                                f"Deliver it {DELIVERY.get(emotion, DELIVERY['mundane'])}. Sound like a real person talking, not someone reading."}
+                                f"Deliver it {DELIVERY.get(emotion, DELIVERY['mundane'])}, at a brisk, natural conversational pace. Sound like a real person talking, not someone reading."}
         req = urllib.request.Request("https://api.openai.com/v1/audio/speech", data=json.dumps(body).encode(),
                                      headers={"Authorization": f"Bearer {self.key}", "content-type": "application/json"})
         data = urllib.request.urlopen(req, timeout=120).read()
@@ -99,48 +101,101 @@ class OpenAITTS:
 
 
 def heuristic_tag(text):
+    """(emotion, stance, intensity 0..1, cues) without an LLM."""
     t = text.strip()
     low = t.lower()
-    if re.search(r"\b(lol|haha|lmao|:\)|😂)", low):
-        return "joyful", "joke"
-    if t.endswith("?") or low.startswith(("why ", "how ", "what ", "is ", "does ", "do ", "can ")):
-        return "contemplative", "question"
+    caps = len(re.findall(r"\b[A-Z]{3,}\b", t))
+    bangs = t.count("!")
+    cues = []
+    if t.rstrip().endswith("?"):
+        cues.append("question")
+    if re.search(r"\b(i don't know|not sure|maybe|who knows|no idea|i guess)\b", low):
+        cues.append("uncertain")
+    if re.search(r"\b(lol|haha|lmao)\b|:\)|😂", low):
+        cues.append("joke")
+    angry = re.search(r"\b(absurd|ridiculous|nonsense|insane|stupid|idiotic|garbage|bullshit|wtf|outrageous|disgusting)\b", low)
+    intensity = min(1.0, 0.25 + 0.15 * bangs + 0.12 * caps + (0.35 if angry else 0))
+    if angry or (caps >= 2 and bangs >= 1):
+        return "angry", "disagree", max(intensity, 0.7), cues + ["frustrated"]
+    if "joke" in cues:
+        return "joyful", "joke", intensity, cues
+    if "question" in cues or low.startswith(("why ", "how ", "what ", "is ", "does ", "do ", "can ")):
+        return "contemplative", "question", intensity, cues
     if low.startswith(("no,", "no.", "not ", "actually", "that's not", "this is wrong", "wrong")):
-        return "stern", "correct"
-    if re.search(r"\b(yes|exactly|agreed|this\.|great|love)\b", low):
-        return "joyful", "agree"
-    if t.count("!") >= 2:
-        return "excited", "inform"
-    return "mundane", "inform"
+        return "stern", "correct", max(intensity, 0.5), cues
+    if re.search(r"\b(yes|exactly|agreed|great point|this\.|love)\b", low):
+        return "joyful", "agree", intensity, cues + ["praise"]
+    if bangs >= 2:
+        return "excited", "inform", intensity, cues
+    return "mundane", "inform", intensity, cues
 
 
 def llm_tags(batch, key):
-    """One call for a table's batch: delivery + stance per comment, judged in context."""
-    if not key:
-        return {}
+    """One call for a table's batch: delivery, stance, intensity and cues per comment, judged in context."""
     lines = []
     for j in batch:
         said = " ".join(s.get("text", "") for s in j["segments"] if s["kind"] in ("say", "quote"))[:600]
         lines.append(f'{j["id"]} | {j["by"]} replying to {j.get("parentBy") or "the story"}: {said}')
-    prompt = ("Consecutive comments from one Hacker News thread. For each, choose how a voice actor should deliver it "
-              f"(emotion, one of: {', '.join(EMOTIONS)}) and its stance toward what it replies to (one of: {', '.join(STANCES)}). "
-              "Dry snark reads as stern or mundane, a correction as stern, musing as contemplative, jokes as joyful. "
-              'Reply with JSON only: {"<id>": ["<emotion>", "<stance>"], ...}\n\n' + "\n".join(lines))
+    prompt = ("Consecutive comments from one Hacker News thread, about to be performed by actors seated at a table. For each comment, "
+              f"judge: e = how the actor should deliver it (one of: {', '.join(EMOTIONS)}); "
+              f"s = its stance toward what it replies to (one of: {', '.join(STANCES)}); "
+              "i = intensity from 0.0 (flat, neutral) to 1.0 (heated, emphatic, shouting); "
+              f"c = any cues that apply (from: {', '.join(CUES)}). "
+              "Dry snark is stern or mundane with the sarcasm cue; a correction is stern; musing is contemplative; jokes are joyful. "
+              "Use angry only when the writing is genuinely heated (insults, outrage, exasperation), and then give a high intensity. "
+              'Reply with JSON only: {"<id>": {"e": "...", "s": "...", "i": 0.0, "c": []}, ...}\n\n' + "\n".join(lines))
+    parsed = claude_json(prompt)
+    if parsed is not None:
+        return parse_tags(parsed)
+    if not key:
+        return {}
     body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2}}
     for model in ("gemini-3.5-flash-lite", "gemini-2.5-flash-lite"):
         try:
             req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                                          data=json.dumps(body).encode(), headers={"x-goog-api-key": key, "content-type": "application/json"})
             j = json.load(urllib.request.urlopen(req, timeout=60))
-            raw = json.loads(j["candidates"][0]["content"]["parts"][0]["text"])
-            out = {}
-            for k, v in raw.items():
-                if isinstance(v, list) and len(v) == 2 and v[0] in EMOTIONS:
-                    out[int(k)] = (v[0], v[1] if v[1] in STANCES else "inform")
-            return out
+            return parse_tags(json.loads(j["candidates"][0]["content"]["parts"][0]["text"]))
         except Exception as e:  # noqa: BLE001
             print("tagger", model, str(e)[:160], file=sys.stderr, flush=True)
     return {}
+
+
+def claude_json(prompt):
+    """Claude via Rounak's auth2api gateway (in-cluster URL, no rate limiter); None if unavailable."""
+    key = os.environ.get("AUTH2API_KEY", "")
+    kf = os.path.expanduser("~/.cache/tohn-auth2api.key")
+    if not key and os.path.exists(kf):
+        key = open(kf).read().strip()
+    if not key:
+        return None
+    url = os.environ.get("AUTH2API_URL", "http://auth2api.apps.svc.cluster.local:8317") + "/v1/messages"
+    body = {"model": os.environ.get("TAG_MODEL", "claude-haiku-5-5"), "max_tokens": 1500,
+            "messages": [{"role": "user", "content": prompt}]}
+    try:
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={
+            "x-api-key": key, "content-type": "application/json", "anthropic-version": "2023-06-01"})
+        j = json.load(urllib.request.urlopen(req, timeout=90))
+        text = "".join(c.get("text", "") for c in j.get("content", []) if c.get("type") == "text")
+        return json.loads(text[text.index("{"): text.rindex("}") + 1])
+    except Exception as e:  # noqa: BLE001
+        print("tagger claude", str(e)[:160], file=sys.stderr, flush=True)
+        return None
+
+
+def parse_tags(raw):
+    out = {}
+    if True:
+        if True:
+            for k, v in raw.items():
+                if isinstance(v, dict) and v.get("e") in EMOTIONS:
+                    try:
+                        inten = max(0.0, min(1.0, float(v.get("i", 0.4))))
+                    except (TypeError, ValueError):
+                        inten = 0.4
+                    cues = [c for c in (v.get("c") or []) if c in CUES]
+                    out[int(k)] = (v["e"], v.get("s") if v.get("s") in STANCES else "inform", inten, cues)
+    return out
 
 
 def sentences(text):
@@ -251,14 +306,19 @@ def main(var):
                 batch.append(j)
             if len(batch) >= 8:
                 break
-        wait = 4 - (time.time() - last_llm)
-        if key and wait > 0:
+        wait = 1 - (time.time() - last_llm)
+        if wait > 0:
             time.sleep(wait)
-        tags = llm_tags(batch, key) if key else {}
+        tags = llm_tags(batch, key)
         last_llm = time.time()
-        for j in batch:
+        for bi, j in enumerate(batch):
+            # someone just sat at another table: yield to them between comments
+            if bi:
+                pending = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json"))
+                if pending and pending[0] < batch[0]["_file"] and not any(pending[0] == b["_file"] for b in batch):
+                    break
             t0 = time.time()
-            emotion, stance = tags.get(j["id"]) or heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
+            emotion, stance, intensity, cues = tags.get(j["id"]) or heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
             clips_out, total = [], 0.0
             for k, (spoken, shown, who) in enumerate(plan_clips(j)):
                 try:
@@ -267,7 +327,7 @@ def main(var):
                     else:
                         style, lang, pace, _ = voices.of(who)
                         speed = pace * SPEED.get(emotion, 1.0) * (0.97 if who != j["by"] else 1.0)
-                        audio, sr = kokoro.create(spoken, voice=style, speed=speed, lang=lang)
+                        audio, sr = kokoro.create(spoken, voice=style, speed=speed, lang=lang, sentence_pause=0.16, clause_pause=0.07)
                 except Exception as e:  # noqa: BLE001
                     print("tts failed", j["id"], str(e)[:120], file=sys.stderr, flush=True)
                     continue
@@ -283,6 +343,7 @@ def main(var):
                                   "env": [int(v * 255) for v in env], "shape": [int((v + 1) * 127.5) for v in shp]})
                 total += d
             side = {"id": j["id"], "rev": j["rev"], "by": j["by"], "emotion": emotion, "stance": stance,
+                    "intensity": round(intensity, 2), "cues": cues,
                     "dur": round(total, 3), "clips": clips_out,
                     "links": [s for s in j["segments"] if s["kind"] == "link"],
                     "code": [s["code"] for s in j["segments"] if s["kind"] == "code"]}
@@ -296,7 +357,7 @@ def main(var):
                 os.remove(os.path.join(jobs_dir, j["_file"]))
             except FileNotFoundError:
                 pass
-            print(json.dumps({"id": j["id"], "by": j["by"], "emotion": emotion, "stance": stance, "clips": len(clips_out),
+            print(json.dumps({"id": j["id"], "by": j["by"], "emotion": emotion, "stance": stance, "i": round(intensity, 2), "cues": cues, "clips": len(clips_out),
                               "audio_s": round(total, 1), "wall_s": round(time.time() - t0, 1),
                               "voice": voices.of(j["by"])[3] if voices else persona(j["by"])[0]}), flush=True)
 

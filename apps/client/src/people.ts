@@ -38,7 +38,14 @@ export interface Pose {
 }
 
 /** Live expression of one person, eased toward targets every frame. */
-export interface Expr { open: number; shape: number; brow: number; smile: number; lid: number; yaw: number; nod: number; lean: number; armL: number; armR: number }
+export interface Expr {
+  open: number; shape: number; brow: number; smile: number; lid: number;                // face
+  yaw: number; nod: number; tilt: number;                                                // head
+  lean: number; turn: number; stand: number; bounce: number;                             // body
+  armL: number; armR: number; spreadL: number; spreadR: number; aimR: number;           // arms
+}
+export const NEUTRAL: Expr = { open: 0, shape: 0, brow: 0, smile: 0.15, lid: 1, yaw: 0, nod: 0, tilt: 0, lean: 0, turn: 0, stand: 0, bounce: 0, armL: 0, armR: 0, spreadL: 0, spreadR: 0, aimR: 0 };
+const STAND_TALL = 2.35;           // a standing body vs a seated one (the chair hides the legs)
 
 interface Person { name: string; look: Look; pose: Pose; parts: { hair: number; glasses: number; beard: number; hood: number }; expr: Expr; target: Expr }
 
@@ -211,7 +218,7 @@ export class Crowd {
     for (let i = 0; i < n; i++) {
       const { name, pose } = people[i];
       const look = lookOf(name);
-      const neutral: Expr = { open: 0, shape: 0, brow: 0, smile: 0.15, lid: 1, yaw: 0, nod: 0, lean: 0, armL: 0, armR: 0 };
+      const neutral: Expr = { ...NEUTRAL };
       const parts = { hair: look.style > 0 ? hairCount[look.style]++ : -1, glasses: look.glasses ? g++ : -1, beard: -1, hood: look.hood ? hd++ : -1 };
       this.people.push({ name, look, pose, parts, expr: { ...neutral }, target: { ...neutral } });
       (this.bodies.instanceColor!.array as Float32Array).set([look.outfit.r, look.outfit.g, look.outfit.b], i * 3);
@@ -242,7 +249,7 @@ export class Crowd {
     for (const i of this.active) {
       const p = this.people[i];
       if (!p) continue;
-      for (const x of [p.expr, p.target]) Object.assign(x, { open: 0, shape: 0, brow: 0, smile: 0.15, lid: 1, nod: 0, lean: 0, armL: 0, armR: 0 });
+      for (const x of [p.expr, p.target]) Object.assign(x, NEUTRAL);
       this.writeExpr(i);
       this.place(i);
     }
@@ -252,11 +259,21 @@ export class Crowd {
   }
 
   index(name: string) { return this.people.findIndex((p) => p.name === name); }
+  /** Seated people can stand: the chair steps back and the body rises. */
+  private stature(p: Person) {
+    const st = p.pose.seated ? p.expr.stand : 1;
+    return { lift: p.pose.seated ? 0.42 * (1 - st) : 0, tall: 1 + (STAND_TALL - 1) * st, back: p.pose.seated ? 0.22 * st : 0, st };
+  }
+
   headPos(i: number, out = new THREE.Vector3()) {
     const p = this.people[i];
     if (!p) return out.set(0, 0, 0);
-    const lift = p.pose.seated ? 0.42 : 0.0, tall = p.pose.seated ? 1 : 1.75;
-    return out.set(p.pose.pos.x, this.group.position.y + p.pose.pos.y + lift + 0.54 * p.look.height * tall + 0.17, p.pose.pos.z);
+    const { lift, tall, back } = this.stature(p);
+    const yb = p.pose.facing + p.expr.turn, bodyH = 0.54 * p.look.height * tall, pitch = p.expr.lean * 0.25;
+    const off = Math.sin(pitch) * bodyH;
+    return out.set(p.pose.pos.x - Math.sin(p.pose.facing) * back + Math.sin(yb) * off,
+      this.group.position.y + p.pose.pos.y + lift + bodyH * Math.cos(pitch) + 0.17,
+      p.pose.pos.z - Math.cos(p.pose.facing) * back + Math.cos(yb) * off);
   }
 
   /** Where person i should look to face world point `t` (yaw relative to their body). */
@@ -268,37 +285,40 @@ export class Crowd {
 
   target(i: number) { return this.people[i]?.target; }
 
-  /** Place person i: body, head (with yaw/nod), hair, glasses, beard, arms. */
+  /** Place person i: body (turned, leaning, maybe standing), head, hair, glasses, arms and hands. */
   private place(i: number) {
     const p = this.people[i], { pose, look, expr } = p;
-    const lift = pose.seated ? 0.42 : 0.0, tall = pose.seated ? 1 : 1.75;
-    const bodyH = 0.54 * look.height * tall;
-    this.e.set(expr.lean * 0.25, pose.facing, 0, 'YXZ'); this.q.setFromEuler(this.e);
-    this.v.set(pose.pos.x, pose.pos.y + lift, pose.pos.z);
+    const { lift, tall, back, st } = this.stature(p);
+    const t = uTimeValue();
+    const yb = pose.facing + expr.turn;
+    const bob = expr.bounce * Math.abs(Math.sin(t * 13 + look.phase * 5)) * 0.035;      // laughter
+    const bx = pose.pos.x - Math.sin(pose.facing) * back, bz = pose.pos.z - Math.cos(pose.facing) * back;
+    const bodyH = 0.54 * look.height * tall, pitch = expr.lean * 0.25;
+    this.e.set(pitch, yb, 0, 'YXZ'); this.q.setFromEuler(this.e);
+    this.v.set(bx, pose.pos.y + lift + bob, bz);
     this.bodies.setMatrixAt(i, this.m.compose(this.v, this.q, this.s.set(look.width, look.height * tall, look.width)));
     if (p.parts.hood >= 0) {
-      this.e.set(0.15, pose.facing, 0, 'YXZ'); this.q.setFromEuler(this.e);
-      this.v.set(pose.pos.x - Math.sin(pose.facing) * 0.03, pose.pos.y + lift + 0.54 * look.height * tall * 0.93, pose.pos.z - Math.cos(pose.facing) * 0.03);
+      this.e.set(0.15 + pitch, yb, 0, 'YXZ'); this.q.setFromEuler(this.e);
+      this.v.set(bx - Math.sin(yb) * 0.03, pose.pos.y + lift + bob + bodyH * 0.93, bz - Math.cos(yb) * 0.03);
       this.hoods.setMatrixAt(p.parts.hood, this.m.compose(this.v, this.q, this.s.set(look.width, 1, look.width)));
     }
-    // head
-    const leanOff = Math.sin(expr.lean * 0.25) * 0.3;
-    const hx = pose.pos.x + Math.sin(pose.facing) * leanOff, hz = pose.pos.z + Math.cos(pose.facing) * leanOff;
-    this.e.set(expr.nod * 0.35 + expr.lean * 0.1, pose.facing + clampYaw(expr.yaw), Math.sin(uTimeValue() * 0.7 + look.phase * 9) * 0.03, 'YXZ');
+    // head: follows the lean, turns further than the torso, tilts, tips back when laughing
+    const off = Math.sin(pitch) * bodyH;
+    this.e.set(expr.nod * 0.35 + expr.lean * 0.1 - expr.bounce * 0.22, yb + clampYaw(expr.yaw), expr.tilt * 0.32 + Math.sin(t * 0.7 + look.phase * 9) * 0.03, 'YXZ');
     this.q.setFromEuler(this.e);
-    this.v.set(hx, pose.pos.y + lift + bodyH + 0.17, hz);
+    this.v.set(bx + Math.sin(yb) * off, pose.pos.y + lift + bodyH * Math.cos(pitch) + 0.17 + bob * 1.3, bz + Math.cos(yb) * off);
     this.m.compose(this.v, this.q, this.s.set(1, 1, 1));
     this.heads.setMatrixAt(i, this.m);
     if (p.parts.hair >= 0) this.hair[look.style].setMatrixAt(p.parts.hair, this.m);
     if (p.parts.glasses >= 0) this.glasses.setMatrixAt(p.parts.glasses, this.m);
     if (p.parts.beard >= 0) this.beards.setMatrixAt(p.parts.beard, this.m);
-    // arms: hang at the sides, swing forward to gesture
+    // arms: lift forward, spread out (or across), and the right one can aim at someone
+    const armY = 1 + 0.3 * st;
     for (const side of [-1, 1]) {
-      const swing = side < 0 ? expr.armL : expr.armR;
-      this.e.set(-0.25 - swing * 1.1, pose.facing, side * (0.18 + swing * 0.25), 'YXZ'); this.q.setFromEuler(this.e);
+      const lift_ = side < 0 ? expr.armL : expr.armR, spread = side < 0 ? expr.spreadL : expr.spreadR, aim = side > 0 ? expr.aimR : 0;
+      this.e.set(-0.25 - lift_ * 1.1 + pitch, yb + aim, side * (0.18 + spread * 0.9), 'YXZ'); this.q.setFromEuler(this.e);
       const sx = side * 0.19 * look.width;
-      this.v.set(pose.pos.x + Math.cos(pose.facing) * sx, pose.pos.y + lift + bodyH * 0.82, pose.pos.z - Math.sin(pose.facing) * sx);
-      const armY = tall > 1 ? 1.3 : 1;
+      this.v.set(bx + Math.cos(yb) * sx + Math.sin(yb) * off * 0.8, pose.pos.y + lift + bob + bodyH * 0.82, bz - Math.sin(yb) * sx + Math.cos(yb) * off * 0.8);
       this.arms.setMatrixAt(i * 2 + (side < 0 ? 0 : 1), this.m.compose(this.v, this.q, this.s.set(1, armY, 1)));
       const hand = new THREE.Vector3(0, -0.335 * armY, 0).applyQuaternion(this.q).add(this.v);
       this.hands.setMatrixAt(i * 2 + (side < 0 ? 0 : 1), this.m.compose(hand, this.q, this.s.set(1, 1, 1)));
@@ -322,8 +342,12 @@ export class Crowd {
       e.open += (t.open - e.open) * Math.min(1, k * 1.6);
       e.shape += (t.shape - e.shape) * k;
       e.brow += (t.brow - e.brow) * kSlow; e.smile += (t.smile - e.smile) * kSlow; e.lid += (t.lid - e.lid) * kSlow;
+      const kTurn = 1 - Math.exp(-dt * 4), kStand = 1 - Math.exp(-dt * 3.2), kArm = k * 0.55;
       e.yaw += (t.yaw - e.yaw) * kSlow; e.nod += (t.nod - e.nod) * k; e.lean += (t.lean - e.lean) * kSlow;
-      e.armL += (t.armL - e.armL) * k * 0.6; e.armR += (t.armR - e.armR) * k * 0.6;
+      e.tilt += (t.tilt - e.tilt) * kSlow; e.turn += (t.turn - e.turn) * kTurn; e.stand += (t.stand - e.stand) * kStand;
+      e.bounce += (t.bounce - e.bounce) * k * 0.6;
+      e.armL += (t.armL - e.armL) * kArm; e.armR += (t.armR - e.armR) * kArm;
+      e.spreadL += (t.spreadL - e.spreadL) * kArm; e.spreadR += (t.spreadR - e.spreadR) * kArm; e.aimR += (t.aimR - e.aimR) * kSlow;
       this.writeExpr(i);
       this.place(i);
     }

@@ -49,7 +49,7 @@ test('play order: depth-first, quick replies, a beat when backtracking; dead com
   ] };
   const o = playOrder(t);
   assert.deepEqual(o.map((x) => x.id), [1, 2, 3, 5]);
-  assert.deepEqual(o.map((x) => x.gapMs), [0, 280, 280, 1100]);
+  assert.deepEqual(o.map((x) => x.gapMs), [0, 220, 220, 800]);
   assert.equal(o[3].replyTo, 1);
   assert.deepEqual(seat(o, 2), { seated: ['a', 'b'], standing: ['d'] });
 });

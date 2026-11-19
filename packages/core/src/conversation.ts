@@ -13,7 +13,7 @@ export interface Turn {
   gapMs: number;
 }
 
-const GAP = { reply: 280, sibling: 650, backtrack: 1100 };
+const GAP = { reply: 220, sibling: 480, backtrack: 800 };   // brisk, like people who know each other
 
 /**
  * Depth-first in HN's own order (kids arrive ranked best-first from the API),
