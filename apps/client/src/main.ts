@@ -101,6 +101,9 @@ sync.onHead = (h: Head, prev) => {
   tower.setOrder(h.tower, h.stories, h.act, clock, camDir2());
   const act = Object.values(h.act).reduce((a, b) => a + b, 0);
   ui.live(`live · ${act} comments in the last 15 minutes`);
+  const talking = h.tower.reduce((n, id) => n + (h.stories[id]?.[2] ?? 0), 0);
+  const st = document.getElementById('stats');
+  if (st) st.textContent = `${h.tower.length} floors · ${talking.toLocaleString()} comments · ${act} in the last 15 minutes`;
   if (prev && mode !== 'tower' && activeStory >= 0 && !h.tower.includes(activeStory)) ui.hint('This story just left the front page.');
 };
 sync.onDelta = (d) => {
@@ -250,6 +253,17 @@ addEventListener('keydown', (e) => {
   else if (e.key === ' ' && mode === 'table') { e.preventDefault(); director.togglePause(); }
   else if ((e.key === 'n' || e.key === 'N') && mode === 'table') nextTable();
   else if (e.key === 'm' || e.key === 'M') audio.setMuted(!audio.muted);
+  else if (mode === 'tower' && sync.head && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Enter')) {
+    e.preventDefault();
+    const order = sync.head.tower;
+    const cur = hoverSlot >= 0 ? order.indexOf(tower.slots[hoverSlot].sid ?? -1) : -1;
+    if (e.key === 'Enter') { if (cur >= 0) enterFloor(order[cur]); return; }
+    const rank = Math.max(0, Math.min(order.length - 1, cur < 0 ? 0 : cur + (e.key === 'ArrowUp' ? -1 : 1)));
+    const sid = order[rank], s = sync.head.stories[sid];
+    hoverSlot = tower.slotOf.get(sid) ?? -1;
+    tower.setSelected(hoverSlot); audio.sfx('tick');
+    if (s) ui.tip({ rank: rank + 1, title: s[0], url: s[4], score: s[1], comments: s[2], act: sync.head.act[sid] ?? 0 }, innerWidth * 0.58, innerHeight * 0.42);
+  }
 });
 
 // hover + click on the tower
