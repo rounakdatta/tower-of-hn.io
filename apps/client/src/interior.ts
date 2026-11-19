@@ -7,7 +7,7 @@ import { R, FLOOR_H, uTime } from './world.ts';
 import type { Floor, Table } from './sync.ts';
 import type { Pose } from './people.ts';
 
-export interface TableSpot { index: number; table: Table; pos: THREE.Vector3; radius: number; seats: { name: string; pos: THREE.Vector3; facing: number; seated: boolean }[]; bar: boolean; /** bar only: comment -> its table */ tableOf?: Map<number, number> }
+export interface TableSpot { index: number; table: Table; pos: THREE.Vector3; radius: number; seats: { name: string; pos: THREE.Vector3; facing: number; seated: boolean; chair?: number }[]; bar: boolean; /** bar only: comment -> its table */ tableOf?: Map<number, number> }
 
 const MAX_TABLES = 10, MAX_BAR = 12, BAR_ANGLE = -Math.PI / 2, BAR_SPAN = 1.25;
 
@@ -17,6 +17,7 @@ export class Interior {
   private chairMesh: THREE.InstancedMesh;
   private lampMesh: THREE.InstancedMesh;
   private lights: THREE.PointLight[] = [];
+  private chairAt: { pos: THREE.Vector3; facing: number }[] = [];      // where each chair stands (room space) when tucked in
   spots: TableSpot[] = [];
 
   constructor() {
@@ -93,21 +94,46 @@ export class Interior {
     this.group.visible = false;
   }
 
+  /** Someone stands up: their chair scrapes back and twists a little (k = 0 tucked in, 1 pushed back). */
+  pushChair(i: number, k: number, upload = true) {
+    const c = this.chairAt[i];
+    if (!c) return;
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), c.facing + 0.28 * k * (i % 2 ? 1 : -1));
+    const p = c.pos.clone().sub(new THREE.Vector3(Math.sin(c.facing), 0, Math.cos(c.facing)).multiplyScalar(0.46 * k));
+    this.chairMesh.setMatrixAt(i, m.compose(p, q, new THREE.Vector3(1, 1, 1)));
+    if (upload) this.chairMesh.instanceMatrix.needsUpdate = true;
+  }
+
   /** Lay the room out for this floor and return where everyone stands or sits. */
   layout(floor: Floor, yaw = 0): { spots: TableSpot[]; people: { name: string; pose: Pose }[] } {
-    const convo = floor.tables.map((t, i) => ({ t, i })).filter(({ t }) => t.turns.length >= 2).slice(0, MAX_TABLES);
+    const convoAll = floor.tables.map((t, i) => ({ t, i })).filter(({ t }) => t.turns.length >= 2);
     const remarks = floor.tables.map((t, i) => ({ t, i })).filter(({ t }) => t.turns.length === 1).slice(0, MAX_BAR);
-    // conversation tables on two rings, keeping clear of the bar at the back
+    // conversation tables, packed: the best thread nearest the front, the rest wherever they fit without anyone's
+    // chair (pushed back when they stand up) or standing crowd touching the next table's, the bar or the windows
     const places: THREE.Vector3[] = [];
-    const inner = Math.min(3, convo.length), outer = convo.length - inner;
-    for (let k = 0; k < inner; k++) {
-      const a = Math.PI / 2 + (k - (inner - 1) / 2) * 1.25;
-      places.push(new THREE.Vector3(Math.cos(a) * 1.9, 0, Math.sin(a) * 1.9 + 0.3));
+    const foot = (t: Table) => 0.42 + Math.min(8, t.seated.length) * 0.055 + (t.standing.length ? 1.22 : 0.8);
+    const front = new THREE.Vector3(0, 0, 1.2), cand: THREE.Vector3[] = [];
+    for (let r = 0; r <= R - 1.2; r += 0.2) {
+      const n = Math.max(1, Math.floor((2 * Math.PI * r) / 0.2));
+      for (let k = 0; k < n; k++) { const a = (k / n) * Math.PI * 2 + r; cand.push(new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r)); }
     }
-    for (let k = 0; k < outer; k++) {
-      const span = Math.PI * 1.25, a = Math.PI / 2 - span / 2 + (outer === 1 ? span / 2 : (k / (outer - 1)) * span);
-      places.push(new THREE.Vector3(Math.cos(a) * 4.5, 0, Math.sin(a) * 4.5 + 0.2));
+    cand.sort((x, y) => x.distanceTo(front) - y.distanceTo(front));
+    const barAt = (c: THREE.Vector3, f: number) => {
+      for (let a = BAR_ANGLE - BAR_SPAN / 2 - 0.1; a <= BAR_ANGLE + BAR_SPAN / 2 + 0.1; a += 0.05) {
+        if (Math.hypot(c.x - Math.cos(a) * (R - 1.6), c.z - Math.sin(a) * (R - 1.6)) < f + 0.45) return true;
+      }
+      return false;
+    };
+    const fits: typeof convoAll = [];
+    const feet: number[] = [];
+    for (const it of convoAll) {
+      const f = foot(it.t);
+      const c = cand.find((c) => c.length() + f < R - 0.4 && !barAt(c, f) && places.every((p, k) => p.distanceTo(c) > feet[k] + f + 0.1));
+      if (!c) continue;                                  // the room is full: lower-ranked threads wait for another visit
+      places.push(c.clone()); feet.push(f); fits.push(it);
+      if (fits.length >= MAX_TABLES) break;
     }
+    const convo = fits;
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
     const people: { name: string; pose: Pose }[] = [];
     const spots: TableSpot[] = [];
@@ -123,9 +149,11 @@ export class Interior {
         const a = (j / seated.length) * Math.PI * 2 + k * 0.7;
         const p = pos.clone().add(new THREE.Vector3(Math.cos(a) * (radius + 0.3), 0, Math.sin(a) * (radius + 0.3)));
         const facing = Math.atan2(pos.x - p.x, pos.z - p.z);
-        seats.push({ name, pos: p, facing, seated: true });
-        q.setFromAxisAngle(up, facing);
-        if (chair < 160) this.chairMesh.setMatrixAt(chair++, m.compose(p.clone().sub(new THREE.Vector3(Math.sin(facing), 0, Math.cos(facing)).multiplyScalar(0.02)), q, s.set(1, 1, 1)));
+        seats.push({ name, pos: p, facing, seated: true, chair: chair < 160 ? chair : undefined });
+        if (chair < 160) {
+          this.chairAt[chair] = { pos: p.clone().sub(new THREE.Vector3(Math.sin(facing), 0, Math.cos(facing)).multiplyScalar(0.02)), facing };
+          this.pushChair(chair++, 0, false);
+        }
       });
       standing.forEach((name, j) => {
         const a = (j / Math.max(1, standing.length)) * Math.PI * 2 + 0.4 + k;

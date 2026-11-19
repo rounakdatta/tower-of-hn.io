@@ -57,7 +57,8 @@
   #lbt { top:0 } #lbb { bottom:0 }
   body[data-mode="table"] .lb { height:8.5vh }
   #brand { transition:opacity .6s } body[data-mode="table"] #brand { opacity:0 }
-  body[data-mode="table"] #floorbar { top:calc(8.5vh + 10px) }
+  body[data-mode="table"] #floorbar { top:calc(8.5vh / 2 - 17px); padding:4px 5px 4px 14px; background:rgba(255,255,255,.05); font-size:13px }
+  body[data-mode="table"] #floorbar .pill { padding:4px 11px; font-size:12px }
 
   #subs { position:fixed; left:50%; bottom:calc(8.5vh + 22px); transform:translateX(-50%); width:min(880px, 92vw); text-align:center; z-index:3; pointer-events:none;
           opacity:0; transition:opacity .25s; font-size:clamp(16px, 2.1vw, 21px); line-height:1.42; text-shadow:0 2px 6px rgba(0,0,0,.9), 0 0 24px rgba(0,0,0,.7) }

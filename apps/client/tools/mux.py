@@ -17,7 +17,25 @@ track = np.zeros(int(n / fps * sr) + sr, dtype=np.float32)
 rng = np.random.default_rng(7)
 room = np.convolve(rng.standard_normal(len(track)), np.ones(400) / 400, mode="same").astype(np.float32)
 track += room / (np.abs(room).max() + 1e-9) * 0.012
+def chair():
+    """The client's chair scrape (audio.ts sfxAt), rebuilt offline: a slowing saw through two wooden resonances."""
+    d = 0.44
+    t = np.arange(int(d * sr)) / sr
+    phase = np.cumsum(58 + (34 - 58) * np.minimum(t / 0.4, 1)) / sr
+    x = 2 * (phase % 1) - 1 + rng.standard_normal(len(t)) * 0.35
+    X, fr = np.fft.rfft(x), np.fft.rfftfreq(len(x), 1 / sr)
+    y = np.fft.irfft(X * (np.exp(-((fr - 620) / 110) ** 2) + 0.6 * np.exp(-((fr - 1450) / 150) ** 2)), len(x))
+    y *= np.interp(t, [0, 0.04, 0.26, d], [0, 1, 0.7, 0])
+    return (y / (np.abs(y).max() + 1e-9) * 0.16).astype(np.float32)
+
+SFX = {"sfx:chair": chair()}
 for c in meta["timeline"]:
+    if c["url"] in SFX:
+        at = int((c["when"] - clock0) * sr)
+        if 0 <= at < len(track):
+            seg = SFX[c["url"]][: len(track) - at]
+            track[at: at + len(seg)] += seg
+        continue
     rel = c["url"].split("/live/", 1)[-1]
     path = os.path.join(var, "live", rel)
     if not os.path.exists(path):

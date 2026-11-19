@@ -22,6 +22,25 @@ const FACE: Record<string, Partial<Expr>> = {
   tender: { brow: 0.2, smile: 0.5, lid: 0.9 },
 };
 
+interface Subject { i: number; head: THREE.Vector3; face?: THREE.Vector3; w: number }
+/** distance from point c to segment ab, and where along ab (0..1) it is closest */
+function segPoint(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3): [number, number] {
+  const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+  const t = Math.max(0, Math.min(1, ((c.x - a.x) * abx + (c.y - a.y) * aby + (c.z - a.z) * abz) / (abx * abx + aby * aby + abz * abz || 1)));
+  return [Math.hypot(a.x + abx * t - c.x, a.y + aby * t - c.y, a.z + abz * t - c.z), t];
+}
+/** distance between segment ab and segment (cx,cy,cz)-(dx,dy,dz), and where along ab it is closest (Ericson 5.1.9) */
+function segSeg(a: THREE.Vector3, b: THREE.Vector3, cx: number, cy: number, cz: number, dx: number, dy: number, dz: number): [number, number] {
+  const d1x = b.x - a.x, d1y = b.y - a.y, d1z = b.z - a.z, d2x = dx - cx, d2y = dy - cy, d2z = dz - cz;
+  const rx = a.x - cx, ry = a.y - cy, rz = a.z - cz;
+  const A = d1x * d1x + d1y * d1y + d1z * d1z, E = d2x * d2x + d2y * d2y + d2z * d2z, F = d2x * rx + d2y * ry + d2z * rz;
+  const C = d1x * rx + d1y * ry + d1z * rz, B = d1x * d2x + d1y * d2y + d1z * d2z, den = A * E - B * B;
+  const cl = (x: number) => Math.max(0, Math.min(1, x));
+  let s = den > 1e-9 ? cl((B * F - C * E) / den) : 0, t = E > 1e-9 ? (B * s + F) / E : 0;
+  if (t < 0) { t = 0; s = cl(-C / A); } else if (t > 1) { t = 1; s = cl((B - C) / A); }
+  return [Math.hypot(a.x + d1x * s - cx - d2x * t, a.y + d1y * s - cy - d2y * t, a.z + d1z * s - cz - d2z * t), s];
+}
+
 interface Scheduled { clip: Clip; side: Sidecar; turn: Turn; start: number; end: number; who: number; src: AudioScheduledSourceNode }
 type Gesture = 'point' | 'palms' | 'shrug' | 'chin' | 'cross' | 'arms-up' | 'facepalm';
 interface Plan { S: number; A: number; start: number; end: number; stand: boolean; gesture: Gesture | null; gestureLen: number; laughEnd: boolean; E: string; I: number; ST: string; C: string[] }
@@ -37,6 +56,8 @@ function tone(side: Sidecar) {
   const [E, ST, I, C] = m[FORCE] ?? m.angry;
   return { E, I, ST, C };
 }
+/** a heated speaker starts getting up this long before their first word */
+const RISE_LEAD = 0.6;
 const smooth01 = (x: number) => { const c = Math.max(0, Math.min(1, x)); return c * c * (3 - 2 * c); };
 /** A gesture as arm/head targets at phase k (0..1): it eases in, holds, and eases out. */
 function pose(g: Gesture, t: Expr, k: number, aim: number, flip: boolean) {
@@ -69,6 +90,16 @@ export class Director {
   private plans = new Map<number, Plan>();
   private heroAt = 0;
   private heroWho = -1;
+  private heroA = -1;
+  private staged = new Set<number>();
+  private chairK = new Map<number, number>();
+  private cutAt = 0;
+  private clockNow = 0;
+  private flip = 0;
+  private flipSide = false;
+  /** what the camera is doing, for vibe tests */
+  shot = '';
+  pushChair: (chair: number, k: number) => void = () => {};
   playing = false;
   paused = false;
   others: { pos: THREE.Vector3; turns: Turn[] }[] = [];      // other tables on this floor, for the murmur
@@ -82,7 +113,7 @@ export class Director {
     this.stop();
     this.floor = floor; this.spot = spot; this.roomY = roomY;
     this.turnIdx = 0; this.playing = true; this.paused = false;
-    this.plans.clear(); this.heroAt = 0;
+    this.plans.clear(); this.heroAt = 0; this.staged.clear();
     this.cursor = this.audio.now() + 1.6;           // let the establishing shot breathe
     for (const s of spot.seats) { const i = this.crowd.index(s.name); if (i >= 0) this.crowd.active.add(i); }
     this.wide(now, true);
@@ -94,6 +125,8 @@ export class Director {
     for (const s of this.sched) { try { s.src.stop(); } catch { /* already done */ } }
     this.sched = []; this.current = null; this.playing = false;
     this.crowd.settle();
+    for (const c of this.chairK.keys()) this.pushChair(c, 0);
+    this.chairK.clear();
     this.ui.subtitle(null); this.ui.placard(null); this.ui.code(null); this.ui.waiting(null);
   }
 
@@ -207,10 +240,12 @@ export class Director {
 
   update(now: number, dt: number) {
     if (!this.spot || !this.playing) return;
+    this.clockNow = now;
     this.scheduleAhead(now);
     if (!this.paused) this.murmur(this.audio.now());
     const at = this.audio.now();
     this.sched = this.sched.filter((s) => s.end > at - 0.5);
+    this.stage(at, now);
     const cur = this.sched.find((s) => at >= s.start && at < s.end) ?? null;
     if (cur !== this.current) {
       this.current = cur;
@@ -218,7 +253,14 @@ export class Director {
       else this.ui.subtitle(null);
     }
     this.animate(cur, at, now, dt);
-    if (this.heroAt && now > this.heroAt) { this.heroAt = 0; this.hero(this.heroWho); return; }
+    this.chairs();
+    if (this.heroAt && now > this.heroAt) {
+      this.heroAt = 0;
+      this.hero(this.heroWho, this.heroA);
+      // after a few seconds of the speaker on their feet, the one on the receiving end
+      this.reactionAt = cur && cur.end - at > 5 ? now + 2.8 : 0;
+      return;
+    }
     // a cutaway to a listener in the middle of a long clip, then back
     if (cur && this.reactionAt && now > this.reactionAt) {
       this.reactionAt = 0;
@@ -226,13 +268,29 @@ export class Director {
       if (listeners.length) {
         const replyTo = cur.turn.replyTo ? this.authorOf(cur.turn.replyTo) : undefined;
         const li = replyTo !== undefined && listeners.includes(replyTo) ? replyTo : listeners[Math.floor(Math.random() * listeners.length)];
-        this.single(li, cur.who, now);
+        const standing = this.crowd.people[cur.who]?.expr.stand > 0.5;
+        if (standing) this.overShoulder(cur.who, li, 0.1);       // looking down at them, past the one standing over them
+        else this.single(li);
         this.shotUntil = now + 2.2;
       }
     } else if (cur && this.shotUntil && now > this.shotUntil) {
       this.shotUntil = 0;
-      this.single(cur.who, -1, now);
+      this.speakerShot(cur.who);
     }
+  }
+
+  /** A heated reply is coming: be on a two-shot before they rise, so the stand-up is seen; then the hero angle. */
+  private stage(at: number, now: number) {
+    const up = this.sched.find((x) => x.start > at && x.start - at < 1.05 && x.side.clips[0] === x.clip && !this.staged.has(x.turn.id));
+    if (!up) return;
+    this.staged.add(up.turn.id);
+    const plan = this.planFor(up);
+    if (!plan.stand) return;
+    this.riseShot(plan.S, plan.A);
+    this.heroAt = now + (up.start - at) + 1.25; this.heroWho = plan.S; this.heroA = plan.A;
+    this.shotUntil = 0; this.reactionAt = 0;
+    const seat = this.spot!.seats.find((x) => x.name === this.crowd.people[plan.S].name);
+    if (seat) this.audio.sfxAt('chair', { x: seat.pos.x, y: this.roomY + 0.4, z: seat.pos.z }, up.start - RISE_LEAD + 0.05);
   }
 
   private authorOf(id: number) {
@@ -252,20 +310,27 @@ export class Director {
     const first = s.side.clips[0] === s.clip;
     const plan = this.planFor(s);
     if (first && plan.stand) {
-      // a beat on the person being confronted, then the speaker rising over the table
-      if (plan.A >= 0) this.single(plan.A, -1, now);
-      this.heroAt = now + (plan.A >= 0 ? 0.9 : 0.05); this.heroWho = plan.S;
+      if (!this.heroAt) {                       // staged too late (audio arrived just in time): stage it now
+        this.riseShot(plan.S, plan.A);
+        this.heroAt = now + 1.25; this.heroWho = plan.S; this.heroA = plan.A;
+      }
       this.shotUntil = 0; this.reactionAt = 0;
       return;
     }
+    if (this.heroAt) return;                    // the stand-up is still playing out
     if (now < this.shotUntil && first && this.sched.indexOf(s) === 0) return;          // the establishing shot is still running
     const replyTo = s.turn.replyTo ? this.authorOf(s.turn.replyTo) : undefined;
     const turnNo = this.spot!.table.turns.indexOf(s.turn);
     if (first && turnNo > 0 && turnNo % 5 === 0) { this.wide(now); this.shotUntil = now + 2.4; }
-    else if (first && replyTo !== undefined && replyTo >= 0 && replyTo !== s.who && Math.random() < 0.6) { this.overShoulder(replyTo, s.who, now); this.shotUntil = 0; }
+    else if (first && replyTo !== undefined && replyTo >= 0 && replyTo !== s.who && Math.random() < 0.6) { this.overShoulder(replyTo, s.who); this.shotUntil = 0; }
     else {
       const prev = this.sched[this.sched.indexOf(s) - 1];
-      if (first || !prev || prev.who !== s.who) { this.single(s.who, -1, now); this.shotUntil = 0; }
+      if (first || !prev || prev.who !== s.who) { this.speakerShot(s.who, first && !!plan.gesture); this.shotUntil = 0; }
+      else if (now - this.cutAt > 6) {
+        // a long monologue: a fresh angle on them, or a look at whoever they're talking to
+        if (++this.flip % 2) { this.flipSide = !this.flipSide; this.speakerShot(s.who, this.flip % 4 === 1); }
+        else { this.reactionAt = now + 0.01; return; }
+      }
     }
     this.reactionAt = s.end - s.start > 7 ? now + (s.end - s.start) * 0.55 : 0;
   }
@@ -313,6 +378,9 @@ export class Director {
     const focus = speaking >= 0 ? speaking : plan?.S ?? -1;
     const focusHead = focus >= 0 ? this.crowd.headPos(focus) : null;
     const voice = cur ? FACE[tone(cur.side).E] ?? FACE.mundane : FACE.mundane;
+    // a heated reply about to start: its speaker is already getting up while the other one finishes
+    const nextUp = this.sched.find((x) => x.start > at && x.start - at < RISE_LEAD + 0.1 && x.side.clips[0] === x.clip && x.turn.id !== live?.turn.id);
+    const riser = nextUp ? this.planFor(nextUp) : null;
     // who speaks next? if their reply pushes back, they're already narrowing their eyes
     const upcoming = new Map<number, string>();
     for (let k = this.turnIdx; k < Math.min(this.turnIdx + 3, this.spot.table.turns.length); k++) {
@@ -329,15 +397,24 @@ export class Director {
       t.tilt = Math.sin(at * 0.4 + i) * 0.08;
       t.nod = Math.sin(at * 0.9 + i * 1.7) * 0.03;
       t.yaw = focusHead && focus !== i ? this.crowd.yawTo(i, focusHead) : Math.sin(at * 0.3 + i) * 0.3;
+      if (focusHead && focus !== i) t.nod += this.crowd.pitchTo(i, focusHead);              // eye-lines: look up at someone standing
       const performing = !!plan && inTurn && i === plan.S;
       if (performing) {
         // square up to the person being answered: shoulders part of the way, the head the rest
-        const total = plan.A >= 0 ? this.crowd.yawTo(i, this.crowd.headPos(plan.A)) : Math.sin(at * 0.35 + i) * 0.45;
+        const aHead = plan.A >= 0 ? this.crowd.headPos(plan.A) : null;
+        const total = aHead ? this.crowd.yawTo(i, aHead) : Math.sin(at * 0.35 + i) * 0.45;
         t.turn = Math.max(-0.85, Math.min(0.85, total * 0.55));
         t.yaw = total - t.turn;
-        t.stand = plan.stand ? 1 : 0;
+        if (aHead) t.nod += this.crowd.pitchTo(i, aHead);
         const em = FACE[plan.E] ?? FACE.mundane;
         t.lean = (em.lean ?? 0.15) + (plan.stand ? 0.22 : 0);
+        if (plan.stand) {
+          // getting up: lean over the table, push off it with both hands, rise, straighten
+          const rise = (at - (plan.start - RISE_LEAD)) / 0.85;
+          t.stand = smooth01(rise);
+          const push = rise > 0 && rise < 1 ? Math.sin(Math.PI * Math.min(1, rise * 1.15)) : 0;
+          t.lean += push * 0.55; t.armL = t.armR = push * 0.55; t.spreadL = t.spreadR = push * 0.12;
+        }
         if (at < plan.start) { t.lean += 0.08; t.brow = 0.15; }                           // the breath before speaking
         const gk = (at - plan.start - 0.25) / plan.gestureLen;
         if (plan.gesture && gk >= 0 && gk <= 1) pose(plan.gesture, t, gk, t.yaw, this.crowd.seed(i, 3) > 0.5);
@@ -353,6 +430,19 @@ export class Director {
           t.spreadR = t.spreadL = gv * 0.15;
         }
         if (plan.laughEnd && at > plan.end - 1.1) { t.bounce = 1; t.smile = 1; t.lid = 0.6; }
+      }
+      if (riser?.stand && i === riser.S && !performing && i !== speaking) {
+        const aHead = riser.A >= 0 ? this.crowd.headPos(riser.A) : null;
+        const total = aHead ? this.crowd.yawTo(i, aHead) : t.yaw;
+        t.turn = Math.max(-0.85, Math.min(0.85, total * 0.55));
+        t.yaw = total - t.turn;
+        if (aHead) t.nod = this.crowd.pitchTo(i, aHead);
+        const rise = (at - (riser.start - RISE_LEAD)) / 0.85;
+        t.stand = smooth01(rise);
+        const push = rise > 0 && rise < 1 ? Math.sin(Math.PI * Math.min(1, rise * 1.15)) : 0;
+        t.lean = 0.3 + push * 0.55; t.armL = t.armR = push * 0.55; t.spreadL = t.spreadR = push * 0.12;
+        t.brow = -0.6; t.lid = 0.84; t.smile = -0.25;
+        continue;
       }
       if (i === speaking) {
         t.open = Math.min(1, env * 1.15);
@@ -371,71 +461,134 @@ export class Director {
         if (i === plan.A) {
           if (pushback && plan.E === 'angry' && strong) { t.brow = 0.55; t.lid = 1.22; t.lean = -0.3; t.smile = -0.1; }     // taken aback
           else if (pushback) { t.brow = -0.5; t.smile = -0.15; t.lean = -0.12; if (plan.ST === 'correct' && !strong) pose('cross', t, 0.5, 0, false); }
-          else if (plan.ST === 'agree' || plan.ST === 'praise') { t.smile = 0.65; t.nod = Math.max(0, Math.sin(at * 2.4 + i)) * 0.14; }
+          else if (plan.ST === 'agree' || plan.ST === 'praise') { t.smile = 0.65; t.nod += Math.max(0, Math.sin(at * 2.4 + i)) * 0.14; }
           else if (plan.ST === 'question') { t.tilt = 0.35; t.brow = 0.25; }
         } else if (plan.E === 'angry' && strong) { t.brow = 0.45; t.lid = 1.15; t.lean = -0.2; }                            // whoa
         else if (plan.ST === 'joke' || plan.E === 'joyful') t.smile = 0.6;
         else if (plan.ST === 'question') t.tilt = 0.18;
-        else if (plan.ST === 'agree') t.nod = Math.max(0, Math.sin(at * 1.8 + i)) * 0.08;
+        else if (plan.ST === 'agree') t.nod += Math.max(0, Math.sin(at * 1.8 + i)) * 0.08;
         if (plan.laughEnd && at > plan.end - 1.1 && this.crowd.seed(i, 7) < 0.65) { t.bounce = 1; t.smile = 1; t.lid = 0.55; }
       }
       const coming = upcoming.get(i);
       if ((coming === 'disagree' || coming === 'correct') && t.brow >= 0 && i !== plan?.A) { t.brow = -0.35; t.lid = 0.85; }   // foreshadowing
+    }
+    // eyes: they get there before the head does (and cover what the neck can't), with small darts now and then
+    for (const seat of this.spot.seats) {
+      const i = this.crowd.index(seat.name), t = this.crowd.target(i);
+      if (!t || i < 0) continue;
+      const excess = t.yaw - Math.max(-1.1, Math.min(1.1, t.yaw));
+      const dart = Math.sin(Math.floor(at * 0.8 + i * 0.37) * 12.9898 + i) * 0.16;
+      t.gaze = Math.max(-1, Math.min(1, t.yaw * 0.4 + excess * 1.6 + dart));
+      t.gazeY = Math.max(-1, Math.min(1, -t.nod * 0.35 + dart * 0.4));
+    }
+  }
+
+  /** Chairs follow whoever stands up out of them. */
+  private chairs() {
+    for (const seat of this.spot?.seats ?? []) {
+      if (seat.chair === undefined) continue;
+      const i = this.crowd.index(seat.name), k = i >= 0 ? this.crowd.people[i].expr.stand : 0;
+      const last = this.chairK.get(seat.chair) ?? 0;
+      if (Math.abs(k - last) < 0.004) continue;
+      this.chairK.set(seat.chair, k);
+      this.pushChair(seat.chair, k);
     }
   }
 
   // ---------------------------------------------------------------- shots: a small virtual cinematographer
   private center() { return new THREE.Vector3(this.spot!.pos.x, this.roomY, this.spot!.pos.z); }
 
-  /** How good is a camera at p looking at `target`? -Infinity if it sits inside someone or outside the room. */
-  private score(p: THREE.Vector3, target: THREE.Vector3, skip: Set<number>) {
-    if (p.x * p.x + p.z * p.z > (R - 0.35) ** 2 || p.y > this.roomY + FLOOR_H * 0.88 || p.y < this.roomY + 0.55) return -Infinity;
+  /** Where person i's face is about to point (body turn plus head yaw), flat. */
+  private faceDir(i: number) {
+    const p = this.crowd.people[i], t = p.target;
+    const a = p.pose.facing + t.turn + Math.max(-1.1, Math.min(1.1, t.yaw));
+    return new THREE.Vector3(Math.sin(a), 0, Math.cos(a));
+  }
+
+  /**
+   * How good is a camera at p for these subjects? -Infinity if it sits inside someone, the table or the walls.
+   * Everyone is a capsule (seat or floor to neck) plus a head; anything between the lens and a subject's face
+   * costs, so does a big blurry head right in front of the lens, and so does seeing a subject from behind.
+   */
+  private score(p: THREE.Vector3, subjects: Subject[], near: Set<number>, fov: number) {
+    const Y0 = this.roomY;
+    if (p.x * p.x + p.z * p.z > (R - 0.35) ** 2 || p.y > Y0 + FLOOR_H * 0.88 || p.y < Y0 + 0.55) return -Infinity;
+    const tp = this.spot!.pos, tr = this.spot!.bar ? 0 : this.spot!.radius;
+    const tx = p.x - tp.x, tz = p.z - tp.z;
+    if (tr && tx * tx + tz * tz < (tr + 0.1) ** 2 && p.y < Y0 + 0.88) return -Infinity;
     let sc = 0;
-    const seg = new THREE.Line3(p, target), axis = new THREE.Line3(), q = new THREE.Vector3(), q2 = new THREE.Vector3();
-    const view = target.clone().sub(p).normalize();
+    const look = new THREE.Vector3();
+    for (const s of subjects) look.add(s.head);
+    look.divideScalar(subjects.length).sub(p).normalize();
+    const half = Math.atan(Math.tan((fov * Math.PI) / 360) * 1.78);       // half the horizontal field of view (16:9)
+    const h = this.tmp;
     for (let j = 0; j < this.crowd.people.length; j++) {
-      const head = this.crowd.headPos(j), pose = this.crowd.people[j].pose;
-      const stand = this.crowd.target(j)?.stand ?? 0;
-      const bottom = this.roomY + (pose.seated ? 0.42 * (1 - stand) : 0);
-      // each person is a capsule from seat (or floor) to the neck, plus a head
-      axis.start.set(head.x, bottom, head.z); axis.end.set(head.x, head.y - 0.2, head.z);
-      axis.closestPointToPoint(p, true, q);
-      const inBody = p.distanceTo(q) < 0.24 + 0.3, inHead = p.distanceTo(head) < 0.22 + 0.33;
-      if (skip.has(j)) { if (p.distanceTo(head) < 0.4 || p.distanceTo(q) < 0.3) return -Infinity; continue; }
-      if (inBody || inHead) return -Infinity;
-      // heads or torsos between the lens and the subject
-      seg.closestPointToPoint(head, true, q);
-      const d = q.distanceTo(head);
-      if (d < 0.32 && q.distanceTo(target) > 0.35) sc -= (0.32 - d) * 12;
-      axis.closestPointToPoint(q.copy(target), true, q2);
-      seg.closestPointToPoint(q2, true, q);
-      if (q.distanceTo(q2) < 0.22 && q.distanceTo(target) > 0.4) sc -= 1.5;
-      // big out-of-focus heads looming in the near foreground
-      const rel = head.clone().sub(p), dist = rel.length();
-      if (dist < 1.1 && rel.normalize().dot(view) > 0.9) sc -= (1.1 - dist) * 4;
+      this.crowd.headPos(j, h);
+      const per = this.crowd.people[j];
+      const bottom = Y0 + (per.pose.seated ? 0.42 * (1 - per.expr.stand) : 0), neck = h.y - 0.2;
+      const dh = p.distanceTo(h);
+      const ay = Math.max(bottom, Math.min(neck, p.y)), da = Math.hypot(p.x - h.x, p.y - ay, p.z - h.z);
+      if (near.has(j)) {
+        if (dh < 0.4 || da < 0.33) return -Infinity;
+        if (dh < 0.95 && subjects.some((s) => s.i === j)) return -Infinity;     // too close to the subject: their hands fill the lens
+      }
+      else {
+        if (dh < 0.5 || da < 0.45) return -Infinity;
+        // a big out-of-focus head near the lens: how much of it is in the picture, and how close
+        if (dh < 1.7) {
+          const ang = Math.acos(Math.max(-1, Math.min(1, h.clone().sub(p).divideScalar(dh).dot(look)))), rad = Math.asin(Math.min(1, 0.27 / dh));
+          const inFrame = Math.max(0, Math.min(1, (half + rad - ang) / (2 * rad)));
+          if (inFrame > 0) sc -= (1.7 - dh) * 4.5 * inFrame;
+        }
+      }
+      for (const s of subjects) {
+        if (s.i === j) continue;
+        const [d1, t1] = segPoint(p, s.head, h);
+        if (t1 < 0.93 && d1 < 0.3) sc -= (0.3 - d1) * 14 * s.w;
+        const [d2, t2] = segSeg(p, s.head, h.x, bottom, h.z, h.x, neck, h.z);
+        if (t2 < 0.93 && d2 < 0.25) sc -= ((0.25 - d2) * 8 + 0.6) * s.w;
+      }
+    }
+    for (const s of subjects) {
+      // the sightline must clear the tabletop
+      if (tr && p.y < Y0 + 0.8) {
+        const k = (Y0 + 0.8 - p.y) / (s.head.y - p.y), x = p.x + (s.head.x - p.x) * k - tp.x, z = p.z + (s.head.z - p.z) * k - tp.z;
+        if (k > 0 && k < 1 && x * x + z * z < tr * tr) sc -= 4 * s.w;
+      }
+      if (s.face) {
+        const v = p.clone().sub(s.head).setY(0).normalize(), d = v.dot(s.face);
+        if (d < 0.3) sc -= (0.3 - d) * 9 * s.w;
+        sc -= Math.abs(d - 0.8) * 1.2 * s.w;
+      }
     }
     return sc;
   }
+  private tmp = new THREE.Vector3();
 
-  /** Try angles, distances and heights around a preferred direction; cut to the best. */
-  private frame(target: THREE.Vector3, dir: THREE.Vector3, dist: number, lift: number, fov: number, skip: Set<number>, glide = 0, now = 0, dryRun = false): number {
+  /** Try angles, distances and heights around a preferred direction; cut (or glide) to the best. */
+  private frame(target: THREE.Vector3, dir: THREE.Vector3, dist: number, lift: number, fov: number, subjects: Subject[], near: Set<number>,
+    o: { glide?: number; now?: number; dry?: boolean; name?: string } = {}): number {
     let best: THREE.Vector3 | null = null, bestScore = -Infinity;
     const Y = new THREE.Vector3(0, 1, 0);
     for (const a of [0, 0.3, -0.3, 0.6, -0.6, 0.95, -0.95, 1.3, -1.3]) {
       for (const m of [1, 0.85, 1.2, 0.7, 1.45]) {
         for (const h of [lift, lift + 0.22, lift - 0.12]) {
           const p = target.clone().add(dir.clone().applyAxisAngle(Y, a).multiplyScalar(dist * m)).setY(target.y + h);
-          const sc = this.score(p, target, skip) - Math.abs(a) * 0.9 - Math.abs(m - 1) * 0.6 - Math.abs(h - lift) * 0.5;
+          const sc = this.score(p, subjects, near, fov) - Math.abs(a) * 0.9 - Math.abs(m - 1) * 0.6 - Math.abs(h - lift) * 0.5;
           if (sc > bestScore) { bestScore = sc; best = p; }
         }
       }
     }
-    if (dryRun) return bestScore;
+    if (o.dry) return bestScore;
     if (!best) best = target.clone().add(dir.clone().multiplyScalar(dist)).setY(target.y + lift);
     this.rig.fovTarget = fov;
-    if (glide) this.rig.glide(best, target, glide, now, 0.2, 0); else this.rig.cut(best, target, 0.12);
+    if (o.glide) this.rig.glide(best, target, o.glide, o.now ?? 0, 0.2, 0); else this.rig.cut(best, target, 0.12);
+    this.cutAt = this.clockNow;
+    this.shot = `${o.name ?? 'shot'} ${bestScore.toFixed(1)}`;
     return bestScore;
   }
+
+  private subject(i: number, w = 1): Subject { return { i, head: this.crowd.headPos(i), face: this.faceDir(i), w }; }
 
   private wide(now: number, glide = false) {
     if (!this.spot) return;
@@ -445,39 +598,88 @@ export class Director {
     if (inward.lengthSq() < 0.04) inward.set(0, 0, 1);
     inward.normalize();
     const target = c.clone().setY(this.roomY + 0.95);
-    this.frame(target, inward, this.spot.radius * 2 + 1.9, 0.85, 52, new Set(), glide ? 2.2 : 0, now);
+    this.frame(target, inward, this.spot.radius * 2 + 1.9, 0.85, 52, [{ i: -1, head: target, w: 0.3 }], new Set(), { glide: glide ? 2.2 : 0, now, name: 'wide' });
   }
 
-  private single(i: number, _from: number, now: number) {
+  /** A close single on someone's face, from the open side of the table. */
+  private single(i: number, medium = false) {
     if (!this.spot || i < 0) return;
-    const head = this.crowd.headPos(i);
-    const f = this.crowd.people[i].pose.facing + (this.crowd.target(i)?.yaw ?? 0) * 0.7;
-    const face = new THREE.Vector3(Math.sin(f), 0, Math.cos(f));   // where their face is turned
-    const target = head.clone().add(new THREE.Vector3(0, -0.05, 0));
-    this.frame(target, face.applyAxisAngle(new THREE.Vector3(0, 1, 0), i % 2 ? 0.3 : -0.3), 1.45, 0.06, 31, new Set([i]));
-    void now;
+    const s = this.subject(i), target = s.head.clone().add(new THREE.Vector3(0, medium ? -0.2 : -0.05, 0));
+    // from the open middle of the table, a little toward where they look: a 3/4 face, never between them and
+    // whoever they're talking to (that's where their hands go)
+    const toC = this.spot.bar ? s.face!.clone() : this.center().sub(s.head).setY(0).normalize();
+    const dir = s.face!.clone().add(toC.multiplyScalar(0.9)).normalize()
+      .applyAxisAngle(new THREE.Vector3(0, 1, 0), (i % 2 ? 0.22 : -0.22) * (this.flipSide ? -1 : 1));
+    // a close-up for faces; a medium shot (head, hands, the table edge) when they're about to gesture
+    if (medium) this.frame(target, dir, 1.5, 0.06, 40, [s], new Set([i]), { name: `medium ${this.crowd.people[i].name}` });
+    else this.frame(target, dir, 1.35, 0.04, 31, [s], new Set([i]), { name: `single ${this.crowd.people[i].name}` });
   }
 
-  /** Low and a little wide: someone stood up to make their point. */
-  private hero(i: number) {
+  /** Low and a little wide: someone stood up to make their point (at `a`, if anyone in particular). */
+  private hero(i: number, a = -1) {
     if (!this.spot || i < 0 || !this.crowd.people[i]) return;
-    const head = this.crowd.headPos(i), tg = this.crowd.target(i);
-    const f = this.crowd.people[i].pose.facing + (tg?.turn ?? 0) + (tg?.yaw ?? 0) * 0.5;
-    const target = head.clone().add(new THREE.Vector3(0, -0.12, 0));
-    this.frame(target, new THREE.Vector3(Math.sin(f), 0, Math.cos(f)), 1.9, -0.32, 40, new Set([i]));
+    const s = this.subject(i), name = `hero ${this.crowd.people[i].name}`;
+    const toC = this.center().sub(s.head).setY(0).normalize();
+    const target = s.head.clone().add(new THREE.Vector3(0, -0.15, 0));      // the face sits a little above centre, arms in shot
+    if (a >= 0 && this.crowd.people[a]) {
+      const sa = this.subject(a, 0.6), toA = sa.head.clone().sub(s.head).setY(0), dA = toA.length();
+      toA.normalize();
+      // glaring across the table: we sit nearly where they do, taking the heat
+      if (toA.dot(toC) > 0.5) { this.frame(target, toA, Math.min(1.6, dA * 0.62), -0.3, 46, [s], new Set([i]), { name: name + ' pov' }); return; }
+      // glaring at a neighbour: both of them, low, from the middle of the table, the one standing bigger
+      target.x += (sa.head.x - target.x) * 0.3; target.z += (sa.head.z - target.z) * 0.3;
+      this.frame(target, toC, 1.6, -0.3, 50, [s, sa], new Set([i, a]), { name: name + ' two' });
+      return;
+    }
+    // between where they glare and the middle of the table: a 3/4 face
+    this.frame(target, s.face!.clone().add(toC).normalize(), 1.6, -0.3, 46, [s], new Set([i]), { name });
   }
 
-  private overShoulder(listener: number, speaker: number, now: number) {
-    const lh = this.crowd.headPos(listener), sh = this.crowd.headPos(speaker);
-    const back = lh.clone().sub(sh).setY(0);
+  /** Someone is about to get up: a medium shot from across the table, wide enough to see them rise, with the one they answer in frame. */
+  private riseShot(a: number, b: number) {
+    if (!this.spot || a < 0) return;
+    const sa = this.subject(a), subjects = [sa];
+    const toC = this.center().sub(sa.head).setY(0).normalize();
+    const target = sa.head.clone();
+    target.y += 0.14;                                    // where their head will be halfway up
+    if (b >= 0) {
+      const sb = this.subject(b, 0.4);
+      subjects.push(sb);
+      target.x += (sb.head.x - target.x) * 0.25; target.z += (sb.head.z - target.z) * 0.25;
+    }
+    const n = this.crowd.people[a].name + (b >= 0 ? '+' + this.crowd.people[b].name : '');
+    this.frame(target, toC, 1.55, 0.06, 54, subjects, new Set(b >= 0 ? [a, b] : [a]), { name: `rise ${n}` });
+  }
+
+  /** Over the shoulder of `over`, onto `at`'s face. A blocked one is worse than a clean single. */
+  private overShoulder(over: number, at: number, lift = 0.18) {
+    const ho = this.crowd.headPos(over), sa = this.subject(at);
+    const back = ho.clone().sub(sa.head).setY(0);
     const d = back.length();
     back.normalize();
-    const target = sh.clone().add(new THREE.Vector3(0, -0.04, 0));
-    const dir = back.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.22), skip = new Set([speaker, listener]);
-    // a blocked over-the-shoulder is worse than a clean single
-    if (this.frame(target, dir, d + 0.7, 0.18, 34, skip, 0, now, true) < -1.2) { this.single(speaker, -1, now); return; }
-    this.frame(target, dir, d + 0.7, 0.18, 34, skip);
+    const target = sa.head.clone().add(new THREE.Vector3(0, -0.04, 0));
+    const dir = back.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.22), near = new Set([over, at]);
+    const h = ho.y - target.y + lift;
+    if (this.frame(target, dir, d + 0.7, h, 34, [sa], near, { dry: true }) < -1.2) { this.single(at); return; }
+    this.frame(target, dir, d + 0.7, h, 34, [sa], near, { name: `ots ${this.crowd.people[over].name}>${this.crowd.people[at].name}` });
   }
+
+  /** Whoever is talking: a hero angle if they're on their feet, a single if not. */
+  private speakerShot(i: number, medium = false) {
+    if (i >= 0 && this.crowd.people[i]?.pose.seated && this.crowd.people[i].expr.stand > 0.5) {
+      const p = this.current ? this.plans.get(this.current.turn.id) : undefined;
+      this.hero(i, p && p.S === i ? p.A : -1);
+      return;
+    }
+    // coming back to the same speaker: a different side and size each time, so a long comment never sits still
+    const turn = this.current?.turn.id ?? -1;
+    this.variant = turn === this.variantTurn ? this.variant + 1 : 0;
+    this.variantTurn = turn;
+    if (this.variant) this.flipSide = !this.flipSide;
+    this.single(i, medium || this.variant % 2 === 1);
+  }
+  private variant = 0;
+  private variantTurn = -1;
 
   /** the whole timeline so far, for muxing recorded videos */
   timeline() { return this.audio.log; }

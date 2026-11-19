@@ -75,6 +75,7 @@ audio.virtual = recording;
 const sync = new LiveSync(DATA);
 const rig = new Rig(camera);
 const director = new Director(sync, audio, crowd, rig, ui);
+director.pushChair = (c, k) => interior.pushChair(c, k);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true; controls.dampingFactor = 0.06;
@@ -347,6 +348,19 @@ if (recording) {
     clock: () => clock,
     timeline: () => director.timeline(),
     mode: () => mode,
+    shot: () => director.shot,
+    /** debug: put the lens straight in front of someone's face (angle off their nose, metres away) */
+    look: (name: string, off = 0, dist = 1.2) => {
+      const i = crowd.index(name); if (i < 0) return null;
+      const p = crowd.people[i], h = crowd.headPos(i), a = p.pose.facing + p.expr.turn + Math.max(-1.1, Math.min(1.1, p.expr.yaw)) + off;
+      rig.cut(new THREE.Vector3(h.x + Math.sin(a) * dist, h.y, h.z + Math.cos(a) * dist), h, 0); rig.fovTarget = 31;
+      return { look: p.look.style, glasses: p.look.glasses, hood: p.look.hood, expr: p.expr };
+    },
+    scene: () => ({
+      cam: camera.position.toArray(), target: rig.target.toArray(), fov: camera.fov,
+      table: director.spot ? { pos: director.spot.pos.toArray(), r: director.spot.radius } : null,
+      people: crowd.people.map((p, i) => ({ name: p.name, head: crowd.headPos(i).toArray(), seated: p.pose.seated, stand: p.expr.stand, facing: p.pose.facing, turn: p.expr.turn, yaw: p.expr.yaw, at: director.spot?.seats.some((s) => s.name === p.name) })),
+    }),
     swap: () => { const h = sync.head!; const t = h.tower.slice(); [t[2], t[7]] = [t[7], t[2]]; tower.setOrder(t, h.stories, h.act, clock, camDir2()); },
   };
   (window as any).__ready = true;

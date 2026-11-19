@@ -6,7 +6,7 @@
 import * as THREE from 'three/webgpu';
 import {
   instancedBufferAttribute, normalLocal, positionLocal, vec2, vec3, float, mix, smoothstep, length, min, max, clamp,
-  step, fract, abs, sin, mx_noise_float, instanceIndex,
+  step, fract, abs, sin, mx_noise_float, instanceIndex, floor as tfloor,
 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { rngFor, pick, SKIN, OUTFIT, HAIR, hash32 } from './util.ts';
@@ -42,10 +42,11 @@ export interface Expr {
   open: number; shape: number; brow: number; smile: number; lid: number;                // face
   yaw: number; nod: number; tilt: number;                                                // head
   lean: number; turn: number; stand: number; bounce: number;                             // body
+  gaze: number; gazeY: number;                                                           // eyes (-1..1)
   armL: number; armR: number; spreadL: number; spreadR: number; aimR: number;           // arms
 }
-export const NEUTRAL: Expr = { open: 0, shape: 0, brow: 0, smile: 0.15, lid: 1, yaw: 0, nod: 0, tilt: 0, lean: 0, turn: 0, stand: 0, bounce: 0, armL: 0, armR: 0, spreadL: 0, spreadR: 0, aimR: 0 };
-const STAND_TALL = 2.35;           // a standing body vs a seated one (the chair hides the legs)
+export const NEUTRAL: Expr = { open: 0, shape: 0, brow: 0, smile: 0.15, lid: 1, yaw: 0, nod: 0, tilt: 0, lean: 0, turn: 0, stand: 0, bounce: 0, gaze: 0, gazeY: 0, armL: 0, armR: 0, spreadL: 0, spreadR: 0, aimR: 0 };
+const STAND_TALL = 2.5;           // a standing body vs a seated one (the chair hides the legs)
 
 interface Person { name: string; look: Look; pose: Pose; parts: { hair: number; glasses: number; beard: number; hood: number }; expr: Expr; target: Expr }
 
@@ -58,7 +59,8 @@ function hairGeos(): THREE.BufferGeometry[] {
   const bun = mergeGeometries([cap(0.213, 1.12), (() => { const g = new THREE.SphereGeometry(0.085, 16, 10); g.translate(0, 0.17, -0.12); return g; })()]);
   const beanie = mergeGeometries([cap(0.222, 1.05), (() => { const g = new THREE.TorusGeometry(0.2, 0.028, 10, 32); g.rotateX(Math.PI / 2); g.translate(0, 0.095, 0); return g; })(),
     (() => { const g = new THREE.SphereGeometry(0.045, 10, 8); g.translate(0, 0.235, 0); return g; })()]);
-  const curly = (() => { const g = new THREE.SphereGeometry(0.255, 24, 16, 0, Math.PI * 2, 0, 1.6); g.translate(0, 0.03, -0.02); return g; })();
+  // curly: a closed, round volume set up and back, so its front edge sits above the brows (eyes always show)
+  const curly = (() => { const g = new THREE.SphereGeometry(0.25, 26, 18); g.translate(0, 0.095, -0.07); return g; })();
   const placeholder = new THREE.BoxGeometry(0.001, 0.001, 0.001);
   return [placeholder, short, long, bun, beanie, curly];
 }
@@ -159,19 +161,27 @@ export class Crowd {
     const n = normalLocal;
     const p = vec2(n.x, n.y);
     const dyn = instancedBufferAttribute(this.aDyn);           // open, shape, brow, smile
-    const face = instancedBufferAttribute(this.aFace);         // eye size, eye gap, brow thickness, mouth width
+    // eye size, eye gap (+ gaze x in the fraction), brow thickness, mouth width (+ gaze y in the fraction)
+    const face = instancedBufferAttribute(this.aFace);
     const skinL = instancedBufferAttribute(this.aSkinL), hairP = instancedBufferAttribute(this.aHairP);
     const skin = skinL.xyz, lid = skinL.w, hairC = hairP.xyz, phase = fract(hairP.w), beard = step(1.5, hairP.w);
     const front = smoothstep(0.25, 0.55, n.z);
     // eyes
     const blink = step(0.982, fract(uTime.mul(0.23).add(phase.mul(7.3))));
-    const eyeY = float(0.12), gap = face.y.mul(0.27), er = face.x.mul(0.06);
+    const eyeY = float(0.12), gap = tfloor(face.y).mul(0.001 * 0.27), er = face.x.mul(0.06);
+    const gx = fract(face.y).sub(0.5).div(0.45), gy = fract(face.w).sub(0.5).div(0.45);
     const eh = er.mul(clamp(lid.mul(float(1).sub(blink)), 0.07, 1.35));
     const dl = length(vec2(p.x.add(gap), p.y.sub(eyeY)).div(vec2(er, eh)));
     const dr = length(vec2(p.x.sub(gap), p.y.sub(eyeY)).div(vec2(er, eh)));
     const eyes = smoothstep(1.06, 0.9, min(dl, dr)).mul(front);
-    const gl = length(vec2(p.x.add(gap).sub(er.mul(0.32)), p.y.sub(eyeY).sub(eh.mul(0.36))));
-    const gr = length(vec2(p.x.sub(gap).sub(er.mul(0.32)), p.y.sub(eyeY).sub(eh.mul(0.36))));
+    // a big dark iris inside a thin white: reads on every skin tone, in any light
+    // the irises look where the person looks, a little ahead of the head
+    const ix = gx.mul(er).mul(0.3), iy = gy.mul(eh).mul(0.26);
+    const il = length(vec2(p.x.add(gap).sub(ix), p.y.sub(eyeY).sub(iy))).div(er.mul(0.76));
+    const ir = length(vec2(p.x.sub(gap).sub(ix), p.y.sub(eyeY).sub(iy))).div(er.mul(0.76));
+    const iris = smoothstep(1.08, 0.9, min(il, ir)).mul(eyes);
+    const gl = length(vec2(p.x.add(gap).sub(er.mul(0.32)).sub(ix), p.y.sub(eyeY).sub(eh.mul(0.36)).sub(iy)));
+    const gr = length(vec2(p.x.sub(gap).sub(er.mul(0.32)).sub(ix), p.y.sub(eyeY).sub(eh.mul(0.36)).sub(iy)));
     const glint = smoothstep(er.mul(0.3), er.mul(0.16), min(gl, gr)).mul(eyes).mul(step(0.3, lid.mul(float(1).sub(blink))));
     // brows: raised when surprised (brow > 0), inner ends pulled down when cross (brow < 0)
     const b = dyn.z;
@@ -185,7 +195,7 @@ export class Crowd {
     const brows = max(browL, browR).mul(front);
     // mouth: width narrows for round vowels, opens with the voice, curves with the smile
     const open = dyn.x, shape = dyn.y, smile = dyn.w;
-    const mw = face.w.mul(0.1).mul(float(1).sub(max(shape, 0).mul(0.32)).add(max(float(0).sub(shape), 0).mul(0.12)));
+    const mw = tfloor(face.w).mul(0.001 * 0.1).mul(float(1).sub(max(shape, 0).mul(0.32)).add(max(float(0).sub(shape), 0).mul(0.12)));
     const mh = float(0.007).add(open.mul(0.085).mul(float(1).add(max(shape, 0).mul(0.3))));
     const xm = p.x.div(mw);
     const cy = float(-0.19).add(smile.mul(0.03).mul(xm.mul(xm))).sub(smile.mul(0.008));
@@ -203,7 +213,8 @@ export class Crowd {
     col = mix(col, skin.mul(0.62), lip);
     col = mix(col, vec3(0.3, 0.07, 0.08), mouth);
     col = mix(col, hairC.mul(0.55).add(0.02), brows);
-    col = mix(col, vec3(0.05, 0.04, 0.045), eyes);
+    col = mix(col, vec3(0.9, 0.87, 0.83), eyes);
+    col = mix(col, vec3(0.05, 0.04, 0.045), iris);
     col = mix(col, vec3(1), glint);
     return col;
   }
@@ -229,7 +240,7 @@ export class Crowd {
       if (parts.hood >= 0) (this.hoods.instanceColor!.array as Float32Array).set([look.outfit.r * 0.82, look.outfit.g * 0.82, look.outfit.b * 0.82], parts.hood * 3);
       (this.aSkinL.array as Float32Array).set([look.skin.r, look.skin.g, look.skin.b, 1], i * 4);
       (this.aHairP.array as Float32Array).set([look.hair.r, look.hair.g, look.hair.b, look.phase + (look.beard ? 2 : 0)], i * 4);
-      (this.aFace.array as Float32Array).set([look.eye, look.gap, look.brow, look.mouth], i * 4);
+      (this.aFace.array as Float32Array).set([look.eye, 0, look.brow, 0], i * 4);
       if (parts.hair >= 0) (this.hair[look.style].instanceColor!.array as Float32Array).set([look.hair.r, look.hair.g, look.hair.b], parts.hair * 3);
       if (parts.beard >= 0) (this.beards.instanceColor!.array as Float32Array).set([look.hair.r, look.hair.g, look.hair.b], parts.beard * 3);
       this.writeExpr(i);
@@ -253,7 +264,7 @@ export class Crowd {
       this.writeExpr(i);
       this.place(i);
     }
-    this.aDyn.needsUpdate = true; this.aSkinL.needsUpdate = true;
+    this.aDyn.needsUpdate = true; this.aSkinL.needsUpdate = true; this.aFace.needsUpdate = true;
     this.flush();
     this.active.clear();
   }
@@ -262,7 +273,7 @@ export class Crowd {
   /** Seated people can stand: the chair steps back and the body rises. */
   private stature(p: Person) {
     const st = p.pose.seated ? p.expr.stand : 1;
-    return { lift: p.pose.seated ? 0.42 * (1 - st) : 0, tall: 1 + (STAND_TALL - 1) * st, back: p.pose.seated ? 0.22 * st : 0, st };
+    return { lift: p.pose.seated ? 0.42 * (1 - st) : 0, tall: 1 + (STAND_TALL - 1) * st, back: p.pose.seated ? 0.06 * st : 0, st };
   }
 
   headPos(i: number, out = new THREE.Vector3()) {
@@ -275,6 +286,14 @@ export class Crowd {
       this.group.position.y + p.pose.pos.y + lift + bodyH * Math.cos(pitch) + 0.17,
       p.pose.pos.z - Math.cos(p.pose.facing) * back + Math.cos(yb) * off);
   }
+
+  /** How far person i tips their head to look at world point `t` (in `nod` units: negative looks up). */
+  pitchTo(i: number, t: THREE.Vector3) {
+    const h = this.headPos(i, this.v2);
+    const up = Math.atan2(t.y - h.y, Math.hypot(t.x - h.x, t.z - h.z));
+    return Math.max(-1.3, Math.min(1.3, -up / 0.35));
+  }
+  private v2 = new THREE.Vector3();
 
   /** Where person i should look to face world point `t` (yaw relative to their body). */
   yawTo(i: number, t: THREE.Vector3) {
@@ -326,9 +345,14 @@ export class Crowd {
   }
 
   private writeExpr(i: number) {
-    const x = this.people[i].expr;
+    const { expr: x, look } = this.people[i];
     (this.aDyn.array as Float32Array).set([x.open, x.shape, x.brow, x.smile], i * 4);
     (this.aSkinL.array as Float32Array)[i * 4 + 3] = x.lid;
+    // gaze rides in the fractions of two static numbers (WebGPU's 8 vertex buffers are all spoken for)
+    const g = (v: number) => Math.max(0.001, Math.min(0.999, 0.5 + 0.45 * Math.max(-1, Math.min(1, v))));
+    const f = this.aFace.array as Float32Array;
+    f[i * 4 + 1] = Math.round(look.gap * 1000) + g(x.gaze);
+    f[i * 4 + 3] = Math.round(look.mouth * 1000) + g(x.gazeY);
   }
 
   /** Ease active people toward their targets and upload what changed. */
@@ -342,16 +366,18 @@ export class Crowd {
       e.open += (t.open - e.open) * Math.min(1, k * 1.6);
       e.shape += (t.shape - e.shape) * k;
       e.brow += (t.brow - e.brow) * kSlow; e.smile += (t.smile - e.smile) * kSlow; e.lid += (t.lid - e.lid) * kSlow;
-      const kTurn = 1 - Math.exp(-dt * 4), kStand = 1 - Math.exp(-dt * 3.2), kArm = k * 0.55;
+      const kTurn = 1 - Math.exp(-dt * 4), kStand = 1 - Math.exp(-dt * (t.stand > e.stand ? 9 : 3.4)), kArm = k * 0.55;
       e.yaw += (t.yaw - e.yaw) * kSlow; e.nod += (t.nod - e.nod) * k; e.lean += (t.lean - e.lean) * kSlow;
       e.tilt += (t.tilt - e.tilt) * kSlow; e.turn += (t.turn - e.turn) * kTurn; e.stand += (t.stand - e.stand) * kStand;
       e.bounce += (t.bounce - e.bounce) * k * 0.6;
+      const kEye = 1 - Math.exp(-dt * 22);                                // eyes are quick
+      e.gaze += (t.gaze - e.gaze) * kEye; e.gazeY += (t.gazeY - e.gazeY) * kEye;
       e.armL += (t.armL - e.armL) * kArm; e.armR += (t.armR - e.armR) * kArm;
       e.spreadL += (t.spreadL - e.spreadL) * kArm; e.spreadR += (t.spreadR - e.spreadR) * kArm; e.aimR += (t.aimR - e.aimR) * kSlow;
       this.writeExpr(i);
       this.place(i);
     }
-    this.aDyn.needsUpdate = true; this.aSkinL.needsUpdate = true;
+    this.aDyn.needsUpdate = true; this.aSkinL.needsUpdate = true; this.aFace.needsUpdate = true;
     this.flush();
   }
 

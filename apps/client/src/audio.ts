@@ -150,6 +150,31 @@ export class AudioEngine {
     }
   }
 
+  /** A sound placed in the room, on the scene's audio clock (recorded videos synthesize the same sound when muxing). */
+  sfxAt(kind: 'chair', pos: V3, when: number) {
+    if (this.virtual) { this.log.push({ url: 'sfx:' + kind, when }); return; }
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = Math.max(ctx.currentTime, when);
+    const pan = ctx.createPanner();
+    pan.panningModel = 'HRTF'; pan.refDistance = 1.6; pan.rolloffFactor = 0.9;
+    pan.positionX.value = pos.x; pan.positionY.value = pos.y; pan.positionZ.value = pos.z;
+    pan.connect(this.voiceBus);
+    // a chair dragged on wood: stick-slip judder (a slowing saw) through two wooden resonances
+    const o = ctx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(58, t); o.frequency.linearRampToValueAtTime(34, t + 0.4);
+    const n = ctx.createBufferSource(); n.buffer = this.noise('pink', 0.5);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.16, t + 0.04); g.gain.linearRampToValueAtTime(0.11, t + 0.26); g.gain.linearRampToValueAtTime(0, t + 0.44);
+    for (const [f, q, a] of [[620, 3, 1], [1450, 5, 0.6]]) {
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q;
+      const w = ctx.createGain(); w.gain.value = a;
+      o.connect(bp); n.connect(bp); bp.connect(w).connect(g);
+    }
+    g.connect(pan);
+    o.start(t); o.stop(t + 0.5); n.start(t); n.stop(t + 0.5);
+  }
+
   // ---------------------------------------------------------------- generated buffers
   private noise(kind: 'pink' | 'brown', secs: number) {
     const ctx = this.ctx!, n = Math.floor(ctx.sampleRate * secs), buf = ctx.createBuffer(1, n, ctx.sampleRate), d = buf.getChannelData(0);
