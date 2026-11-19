@@ -2,6 +2,16 @@
 
 Hacker News as a living tower. Every floor is a front-page story, every table is a thread, and the people at it speak their comments, verbatim, in their own voices, as the conversation happens.
 
+## See it
+
+[`docs/img/first-cut.mp4`](docs/img/first-cut.mp4) is 51 s with sound: tonight's front page, a ride up to floor #1, and a table talking in its own voices. It was rendered headlessly on a software GPU, so it looks softer and slower than on a real one.
+
+| The live tower | Floors trade ranks |
+|---|---|
+| ![tower](docs/img/first-cut-tower.png) | ![rank swap](docs/img/first-cut-rank-swap.png) |
+| **A floor** | **At a table** |
+| ![floor](docs/img/first-cut-floor.jpg) | ![table](docs/img/first-cut-closeup.png) |
+
 ## Run it locally
 
 You need:

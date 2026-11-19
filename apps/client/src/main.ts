@@ -325,7 +325,7 @@ function frame(dt: number, draw = true) {
   crowd.update(dt);
   ui.update();
   if (dofOn) { uFocus.value = camera.position.distanceTo(rig.target); uBokeh.value = 2.4; }
-  rim.intensity += ((mode === 'table' ? 1.6 : 0) - rim.intensity) * Math.min(1, dt * 3);
+  rim.intensity += ((mode === 'table' ? 1.1 : 0) - rim.intensity) * Math.min(1, dt * 3);
   if (rim.intensity > 0.01) {
     const away = rig.target.clone().sub(camera.position).setY(0).normalize();
     rim.position.copy(rig.target).addScaledVector(away, 3).add(new THREE.Vector3(0, 1.6, 0));

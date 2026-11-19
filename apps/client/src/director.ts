@@ -306,7 +306,7 @@ export class Director {
   }
 
   /** Try angles, distances and heights around a preferred direction; cut to the best. */
-  private frame(target: THREE.Vector3, dir: THREE.Vector3, dist: number, lift: number, fov: number, skip: Set<number>, glide = 0, now = 0) {
+  private frame(target: THREE.Vector3, dir: THREE.Vector3, dist: number, lift: number, fov: number, skip: Set<number>, glide = 0, now = 0, dryRun = false): number {
     let best: THREE.Vector3 | null = null, bestScore = -Infinity;
     const Y = new THREE.Vector3(0, 1, 0);
     for (const a of [0, 0.3, -0.3, 0.6, -0.6, 0.95, -0.95, 1.3, -1.3]) {
@@ -318,9 +318,11 @@ export class Director {
         }
       }
     }
+    if (dryRun) return bestScore;
     if (!best) best = target.clone().add(dir.clone().multiplyScalar(dist)).setY(target.y + lift);
     this.rig.fovTarget = fov;
     if (glide) this.rig.glide(best, target, glide, now, 0.2, 0); else this.rig.cut(best, target, 0.12);
+    return bestScore;
   }
 
   private wide(now: number, glide = false) {
@@ -337,8 +339,8 @@ export class Director {
   private single(i: number, _from: number, now: number) {
     if (!this.spot || i < 0) return;
     const head = this.crowd.headPos(i);
-    const f = this.crowd.people[i].pose.facing;
-    const face = new THREE.Vector3(Math.sin(f), 0, Math.cos(f));   // the way they face
+    const f = this.crowd.people[i].pose.facing + (this.crowd.target(i)?.yaw ?? 0) * 0.7;
+    const face = new THREE.Vector3(Math.sin(f), 0, Math.cos(f));   // where their face is turned
     const target = head.clone().add(new THREE.Vector3(0, -0.05, 0));
     this.frame(target, face.applyAxisAngle(new THREE.Vector3(0, 1, 0), i % 2 ? 0.3 : -0.3), 1.3, 0.06, 30, new Set([i]));
     void now;
@@ -350,8 +352,10 @@ export class Director {
     const d = back.length();
     back.normalize();
     const target = sh.clone().add(new THREE.Vector3(0, -0.04, 0));
-    this.frame(target, back.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.22), d + 0.55, 0.14, 34, new Set([speaker, listener]));
-    void now;
+    const dir = back.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.22), skip = new Set([speaker, listener]);
+    // a blocked over-the-shoulder is worse than a clean single
+    if (this.frame(target, dir, d + 0.7, 0.18, 34, skip, 0, now, true) < -1.2) { this.single(speaker, -1, now); return; }
+    this.frame(target, dir, d + 0.7, 0.18, 34, skip);
   }
 
   /** the whole timeline so far, for muxing recorded videos */

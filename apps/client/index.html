@@ -56,6 +56,7 @@
   .lb { position:fixed; left:0; right:0; height:0; background:#000; transition:height .9s cubic-bezier(.2,.8,.2,1); pointer-events:none; z-index:2 }
   #lbt { top:0 } #lbb { bottom:0 }
   body[data-mode="table"] .lb { height:8.5vh }
+  #brand { transition:opacity .6s } body[data-mode="table"] #brand { opacity:0 }
   body[data-mode="table"] #floorbar { top:calc(8.5vh + 10px) }
 
   #subs { position:fixed; left:50%; bottom:calc(8.5vh + 22px); transform:translateX(-50%); width:min(880px, 92vw); text-align:center; z-index:3; pointer-events:none;
