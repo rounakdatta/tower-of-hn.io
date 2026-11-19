@@ -11,6 +11,7 @@ export class Rig {
   private dur = 0;
   private drift = new THREE.Vector3();
   private driftT = 0;
+  private arc = 1;
   fov = 45;
   fovTarget = 45;
   constructor(public camera: THREE.PerspectiveCamera) {}
@@ -21,7 +22,8 @@ export class Rig {
     this.driftT = 0;
   }
 
-  glide(p: THREE.Vector3, t: THREE.Vector3, dur: number, now: number, drift = 0) {
+  glide(p: THREE.Vector3, t: THREE.Vector3, dur: number, now: number, drift = 0, arc = 1) {
+    this.arc = arc;
     this.from.p.copy(this.pos); this.from.t.copy(this.target);
     this.to.p.copy(p); this.to.t.copy(t);
     this.t0 = now; this.dur = dur;
@@ -36,7 +38,7 @@ export class Rig {
       this.pos.lerpVectors(this.from.p, this.to.p, e);
       this.target.lerpVectors(this.from.t, this.to.t, e);
       // arc the path upward a little, like a crane, so glides never clip through things
-      this.pos.y += Math.sin(Math.PI * k) * 0.35 * this.from.p.distanceTo(this.to.p) / 10;
+      this.pos.y += Math.sin(Math.PI * k) * 0.35 * this.arc * this.from.p.distanceTo(this.to.p) / 10;
       if (k >= 1) this.dur = 0;
     }
     this.driftT += dt;

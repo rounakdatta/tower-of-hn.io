@@ -102,6 +102,7 @@ sync.onHead = (h: Head, prev) => {
 sync.onDelta = (d) => {
   if (d.turns?.length) {
     uBeacon.value = 1;
+    for (const t of d.turns) tower.pulse(t.story);
     if (mode === 'tower' && clock - lastBlip > 1.2) { audio.sfx('blip'); lastBlip = clock; }
   }
 };
@@ -123,7 +124,7 @@ async function enterFloor(sid: number) {
   const outside = new THREE.Vector3(out.x * (R + 8), roomY + 1.6, out.y * (R + 8));
   rig.pos.copy(camera.position); rig.target.copy(controls.target);
   rig.fovTarget = 45; rig.fov = camera.fov;
-  rig.glide(outside, new THREE.Vector3(0, roomY + 0.8, 0), 2.4, clock);
+  rig.glide(outside, new THREE.Vector3(0, roomY + 0.8, 0), 2.4, clock, 0, 0.6);
   audio.sfx('whoosh');
   audio.setMode('floor');
   after(1.5, () => {
@@ -137,6 +138,7 @@ async function enterFloor(sid: number) {
     crowd.set(lay.people);
     overview(clock, 2.0);
     audio.sfx('ding');
+    ui.card(`Floor ${rank + 1} · ${floor.story.comments} comments`, floor.story.title);
     ui.floorHeader({ rank: rank + 1, title: floor.story.title, id: floor.story.id, url: floor.story.url });
     ui.tableLabels(spots, roomY, (s) => sit(s));
     after(2.0, () => { if (mode === 'floor') ui.showLabels(true); });
@@ -155,7 +157,7 @@ function overview(now: number, dur: number) {
   const p = new THREE.Vector3(0.6, 0, R - 0.75).applyAxisAngle(Y, roomYaw).setY(roomY + 1.95);
   const t = new THREE.Vector3(0, 0, -0.4).applyAxisAngle(Y, roomYaw).setY(roomY + 0.45);
   rig.fovTarget = 58;
-  rig.glide(p, t, dur, now, 0.4);
+  rig.glide(p, t, dur, now, 0.4, 0);          // indoors: no crane arc, or we'd rise through the ceiling
 }
 
 let deepTable = Number(params.get('table') ?? 0);
@@ -167,11 +169,19 @@ function bestSpot(): TableSpot {
 
 function sit(s: TableSpot | undefined) {
   if (!s || !activeFloor) return;
-  if (s.bar) return;
+  if (s.bar && !s.tableOf) {
+    // the bar plays its one-liners in turn, each from its own table
+    const remarks = spots.filter((x) => x.bar);
+    const c = remarks.reduce((v, x) => v.add(x.pos), new THREE.Vector3()).divideScalar(remarks.length);
+    s = { index: -1, bar: true, pos: c, radius: 1.3, seats: remarks.flatMap((x) => x.seats),
+      table: { root: -1, seated: [], standing: remarks.map((x) => x.table.turns[0].by), turns: remarks.map((x, k) => ({ ...x.table.turns[0], gapMs: k ? 750 : 0 })) },
+      tableOf: new Map(remarks.map((x) => [x.table.turns[0].id, x.index])) };
+  }
   mode = 'table'; ui.mode('table'); audio.setMode('table'); audio.sfx('sit'); ui.showLabels(false);
   ui.flash(); setDof(true);
   if (!recording) history.replaceState(null, '', `?story=${activeFloor.story.id}&table=${s.table.root}`);
   ui.hint('Esc to stand up · Space to pause · N for the next table');
+  director.others = spots.filter((x) => !x.bar && x !== s).map((x) => ({ pos: x.pos, turns: x.table.turns }));
   director.start(activeFloor, s, roomY, clock);
 }
 
@@ -182,6 +192,7 @@ function nextTable() {
   sit(convo[(k + 1) % convo.length]);
 }
 director.onEnd = () => { if (mode === 'table') nextTable(); };
+director.onNewReply = (by) => ui.toast(`<b>${by}</b> just replied on Hacker News`);
 
 function standUp() {
   director.stop(); setDof(false);
@@ -272,7 +283,7 @@ if (recording) {
   (window as any).__tohn = {
     frame: (dt: number, draw = true) => frame(dt, draw),
     enter: (rank: number) => enterFloor(sync.head!.tower[rank]),
-    orbit: (a: number, r = 150, h = 62) => { camera.position.set(Math.cos(a) * r, h, Math.sin(a) * r); controls.target.copy(HOME.target); },
+    orbit: (a: number, r = 150, h = 62, ty?: number) => { camera.position.set(Math.cos(a) * r, h, Math.sin(a) * r); controls.target.copy(HOME.target); if (ty !== undefined) controls.target.y = ty; },
     clock: () => clock,
     timeline: () => director.timeline(),
     mode: () => mode,

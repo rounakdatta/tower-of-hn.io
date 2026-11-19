@@ -7,7 +7,7 @@ import { R, FLOOR_H, uTime } from './world.ts';
 import type { Floor, Table } from './sync.ts';
 import type { Pose } from './people.ts';
 
-export interface TableSpot { index: number; table: Table; pos: THREE.Vector3; radius: number; seats: { name: string; pos: THREE.Vector3; facing: number; seated: boolean }[]; bar: boolean }
+export interface TableSpot { index: number; table: Table; pos: THREE.Vector3; radius: number; seats: { name: string; pos: THREE.Vector3; facing: number; seated: boolean }[]; bar: boolean; /** bar only: comment -> its table */ tableOf?: Map<number, number> }
 
 const MAX_TABLES = 10, MAX_BAR = 12, BAR_ANGLE = -Math.PI / 2, BAR_SPAN = 1.25;
 

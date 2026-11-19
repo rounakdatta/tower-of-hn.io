@@ -11,6 +11,8 @@ Watches <var>/jobs for comment jobs written by towerd, and for each comment:
 
 One CPU thread on purpose: this box throttles sustained multi-core load.
 usage: worker.py <var dir>
+env:   TTS_ENGINE=kokoro (default, local CPU) | openai (gpt-4o-mini-tts, needs OPENAI_API_KEY;
+       each person gets a persistent persona prompt; OPENAI_BUDGET_MIN caps spend, default 300 minutes)
 """
 import hashlib, json, os, re, sys, time, urllib.request
 import numpy as np
@@ -49,6 +51,51 @@ class Voices:
             pace = 0.96 + (h32(user, "p") % 1000) / 1000 * 0.1
             self.cache[user] = (style.astype(np.float32), lang, pace, f"{a}+{b}@{w:.2f}")
         return self.cache[user]
+
+
+OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse", "marin", "cedar"]
+AGES = ["in their twenties", "in their thirties", "in their forties", "in their fifties", "in their sixties"]
+TIMBRE = ["a warm voice", "a dry voice", "a bright voice", "a slightly husky voice", "a soft voice", "a low, gravelly voice", "a clear, crisp voice"]
+PACE = ["a brisk pace", "a measured pace", "an unhurried pace", "a quick, clipped pace"]
+ATTITUDE = ["wry", "earnest", "skeptical", "enthusiastic", "deadpan", "thoughtful", "matter-of-fact", "mischievous"]
+ACCENT = ["", "", "", "", "", "a light British accent", "a light Australian lilt", "a light Irish lilt", "a light Indian English accent",
+          "a light German accent", "a light Scandinavian accent", "a light Canadian accent"]
+DELIVERY = {"angry": "with real heat, clipped and forceful", "stern": "firmly, correcting someone, a bit impatient",
+            "contemplative": "thinking out loud, with small pauses", "excited": "excited, fast and animated",
+            "joyful": "amused, smiling through it, a laugh in the voice", "mundane": "conversationally, relaxed and natural",
+            "nervous": "a little unsure, hedging", "sad": "subdued and a bit wistful", "surprised": "genuinely surprised",
+            "tender": "gently and kindly"}
+
+
+def persona(user):
+    pick = lambda xs, salt: xs[h32(user, salt) % len(xs)]
+    accent = pick(ACCENT, "acc")
+    return (pick(OPENAI_VOICES, "voice"),
+            f"a {pick(ATTITUDE, 'att')} Hacker News regular {pick(AGES, 'age')}, with {pick(TIMBRE, 'tim')} and {pick(PACE, 'pace')}"
+            + (f", and {accent}" if accent else ""))
+
+
+class OpenAITTS:
+    """gpt-4o-mini-tts: character-actor delivery, steered per person and per comment."""
+
+    def __init__(self, key, budget_min):
+        self.key, self.budget, self.used = key, budget_min * 60, 0.0
+
+    def create(self, text, who, emotion):
+        import io
+        if self.used > self.budget:
+            raise RuntimeError("OPENAI_BUDGET_MIN reached")
+        voice, who_desc = persona(who)
+        body = {"model": "gpt-4o-mini-tts", "voice": voice, "input": text, "response_format": "wav",
+                "instructions": f"You are {who_desc}. Read this comment you wrote, aloud, as your turn in a lively conversation at a table. "
+                                f"Deliver it {DELIVERY.get(emotion, DELIVERY['mundane'])}. Sound like a real person talking, not someone reading."}
+        req = urllib.request.Request("https://api.openai.com/v1/audio/speech", data=json.dumps(body).encode(),
+                                     headers={"Authorization": f"Bearer {self.key}", "content-type": "application/json"})
+        data = urllib.request.urlopen(req, timeout=120).read()
+        audio, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
+        audio = audio.mean(axis=1)
+        self.used += len(audio) / sr
+        return audio, sr
 
 
 def heuristic_tag(text):
@@ -175,9 +222,11 @@ def main(var):
     sess = ort.InferenceSession(f"{models}/kokoro-v1.0.onnx", so, providers=["CPUExecutionProvider"])
     kokoro = Kokoro.from_session(sess, f"{models}/voices-v1.0.bin")
     voices = Voices(kokoro)
+    engine = os.environ.get("TTS_ENGINE", "kokoro")
+    oai = OpenAITTS(os.environ["OPENAI_API_KEY"], float(os.environ.get("OPENAI_BUDGET_MIN", "300"))) if engine == "openai" else None
     key = os.environ.get("GEMINI_API_KEY", "")
     last_llm = 0.0
-    print("worker ready", flush=True)
+    print("worker ready", engine, flush=True)
     while True:
         names = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json")) if os.path.isdir(jobs_dir) else []
         if not names:
@@ -213,7 +262,10 @@ def main(var):
                 style, lang, pace, _ = voices.of(who)
                 speed = pace * SPEED.get(emotion, 1.0) * (0.97 if who != j["by"] else 1.0)
                 try:
-                    audio, sr = kokoro.create(spoken, voice=style, speed=speed, lang=lang)
+                    if oai:
+                        audio, sr = oai.create(spoken, who, emotion)
+                    else:
+                        audio, sr = kokoro.create(spoken, voice=style, speed=speed, lang=lang)
                 except Exception as e:  # noqa: BLE001
                     print("tts failed", j["id"], str(e)[:120], file=sys.stderr, flush=True)
                     continue

@@ -6,7 +6,7 @@
 import * as THREE from 'three/webgpu';
 import {
   instancedBufferAttribute, normalLocal, positionLocal, vec2, vec3, float, mix, smoothstep, length, min, max, clamp,
-  step, fract, abs, sin,
+  step, fract, abs, sin, mx_noise_float, instanceIndex,
 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { rngFor, pick, SKIN, OUTFIT, HAIR, hash32 } from './util.ts';
@@ -124,6 +124,7 @@ export class Crowd {
     this.arms.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 6), 3);
 
     const hairMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.75 });
+    hairMat.positionNode = positionLocal.add(normalLocal.mul(mx_noise_float(positionLocal.mul(17).add(float(instanceIndex).mul(3.7))).mul(0.016)));
     hairGeos().forEach((g) => {
       const im = new THREE.InstancedMesh(g, hairMat, MAX_PEOPLE);
       im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 3), 3);

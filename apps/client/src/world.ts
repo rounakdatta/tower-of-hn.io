@@ -62,7 +62,7 @@ export function buildCity(scene: THREE.Scene) {
   const warm = mix(vec3(1.0, 0.66, 0.36), vec3(1.0, 0.85, 0.62), hash(r.add(1.7)));
   const cool = vec3(0.55, 0.7, 1.0);
   const winCol = mix(warm, cool, step(0.88, hash(r.add(9.1))));
-  const roofBlink = step(0.5, normalLocal.y).mul(step(0.97, bld)).mul(step(0.5, fract(uTime.mul(0.5).add(bld.mul(3)))));
+  const roofBlink = step(0.5, normalLocal.y).mul(step(length(positionLocal.xz), 0.06)).mul(step(0.97, bld)).mul(step(0.5, fract(uTime.mul(0.5).add(bld.mul(3)))));
   mat.colorNode = mix(vec3(0.05, 0.055, 0.07), vec3(0.08, 0.075, 0.08), bld);
   mat.emissiveNode = winCol.mul(step(float(1).sub(litFrac), r)).mul(bands).mul(walls).mul(0.95).add(vec3(1, 0.1, 0.05).mul(roofBlink).mul(3));
   const city = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mat, N);
@@ -117,6 +117,8 @@ export class Tower {
   rankOf = new Map<number, number>();
   private aGlow: THREE.InstancedBufferAttribute;
   private aSel: THREE.InstancedBufferAttribute;
+  private aPulse: THREE.InstancedBufferAttribute;
+  private searchlights: THREE.Group;
   private atlas: HTMLCanvasElement;
   private atlasTex: THREE.CanvasTexture;
   private m = new THREE.Matrix4();
@@ -147,10 +149,10 @@ export class Tower {
     const geo = new THREE.CylinderGeometry(R, R, FLOOR_H * 0.94, 96, 1);
     this.aGlow = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS), 1);
     this.aSel = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS), 1);
-    geo.setAttribute('aGlow', this.aGlow); geo.setAttribute('aSel', this.aSel);
+    this.aPulse = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS), 1);
     const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.22, metalness: 0.85 });
     {
-      const glow = instancedBufferAttribute(this.aGlow), sel = instancedBufferAttribute(this.aSel);
+      const glow = instancedBufferAttribute(this.aGlow), sel = instancedBufferAttribute(this.aSel), pulse = instancedBufferAttribute(this.aPulse);
       const u = uv().x, v = uv().y;
       const cols = 132.0;
       const wu = fract(u.mul(cols)), wv = v;
@@ -160,10 +162,10 @@ export class Tower {
       const lit = step(float(1).sub(glow), r);
       const flick = sin(uTime.mul(0.4).add(r.mul(60))).mul(0.05).add(0.95);
       const walls = step(abs(normalLocal.y), 0.5);
-      const interiorTint = mix(vec3(1.0, 0.58, 0.26), vec3(1.0, 0.83, 0.58), hash(id.add(7)));
+      const interiorTint = mix(mix(vec3(1.0, 0.55, 0.24), vec3(1.0, 0.82, 0.56), hash(id.add(7))), vec3(0.62, 0.78, 1.0), step(0.93, hash(id.add(13))));
       const dimRoom = vec3(0.08, 0.1, 0.16).mul(pane).mul(walls);           // unlit glass still reads as glass
       mat.colorNode = mix(vec3(0.03, 0.035, 0.05), vec3(0.05, 0.06, 0.08), pane);
-      mat.emissiveNode = interiorTint.mul(pane).mul(lit).mul(flick).mul(walls).mul(1.9)
+      mat.emissiveNode = interiorTint.mul(pane).mul(lit).mul(flick).mul(walls).mul(float(1.35).add(pulse.mul(1.6)))
         .add(dimRoom.mul(0.25))
         .add(vec3(1.0, 0.42, 0.1).mul(sel).mul(walls).mul(step(0.72, v)).mul(0.6));
     }
@@ -190,6 +192,22 @@ export class Tower {
     this.bands = new THREE.InstancedMesh(bgeo, bmat, FLOORS);
     this.bands.frustumCulled = false;
     scene.add(this.floors, this.bands);
+    // searchlights from the crown: the tower is an event
+    this.searchlights = new THREE.Group();
+    this.searchlights.position.y = TOWER_TOP + 1.2;
+    const beam = new THREE.ConeGeometry(13, 150, 32, 1, true);
+    beam.translate(0, -75, 0); beam.rotateX(Math.PI);           // apex at the crown, opening upward
+    const bm = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, fog: false });
+    bm.colorNode = vec3(1.0, 0.86, 0.66);
+    bm.opacityNode = pow(uv().y, 2.6).mul(0.055);
+    for (let k = 0; k < 2; k++) {
+      const pivot = new THREE.Group();
+      const cone = new THREE.Mesh(beam, bm);
+      cone.rotation.z = 0.42;
+      pivot.add(cone); pivot.rotation.y = k * Math.PI;
+      this.searchlights.add(pivot);
+    }
+    scene.add(this.searchlights);
     for (let i = 0; i < FLOORS; i++) this.slots.push({ sid: null, y: floorY(i), yTarget: floorY(i), r: 0, dir: new THREE.Vector2(1, 0), anim: null, scale: 0, scaleTarget: 0 });
   }
 
@@ -245,6 +263,13 @@ export class Tower {
     this.atlasTex.needsUpdate = true;
   }
 
+  /** A comment just landed on this story: its windows flash. */
+  pulse(sid: number) {
+    const si = this.slotOf.get(sid);
+    if (si === undefined) return;
+    (this.aPulse.array as Float32Array)[si] = 1;
+  }
+
   setSelected(slot: number) {
     const a = this.aSel.array as Float32Array;
     for (let i = 0; i < FLOORS; i++) a[i] = i === slot ? 1 : 0;
@@ -278,5 +303,10 @@ export class Tower {
     }
     this.floors.instanceMatrix.needsUpdate = true;
     this.bands.instanceMatrix.needsUpdate = true;
+    const pu = this.aPulse.array as Float32Array;
+    let any = false;
+    for (let i = 0; i < FLOORS; i++) if (pu[i] > 0) { pu[i] = Math.max(0, pu[i] - dt * 0.7); any = true; }
+    if (any) this.aPulse.needsUpdate = true;
+    this.searchlights.rotation.y = now * 0.12;
   }
 }

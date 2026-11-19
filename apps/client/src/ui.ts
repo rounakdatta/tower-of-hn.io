@@ -26,6 +26,19 @@ export class UI {
   }
 
   live(text: string) { $('live').textContent = text; }
+  /** A cinematic title card when you arrive somewhere. */
+  card(kicker: string, title: string) {
+    const c = $('card');
+    c.innerHTML = `<div class="k">${esc(kicker)}</div><div class="t">${esc(title)}</div>`;
+    c.classList.remove('go'); void c.offsetWidth; c.classList.add('go');
+  }
+  private toastTimer = 0;
+  toast(html: string) {
+    const t = $('toast');
+    t.innerHTML = html; t.classList.add('show');
+    clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => t.classList.remove('show'), 3600);
+  }
   flash() { const f = $('fade'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go'); }
   hint(text: string) { $('hint').textContent = text; }
 
@@ -64,11 +77,12 @@ export class UI {
     }
     const bar = spots.filter((s) => s.bar).length;
     if (bar) {
-      const el = document.createElement('div');
+      const el = document.createElement('button');
       el.className = 'tlabel bar';
-      el.innerHTML = `<b>The bar</b><span>${bar} one-off remark${bar === 1 ? '' : 's'}</span>`;
-      box.appendChild(el);
+      el.innerHTML = `<b>The bar</b><span>${bar} one-liner${bar === 1 ? '' : 's'}</span>`;
       const b = spots.find((s) => s.bar)!;
+      el.onclick = (e) => { e.stopPropagation(); onPick(b); };
+      box.appendChild(el);
       this.labels.push({ el, at: new THREE.Vector3(b.pos.x * 0.92, roomY + 1.7, b.pos.z * 0.92) });
     }
   }

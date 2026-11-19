@@ -92,6 +92,20 @@ export class AudioEngine {
     return src;
   }
 
+  /** Another table's real voice, heard across the room: quiet, muffled, placed where they sit. */
+  murmur(buf: AudioBuffer, when: number, pos: V3) {
+    if (this.virtual || !this.ctx || !buf) return;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
+    const g = ctx.createGain(); g.gain.value = 0.16;
+    const pan = ctx.createPanner(); pan.panningModel = 'equalpower'; pan.refDistance = 2; pan.rolloffFactor = 1.2;
+    pan.positionX.value = pos.x; pan.positionY.value = pos.y; pan.positionZ.value = pos.z;
+    src.connect(lp).connect(g).connect(pan);
+    pan.connect(this.reverbSend); pan.connect(this.master);
+    src.start(Math.max(ctx.currentTime, when));
+  }
+
   setMuted(m: boolean) {
     this.muted = m;
     if (this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 0.9, this.ctx.currentTime, 0.05);

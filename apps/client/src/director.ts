@@ -40,6 +40,9 @@ export class Director {
   private gesture = new Map<number, number>();
   playing = false;
   paused = false;
+  others: { pos: THREE.Vector3; turns: Turn[] }[] = [];      // other tables on this floor, for the murmur
+  private murmurAt = 0;
+  onNewReply: (by: string) => void = () => {};
   onEnd: () => void = () => {};
 
   constructor(private sync: LiveSync, private audio: AudioEngine, private crowd: Crowd, private rig: Rig, private ui: UI) {}
@@ -65,12 +68,23 @@ export class Director {
   /** A newer snapshot of this floor arrived (new turns, or audio became ready). */
   refresh(floor: Floor) {
     if (!this.spot || !this.floor) return;
-    const t = floor.tables.find((x) => x.root === this.spot!.table.root);
     this.floor = floor;
+    if (this.spot.tableOf) {                         // the bar: one remark from each of several tables
+      for (const u of this.spot.table.turns) {
+        const ti = this.spot.tableOf.get(u.id);
+        const fresh = ti !== undefined ? floor.tables[ti]?.turns.find((x) => x.id === u.id) : undefined;
+        if (fresh?.v) u.v = fresh.v;
+      }
+      this.prefetch();
+      return;
+    }
+    const t = floor.tables.find((x) => x.root === this.spot!.table.root);
     if (!t) return;
     const played = new Set(this.spot.table.turns.slice(0, this.turnIdx).map((u) => u.id));
     this.spot.table = t;
     // keep our place: the first turn we haven't scheduled yet (late replies slot in here)
+    const known = new Set(this.spot.table.turns.map((u) => u.id));
+    for (const u of t.turns) if (!known.has(u.id)) this.onNewReply(u.by);
     this.turnIdx = t.turns.findIndex((u) => !played.has(u.id));
     if (this.turnIdx < 0) this.turnIdx = t.turns.length;
     this.prefetch();
@@ -99,8 +113,9 @@ export class Director {
       const t = turns[k];
       if (t.v) this.load(t);
       else {
-        const key = `${this.floor.story.id}:${this.spot.index}:${k}`;
-        if (!this.asked.has(key)) { this.asked.add(key); this.sync.want(this.floor.story.id, this.spot.index, k); }
+        const ti = this.spot.tableOf?.get(t.id) ?? this.spot.index, from = this.spot.tableOf ? 0 : k;
+        const key = `${this.floor.story.id}:${ti}:${from}`;
+        if (!this.asked.has(key)) { this.asked.add(key); this.sync.want(this.floor.story.id, ti, from); }
       }
     }
   }
@@ -144,9 +159,24 @@ export class Director {
     }
   }
 
+  /** Every few seconds another table's real conversation drifts across the room. */
+  private murmur(at: number) {
+    if (at < this.murmurAt || !this.others.length) return;
+    this.murmurAt = at + 4 + Math.random() * 5;
+    const o = this.others[Math.floor(Math.random() * this.others.length)];
+    const voiced = o.turns.filter((t) => t.v);
+    if (!voiced.length) return;
+    const t = voiced[Math.floor(Math.random() * voiced.length)];
+    this.sync.sidecar(t.v![0]).then((side) => {
+      const c = side.clips[Math.floor(Math.random() * side.clips.length)];
+      return this.audio.load(this.sync.url(c.u)).then((b) => this.audio.murmur(b, this.audio.now() + 0.05, { x: o.pos.x, y: this.roomY + 1.1, z: o.pos.z }));
+    }).catch(() => {});
+  }
+
   update(now: number, dt: number) {
     if (!this.spot || !this.playing) return;
     this.scheduleAhead(now);
+    if (!this.paused) this.murmur(this.audio.now());
     const at = this.audio.now();
     this.sched = this.sched.filter((s) => s.end > at - 0.5);
     const cur = this.sched.find((s) => at >= s.start && at < s.end) ?? null;
@@ -289,7 +319,7 @@ export class Director {
     }
     if (!best) best = target.clone().add(dir.clone().multiplyScalar(dist)).setY(target.y + lift);
     this.rig.fovTarget = fov;
-    if (glide) this.rig.glide(best, target, glide, now, 0.2); else this.rig.cut(best, target, 0.12);
+    if (glide) this.rig.glide(best, target, glide, now, 0.2, 0); else this.rig.cut(best, target, 0.12);
   }
 
   private wide(now: number, glide = false) {
@@ -305,8 +335,9 @@ export class Director {
 
   private single(i: number, _from: number, now: number) {
     if (!this.spot || i < 0) return;
-    const head = this.crowd.headPos(i), c = this.center();
-    const face = c.clone().sub(head).setY(0).normalize();        // they face the table
+    const head = this.crowd.headPos(i);
+    const f = this.crowd.people[i].pose.facing;
+    const face = new THREE.Vector3(Math.sin(f), 0, Math.cos(f));   // the way they face
     const target = head.clone().add(new THREE.Vector3(0, -0.05, 0));
     this.frame(target, face.applyAxisAngle(new THREE.Vector3(0, 1, 0), i % 2 ? 0.3 : -0.3), 1.3, 0.06, 30, new Set([i]));
     void now;
