@@ -108,6 +108,8 @@ export class Director {
   playing = false;
   /** play the opener, then jump to this comment (deep links) */
   jumpTo = 0;
+  /** demos: comments to leave out (?skip=id,id) */
+  skipIds = new Set<number>();
   paused = false;
   others: { pos: THREE.Vector3; turns: Turn[] }[] = [];      // other tables on this floor, for the murmur
   private murmurAt = 0;
@@ -190,6 +192,7 @@ export class Director {
     const turns = this.spot.table.turns;
     for (let k = this.turnIdx; k < Math.min(turns.length, this.turnIdx + 4); k++) {
       const t = turns[k];
+      if (this.skipIds.has(t.id)) continue;
       if (t.v) this.load(t);
       else {
         const ti = this.spot.tableOf?.get(t.id) ?? this.spot.index, from = this.spot.tableOf ? 0 : k;
@@ -246,6 +249,7 @@ export class Director {
     const at = this.audio.now();
     while (this.cursor - at < 2.5 && this.turnIdx < turns.length) {
       const turn = turns[this.turnIdx];
+      if (this.skipIds.has(turn.id)) { this.turnIdx++; continue; }
       const r = this.ready.get(turn.id);
       if (!r) {
         this.prefetch();
@@ -603,13 +607,23 @@ export class Director {
         if (Math.sin(at * 0.8 + i * 2.1) > 0.93) t.yaw += Math.sin(at * 11) * 0.14;                     // a small head shake
       }
     }
+    // whoever is in shot "cheats out", as actors do: the face angles toward the lens, the eyes stay on whoever
+    // they're talking to (a toy head seen side-on has no face to read)
+    let cheat = 0;
+    const ci = this.onCamera, ct = ci >= 0 ? this.crowd.target(ci) : undefined;
+    if (ct && this.crowd.people[ci]?.pose.seated !== undefined) {
+      const h = this.crowd.headPos(ci), cam = this.rig.pos, pose = this.crowd.people[ci].pose;
+      let d = Math.atan2(cam.x - h.x, cam.z - h.z) - (pose.facing + ct.turn + Math.max(-1.1, Math.min(1.1, ct.yaw)));
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      if (Math.abs(d) < 1.5) { cheat = Math.max(-0.5, Math.min(0.5, d * 0.4)); ct.yaw += cheat; }
+    }
     // eyes: they get there before the head does (and cover what the neck can't), with small darts now and then
     for (const seat of this.spot.seats) {
       const i = this.ix(seat.name), t = this.crowd.target(i);
       if (!t || i < 0) continue;
       const excess = t.yaw - Math.max(-1.1, Math.min(1.1, t.yaw));
       const dart = Math.sin(Math.floor(at * 0.8 + i * 0.37) * 12.9898 + i) * 0.16;
-      t.gaze = Math.max(-1, Math.min(1, t.yaw * 0.4 + excess * 1.6 + dart));
+      t.gaze = Math.max(-1, Math.min(1, t.yaw * 0.4 + excess * 1.6 + dart - (i === ci ? cheat * 2.2 : 0)));
       t.gazeY = Math.max(-1, Math.min(1, -t.nod * 0.35 + dart * 0.4));
       if (!plan || i !== plan.S) continue;
       const k = at - plan.start, flip = this.crowd.seed(i, 5) > 0.5 ? 1 : -1;
@@ -714,8 +728,10 @@ export class Director {
         if (k > 0 && k < 1 && x * x + z * z < tr * tr) sc -= 4 * s.w;
       }
       if (s.face) {
-        // the face is small on a big round head: past ~55° it reads as a profile, so aim for ~22° off the nose
-        const v = p.clone().sub(s.head).setY(0).normalize(), d = v.dot(s.face);
+        // the face is small on a big round head: past ~55° it reads as a profile, so aim for ~22° off the nose.
+        // the one in shot cheats toward the lens (see animate), so count their face as turned that much further
+        const v = p.clone().sub(s.head).setY(0).normalize(), raw = Math.acos(Math.max(-1, Math.min(1, v.dot(s.face))));
+        const d = Math.cos(s === subjects[0] && s.i >= 0 && raw < 1.5 ? raw - Math.min(0.5, raw * 0.4) : raw);
         if (d < 0.55) sc -= (0.55 - d) * 9 * s.w;
         sc -= Math.abs(d - 0.93) * 1.6 * s.w;
       }
@@ -724,6 +740,8 @@ export class Director {
   }
   private tmp = new THREE.Vector3();
   private nearby: number[] = [];
+  /** who the current shot is on (they cheat their face toward the lens) */
+  private onCamera = -1;
 
   /** Try angles, distances and heights around a preferred direction; cut (or glide) to the best. */
   private frame(target: THREE.Vector3, dir: THREE.Vector3, dist: number, lift: number, fov: number, subjects: Subject[], near: Set<number>,
@@ -750,6 +768,7 @@ export class Director {
     if (!best) best = target.clone().add(dir.clone().multiplyScalar(dist)).setY(target.y + lift);
     this.rig.fovTarget = fov;
     this.exposure = o.exposure ?? 1;
+    this.onCamera = subjects[0]?.i ?? -1;
     if (o.glide) this.rig.glide(best, target, o.glide, o.now ?? 0, 0.2, 0); else this.rig.cut(best, target, 0.12);
     this.cutAt = this.clockNow;
     this.shot = `${o.name ?? 'shot'} ${bestScore.toFixed(1)}`;
@@ -772,7 +791,7 @@ export class Director {
   /** A close single on someone's face, from the open side of the table. */
   private single(i: number, medium = false) {
     if (!this.spot || i < 0) return;
-    const s = this.subject(i), target = s.head.clone().add(new THREE.Vector3(0, medium ? -0.12 : -0.05, 0));
+    const s = this.subject(i), target = s.head.clone().add(new THREE.Vector3(0, medium ? -0.05 : -0.02, 0));
     // from the open middle of the table, a little toward where they look: a 3/4 face, never between them and
     // whoever they're talking to (that's where their hands go)
     const toC = this.spot.bar ? s.face!.clone() : this.center().sub(s.head).setY(0).normalize();

@@ -158,7 +158,7 @@ async function enterFloor(sid: number) {
   });
   sync.watch(sid, (f) => {
     activeFloor = f;
-    if (mode === 'table') director.refresh(f);
+    if (mode === 'table' && !params.has('freeze')) director.refresh(f);     // ?freeze: a take that live HN can't rewrite mid-shot
     else if (mode === 'floor') ui.tableLabels(spots.map((s) => ({ ...s, table: f.tables.find((t) => t.root === s.table.root) ?? s.table })), roomY, (s) => sit(s));
   });
 }
@@ -195,6 +195,7 @@ function sit(s: TableSpot | undefined) {
   ui.hint('Esc to stand up · Space to pause · N for the next table');
   director.others = spots.filter((x) => !x.bar && x !== s).map((x) => ({ pos: x.pos, turns: x.table.turns }));
   director.jumpTo = deepFrom; deepFrom = 0;
+  director.skipIds = new Set((params.get('skip') ?? '').split(',').filter(Boolean).map(Number));
   director.start(activeFloor, s, roomY, clock);
 }
 
