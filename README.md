@@ -29,6 +29,7 @@ open http://127.0.0.1:5288
 - **Table.** Space pauses, N moves to the next table, Esc stands you up, M mutes.
   - Links are held up as placards you can click.
   - When someone quotes the comment they're answering, its author speaks the quote.
+- **Lean back:** top right on the tower. It rides to the liveliest floor, plays its best tables one after another, then moves down the ranking, hands-free.
 - **Deep link:** `?story=<id>&table=<root comment id>` (the address bar updates as you sit down).
 
 ## Layout

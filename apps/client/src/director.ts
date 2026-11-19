@@ -210,7 +210,8 @@ export class Director {
   private onClip(s: Scheduled, now: number) {
     const name = s.clip.who;
     const look = this.crowd.people[s.who]?.look;
-    this.ui.subtitle({ name, text: s.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: s.side.emotion });
+    const to = s.clip.who === s.turn.by && s.turn.replyTo ? this.spot?.table.turns.find((u) => u.id === s.turn.replyTo)?.by : undefined;
+    this.ui.subtitle({ name, to, text: s.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: s.side.emotion });
     const link = s.side.links.find((l) => l.url === s.clip.t);
     this.ui.placard(link ? { url: link.url, domain: link.domain, at: this.crowd.headPos(s.who) } : null);
     this.ui.code(s.side.code.find((c) => c.startsWith(s.clip.t.slice(0, 40))) ?? null);
