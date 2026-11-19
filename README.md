@@ -85,7 +85,10 @@ The client renders headlessly on a software GPU (`?record` makes time determinis
 - `tools/sheet.cjs` grabs a frame every few seconds, with the camera's choice and the subtitle. `tools/tile.py` tiles them into one contact sheet.
 - `tools/plan.py` draws top-down plans of a table: who sits where, who stands, where the lens is.
 - `tools/record.cjs` and `tools/mux.py` make videos with the real voices and the synthesized chair scrapes and thumps.
-- `?force=angry|joke|question|uncertain|excited|sad` makes every turn play that way.
+- `?force=angry|joke|question|uncertain|excited|sad|list|sarcasm` makes every turn play that way.
+- For takes that live HN can't rewrite mid-shot:
+  - `?freeze` ignores table updates while seated.
+  - `?skip=<id>,<id>` leaves comments out.
 
 ## Status
 
