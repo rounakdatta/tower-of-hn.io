@@ -234,8 +234,16 @@ addEventListener('keydown', (e) => {
 
 // hover + click on the tower
 const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
-let hoverSlot = -1, downAt = 0, downXY = [0, 0];
+let hoverSlot = -1, hoverTable = -1, downAt = 0, downXY = [0, 0];
 renderer.domElement.addEventListener('pointermove', (e) => {
+  if (mode === 'floor') {
+    ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    ray.setFromCamera(ptr, camera);
+    const hit = ray.intersectObject(interior.tableMesh)[0];
+    hoverTable = hit?.instanceId ?? -1;
+    renderer.domElement.style.cursor = hoverTable >= 0 ? 'pointer' : '';
+    return;
+  }
   if (mode !== 'tower') return;
   ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(ptr, camera);
@@ -252,7 +260,15 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 });
 renderer.domElement.addEventListener('pointerdown', (e) => { downAt = performance.now(); downXY = [e.clientX, e.clientY]; });
 renderer.domElement.addEventListener('pointerup', (e) => {
-  if (mode !== 'tower' || performance.now() - downAt > 400 || Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 8) return;
+  if (performance.now() - downAt > 400 || Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 8) return;
+  if (mode === 'floor') {
+    ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    ray.setFromCamera(ptr, camera);
+    const k = ray.intersectObject(interior.tableMesh)[0]?.instanceId;
+    if (k !== undefined) sit(spots.filter((x) => !x.bar)[k]);
+    return;
+  }
+  if (mode !== 'tower') return;
   const sid = hoverSlot >= 0 ? tower.slots[hoverSlot].sid : null;
   if (sid !== null) enterFloor(sid);
 });
@@ -296,6 +312,7 @@ if (recording) {
     clock: () => clock,
     timeline: () => director.timeline(),
     mode: () => mode,
+    swap: () => { const h = sync.head!; const t = h.tower.slice(); [t[2], t[7]] = [t[7], t[2]]; tower.setOrder(t, h.stories, h.act, clock, camDir2()); },
   };
   (window as any).__ready = true;
 } else {

@@ -223,15 +223,17 @@ export class Tower {
         si = this.slots.findIndex((s) => s.sid === null && s.scale < 0.01);
         if (si < 0) si = this.slots.findIndex((s) => s.sid === null);
         const s = this.slots[si];
-        s.sid = sid; s.y = target; s.yTarget = target; s.r = 9; s.scale = 1; s.scaleTarget = 1;
-        s.dir.copy(camDir);
-        s.anim = { t0: now, from: target, to: target, dur: 1.4, out: 9 };
+        s.sid = sid; s.y = target; s.yTarget = target; s.r = 11; s.scale = 1; s.scaleTarget = 1;
+        s.dir.set(-camDir.y, camDir.x);                  // sideways to the viewer, so the move reads
+        s.anim = { t0: now, from: target, to: target, dur: 1.6, out: 11 };
+        (this.aPulse.array as Float32Array)[si] = 1;
         this.slotOf.set(sid, si);
       } else {
         const s = this.slots[si];
         const prevRank = this.rankOf.get(sid) ?? rank;
         if (Math.abs(prevRank - rank) >= 2) {
-          s.anim = { t0: now, from: s.y, to: target, dur: 2.0, out: 2.6 }; s.dir.copy(camDir); moved = true;
+          s.anim = { t0: now, from: s.y, to: target, dur: 2.2, out: 4.4 }; s.dir.set(-camDir.y, camDir.x); moved = true;
+          (this.aPulse.array as Float32Array)[si] = 1;
         }
         s.yTarget = target; s.scaleTarget = 1;
       }

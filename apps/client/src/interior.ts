@@ -13,7 +13,7 @@ const MAX_TABLES = 10, MAX_BAR = 12, BAR_ANGLE = -Math.PI / 2, BAR_SPAN = 1.25;
 
 export class Interior {
   group = new THREE.Group();
-  private tableMesh: THREE.InstancedMesh;
+  tableMesh: THREE.InstancedMesh;
   private chairMesh: THREE.InstancedMesh;
   private lampMesh: THREE.InstancedMesh;
   private lights: THREE.PointLight[] = [];
