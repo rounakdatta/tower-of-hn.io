@@ -212,6 +212,20 @@ Emotion and speech are curves over those numbers. This reads at any distance, co
 | Gaze | the speaker addresses the person they're replying to, and glances at the room on long turns |
 | Reactions | each listener's response to this turn: a nod if they later agree, narrowed eyes if they're about to object, a laugh at a joke |
 
+**Built on 20 Nov (the first acting pass, all procedural, on the client).** Most of M3 already runs locally. Claude Haiku tags each comment with emotion, stance, intensity and cues, and the client turns those into a performance:
+- **Who looks at whom.** A replier turns to the person they answer: shoulders part of the way, head the rest, irises ahead of the head. Listeners' eye-lines follow the speaker, up to anyone standing.
+- **Standing up.** A heated reply rises while the other person finishes: lean in, palms on the table, chair scrapes back, stand, glare down. A heavy one jolts the camera, and the room turns to look.
+- **Gestures from tags:**
+  - point (pushback), palms (question), shrug and a look up (unsure)
+  - arms up (excited), facepalm (frustrated), chin (thinking)
+  - eye-roll (sarcasm), laugh (joke)
+- **Listener reactions:** taken aback, a gasp at insults, lighting up at praise, a head shake before disagreeing.
+- **Timing from tags:** heated replies cut in, jokes get room for the laugh.
+- **A virtual cinematographer.** Everyone is a capsule. It scores candidate lenses on occlusion, foreground heads and face visibility, and its shots include rise, hero (over the shoulder of the one being told off), reverse, singles, mediums and reactions.
+- **Long threads.** Whoever is about to speak is rotated into an idle seat.
+
+The precomputed tracks below remain the plan for v1 quality (viseme-accurate mouths, word-timed beats). The procedural layer stays as the fallback, and as the thing that ties a table together.
+
 **On the client:**
 - **Bodies:** gestures and idles are a small library (~30 seated-conversation clips) baked into **vertex animation textures**. Every body on a floor is one instanced draw. Per-character clip, time and colour live in instance data.
 - **Procedural layers in the shader:** head turns toward the speaker, breathing, blinking.
