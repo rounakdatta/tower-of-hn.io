@@ -262,7 +262,11 @@ export class Director {
       this.waitSince = 0;
       this.ui.waiting(null);
       // audio voiced while HN still showed a placeholder ([delayed]): the real text is being re-voiced; skip it meanwhile
-      if (r.side.clips.length === 1 && /^\s*\[(delayed|flagged|dead|deleted|removed)\]\s*$/i.test(r.side.clips[0].t)) { this.turnIdx++; continue; }
+      if (r.side.clips.length === 1 && /^\s*\[(delayed|flagged|dead|deleted|removed)\]\s*$/i.test(r.side.clips[0].t)) {
+        if (this.floor && !this.spot.tableOf) this.sync.want(this.floor.story.id, this.spot.index, this.turnIdx);
+        this.turnIdx++;
+        continue;
+      }
       // whoever is about to talk, whoever they answer and whoever they quote must be at the table
       const prevBy = turns[this.turnIdx - 1]?.by, keep = new Set([turn.by, ...(prevBy ? [prevBy] : [])]);
       this.ensure(turn.by, keep);

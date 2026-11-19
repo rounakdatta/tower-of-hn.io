@@ -93,7 +93,15 @@ function wanted(): [number, number][] {
       if (!out.has(t.turns[0].id)) out.set(t.turns[0].id, 1000 + fi * 100 + 80 + k);
     });
   });
-  return [...out].filter(([id]) => !live.voiced.has(id) || stale.has(id)).sort((a, b) => a[1] - b[1]);
+  return [...out].filter(([id]) => needsVoice(id) || stale.has(id)).sort((a, b) => a[1] - b[1]);
+}
+
+/** audio voiced while HN still showed a moderation placeholder: the client skips it, so a listener needs the real thing */
+const PLACEHOLDER_REVS = new Set(['delayed', 'flagged', 'dead', 'deleted', 'removed']
+  .map((w) => createHash('sha1').update(`${VOICE_VERSION}:[${w}]`).digest('hex').slice(0, 8)));
+function needsVoice(id: number) {
+  const v = live.voiced.get(id);
+  return !v || (stale.has(id) && PLACEHOLDER_REVS.has(String(v[0]).split('.')[1]));
 }
 
 function revOf(id: number): string | undefined {
@@ -146,10 +154,10 @@ createServer((req, res) => {
         const { story, table, from = 0 } = JSON.parse(body);
         const f = floors.get(story);
         const turns = f?.tables[table]?.turns.slice(from, from + 24) ?? [];
-        turns.forEach((u, k) => { if (!live.voiced.has(u.id)) demand.set(u.id, Math.min(demand.get(u.id) ?? 999, k)); });
+        turns.forEach((u, k) => { if (needsVoice(u.id)) demand.set(u.id, Math.min(demand.get(u.id) ?? 999, k)); });
         syncJobs();
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ queued: turns.filter((u) => !live.voiced.has(u.id)).length }));
+        res.end(JSON.stringify({ queued: turns.filter((u) => needsVoice(u.id)).length }));
       } catch { res.writeHead(400); res.end(); }
     });
     return;
