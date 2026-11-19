@@ -28,7 +28,18 @@ def chair():
     y *= np.interp(t, [0, 0.04, 0.26, d], [0, 1, 0.7, 0])
     return (y / (np.abs(y).max() + 1e-9) * 0.16).astype(np.float32)
 
-SFX = {"sfx:chair": chair()}
+def thump():
+    """audio.ts sfxAt('thump'): palms on a tabletop, a falling low sine and a short knock."""
+    d = 0.3
+    t = np.arange(int(d * sr)) / sr
+    f = 92 * (58 / 92) ** np.minimum(t / 0.2, 1)
+    body = np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-t / 0.06) * 0.5
+    knock = rng.standard_normal(len(t)) * np.exp(-t / 0.012) * 0.25
+    X, fr = np.fft.rfft(knock), np.fft.rfftfreq(len(t), 1 / sr)
+    knock = np.fft.irfft(X * (fr < 900), len(t))
+    return ((body + knock) * 0.6).astype(np.float32)
+
+SFX = {"sfx:chair": chair(), "sfx:thump": thump()}
 for c in meta["timeline"]:
     if c["url"] in SFX:
         at = int((c["when"] - clock0) * sr)

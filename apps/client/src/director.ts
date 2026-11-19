@@ -132,6 +132,7 @@ export class Director {
   stop() {
     for (const s of this.sched) { try { s.src.stop(); } catch { /* already done */ } }
     this.sched = []; this.current = null; this.playing = false;
+    this.glances = []; this.events = [];
     this.crowd.settle();
     for (const c of this.chairK.keys()) this.pushChair(c, 0);
     this.chairK.clear();
@@ -194,9 +195,40 @@ export class Director {
   }
 
   private seatOf = new Map<string, number>();
+  private glances: { i: number; from: number; until: number; at: THREE.Vector3 }[] = [];
+  private events: { at: number; fn: () => void }[] = [];
+  private later(at: number, fn: () => void) { this.events.push({ at, fn }); }
   private waitSince = 0;
   /** person index for a name, at this table */
-  private ix(name: string) { return this.seatOf.get(name) ?? this.crowd.index(name); }
+  private ix(name: string) { return this.seatOf.get(name) ?? -1; }
+
+  /**
+   * Long threads have more people than places. Someone about to speak who isn't here takes the place of someone
+   * who isn't due to speak: a seat first (talkers belong at the table, and only the seated can stand up in anger),
+   * whoever spoke longest ago, preferably out of shot.
+   */
+  private ensure(name: string, keep: Set<string>) {
+    if (!this.spot || this.spot.bar || this.seatOf.has(name)) return;
+    const turns = this.spot.table.turns, played = turns.slice(0, this.turnIdx).map((u) => u.by);
+    const soon = new Set(turns.slice(this.turnIdx, this.turnIdx + 8).map((u) => u.by));
+    const cam = this.rig.camera;
+    cam.updateMatrixWorld();
+    const view = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    let best = -1, bestScore = -Infinity;
+    this.spot.seats.forEach((s, k) => {
+      const i = this.seatOf.get(s.name);
+      if (i === undefined || i < 0 || soon.has(s.name) || keep.has(s.name) || this.crowd.people[i].expr.stand > 0.05) return;
+      const last = played.lastIndexOf(s.name);
+      const sc = (s.seated ? 10 : 0) + (last < 0 ? 4 : (this.turnIdx - last) * 0.05) - (view.containsPoint(this.crowd.headPos(i)) ? 6 : 0);
+      if (sc > bestScore) { bestScore = sc; best = k; }
+    });
+    if (best < 0) return;
+    const seat = this.spot.seats[best], i = this.seatOf.get(seat.name)!;
+    this.seatOf.delete(seat.name);
+    seat.name = name;
+    this.seatOf.set(name, i);
+    this.crowd.recast(i, name);
+  }
 
   private personFor(name: string, fallback: string) {
     const i = this.ix(name);
@@ -226,6 +258,12 @@ export class Director {
       }
       this.waitSince = 0;
       this.ui.waiting(null);
+      // whoever is about to talk, whoever they answer and whoever they quote must be at the table
+      const prevBy = turns[this.turnIdx - 1]?.by, keep = new Set([turn.by, ...(prevBy ? [prevBy] : [])]);
+      this.ensure(turn.by, keep);
+      const to = turn.replyTo ? turns.find((u) => u.id === turn.replyTo)?.by : undefined;
+      if (to) { keep.add(to); this.ensure(to, keep); }
+      for (const c of r.side.clips) if (c.who !== turn.by) { keep.add(c.who); this.ensure(c.who, keep); }
       let t = Math.max(this.cursor + (this.sched.length ? this.gapFor(turn, r.side) : 0), at + 0.08);
       r.side.clips.forEach((clip, k) => {
         const who = this.personFor(clip.who, turn.by);
@@ -280,6 +318,7 @@ export class Director {
     }
     this.animate(cur, at, now, dt);
     this.chairs();
+    this.room(now);
     if (this.heroAt && now > this.heroAt) {
       this.heroAt = 0;
       this.hero(this.heroWho, this.heroA);
@@ -328,6 +367,23 @@ export class Director {
     this.shotUntil = 0; this.reactionAt = 0;
     const seat = this.spot!.seats.find((x) => x.name === this.crowd.people[plan.S].name);
     if (seat) this.audio.sfxAt('chair', { x: seat.pos.x, y: this.roomY + 0.4, z: seat.pos.z }, up.start - RISE_LEAD + 0.05);
+    // palms hit the table as they push up (a heavy one, if they're furious): sound, and the lens feels it
+    const push = up.start - at - RISE_LEAD + 0.3;
+    if (plan.I >= 0.6) {
+      this.audio.sfxAt('thump', { x: this.spot!.pos.x, y: this.roomY + 0.76, z: this.spot!.pos.z }, up.start - RISE_LEAD + 0.3);
+      this.later(now + push, () => this.rig.shake(0.006 + plan.I * 0.008, 0.4));
+    }
+    // and the room turns to look: nearest tables first, a ripple outwards
+    const riser = this.crowd.headPos(plan.S).add(new THREE.Vector3(0, 0.3, 0));
+    const here = new Set(this.seatOf.values());
+    for (let j = 0; j < this.crowd.people.length; j++) {
+      if (here.has(j) || this.crowd.seed(j, 11) > 0.72) continue;
+      const d = this.crowd.headPos(j).distanceTo(riser);
+      if (d > 7) continue;
+      const from = now + push + 0.15 + d * 0.11 + this.crowd.seed(j, 12) * 0.5;
+      this.glances.push({ i: j, from, until: from + 2.4 + this.crowd.seed(j, 13) * 2.2, at: riser });
+      this.crowd.active.add(j);
+    }
   }
 
   private authorOf(id: number) {
@@ -537,6 +593,21 @@ export class Director {
       // sarcasm: an eye-roll, once, early on
       if (plan.C.includes('sarcasm') && k > 1.1 && k < 1.8) { const u = (k - 1.1) / 0.7; t.gazeY = Math.sin(Math.PI * u); t.gaze = Math.cos(Math.PI * u) * 0.8 * flip; t.nod -= 0.15 * Math.sin(Math.PI * u); }
     }
+  }
+
+  /** Everyone else in the room: heads turn toward a commotion, then drift back to their own table. */
+  private room(now: number) {
+    for (let k = this.events.length - 1; k >= 0; k--) if (this.events[k].at <= now) this.events.splice(k, 1)[0].fn();
+    this.glances = this.glances.filter((g) => {
+      const t = this.crowd.target(g.i);
+      if (!t) return false;
+      if (now >= g.from && now < g.until) {
+        t.yaw = this.crowd.yawTo(g.i, g.at); t.nod = this.crowd.pitchTo(g.i, g.at); t.brow = 0.4; t.lid = 1.12;
+        t.gaze = Math.max(-1, Math.min(1, t.yaw * 0.5)); t.gazeY = Math.max(-1, Math.min(1, -t.nod * 0.35));
+      } else if (now >= g.until) { t.yaw = 0; t.nod = 0; t.brow = 0; t.lid = 1; t.gaze = 0; t.gazeY = 0; }
+      if (now > g.until + 2) { this.crowd.release(g.i); return false; }
+      return true;
+    });
   }
 
   /** Chairs follow whoever stands up out of them. */

@@ -143,7 +143,7 @@ export class Interior {
     let chair = 0;
     convo.forEach(({ t, i }, k) => {
       const pos = places[k];
-      const seated = t.seated.slice(0, 8), standing = t.standing.slice(0, 5);
+      const seated = t.seated.slice(0, 8), standing = t.standing.slice(0, 8);
       const radius = 0.42 + seated.length * 0.055;
       this.tableMesh.setMatrixAt(k, m.compose(pos, q.identity(), s.set(radius, 1, radius)));
       if (k < MAX_TABLES) this.lampMesh.setMatrixAt(k, m.compose(pos, q.identity(), s.set(1, 1, 1)));

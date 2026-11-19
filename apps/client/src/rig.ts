@@ -14,6 +14,9 @@ export class Rig {
   private arc = 1;
   fov = 45;
   fovTarget = 45;
+  private jolt = { amp: 0, t: 0, dur: 0 };
+  /** a small physical jolt (someone slams the table): decays over `dur` seconds */
+  shake(amp: number, dur: number) { this.jolt = { amp, t: 0, dur }; }
   constructor(public camera: THREE.PerspectiveCamera) {}
 
   cut(p: THREE.Vector3, t: THREE.Vector3, drift = 0.18) {
@@ -44,6 +47,16 @@ export class Rig {
     this.driftT += dt;
     const d = Math.max(0, Math.min(1, this.driftT / 8));
     this.camera.position.copy(this.pos).addScaledVector(this.drift, d);
+    if (this.jolt.dur) {
+      const j = this.jolt;
+      j.t += dt;
+      const k = 1 - j.t / j.dur;
+      if (k <= 0) j.dur = 0;
+      else {
+        const a = j.amp * k * k;
+        this.camera.position.x += Math.sin(j.t * 71) * a; this.camera.position.y += Math.sin(j.t * 53 + 1) * a; this.camera.position.z += Math.sin(j.t * 61 + 2) * a * 0.5;
+      }
+    }
     this.camera.lookAt(this.target);
     this.fov += (this.fovTarget - this.fov) * (1 - Math.exp(-dt * 3));
     // shots are composed for 16:9; on a tall phone widen the lens so the framing (not the crop) stays the same

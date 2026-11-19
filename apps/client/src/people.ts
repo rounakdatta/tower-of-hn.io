@@ -270,6 +270,24 @@ export class Crowd {
   }
 
   index(name: string) { return this.people.findIndex((p) => p.name === name); }
+  /**
+   * Someone new takes person i's place (a newcomer to a long conversation): every look is rebuilt (hair, glasses
+   * and hoods are shared instanced meshes), everyone else keeps their pose and expression.
+   */
+  recast(i: number, name: string) {
+    if (!this.people[i] || this.people[i].name === name) return;
+    const keep = this.people.map((p) => ({ name: p.name, pose: p.pose, expr: { ...p.expr }, target: { ...p.target } }));
+    keep[i] = { name, pose: keep[i].pose, expr: { ...NEUTRAL }, target: { ...NEUTRAL } };
+    const active = new Set(this.active);
+    this.set(keep.map(({ name, pose }) => ({ name, pose })));
+    this.people.forEach((p, k) => { Object.assign(p.expr, keep[k].expr); Object.assign(p.target, keep[k].target); this.writeExpr(k); this.place(k); });
+    this.active = active;
+    for (const a of [this.aSkinL, this.aHairP, this.aFace, this.aDyn]) a.needsUpdate = true;
+    this.flush();
+  }
+
+  /** stop updating someone every frame (they've eased back to rest) */
+  release(i: number) { this.active.delete(i); }
   /** Seated people can stand: the chair steps back and the body rises. */
   private stature(p: Person) {
     const st = p.pose.seated ? p.expr.stand : 1;

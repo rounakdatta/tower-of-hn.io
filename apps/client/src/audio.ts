@@ -151,7 +151,7 @@ export class AudioEngine {
   }
 
   /** A sound placed in the room, on the scene's audio clock (recorded videos synthesize the same sound when muxing). */
-  sfxAt(kind: 'chair', pos: V3, when: number) {
+  sfxAt(kind: 'chair' | 'thump', pos: V3, when: number) {
     if (this.virtual) { this.log.push({ url: 'sfx:' + kind, when }); return; }
     const ctx = this.ctx;
     if (!ctx) return;
@@ -160,6 +160,17 @@ export class AudioEngine {
     pan.panningModel = 'HRTF'; pan.refDistance = 1.6; pan.rolloffFactor = 0.9;
     pan.positionX.value = pos.x; pan.positionY.value = pos.y; pan.positionZ.value = pos.z;
     pan.connect(this.voiceBus);
+    if (kind === 'thump') {
+      // two palms on a wooden tabletop: a low body and a short knock
+      const o = ctx.createOscillator(); o.frequency.setValueAtTime(92, t); o.frequency.exponentialRampToValueAtTime(58, t + 0.2);
+      const g = ctx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.5, t + 0.006); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+      const n = ctx.createBufferSource(); n.buffer = this.noise('pink', 0.12);
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
+      const ng = ctx.createGain(); ng.gain.setValueAtTime(0.35, t); ng.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+      o.connect(g).connect(pan); n.connect(lp).connect(ng).connect(pan);
+      o.start(t); o.stop(t + 0.32); n.start(t); n.stop(t + 0.12);
+      return;
+    }
     // a chair dragged on wood: stick-slip judder (a slowing saw) through two wooden resonances
     const o = ctx.createOscillator(); o.type = 'sawtooth';
     o.frequency.setValueAtTime(58, t); o.frequency.linearRampToValueAtTime(34, t + 0.4);
