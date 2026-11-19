@@ -230,6 +230,7 @@ function leaveFloor() {
   rig.glide(HOME.pos.clone().multiplyScalar(0.85), HOME.target, 2.2, clock);
   audio.sfx('whoosh');
   after(2.25, () => {
+    if (mode !== 'tower') return;                 // they already rode up somewhere else
     tower.hidden = -1; interior.group.visible = false; crowd.set([]);
     camera.position.copy(rig.pos); controls.target.copy(rig.target);
     controls.enabled = true; controls.autoRotate = true;

@@ -61,7 +61,7 @@ export class Director {
   stop() {
     for (const s of this.sched) { try { s.src.stop(); } catch { /* already done */ } }
     this.sched = []; this.current = null; this.playing = false;
-    this.crowd.active.clear();
+    this.crowd.settle();
     this.ui.subtitle(null); this.ui.placard(null); this.ui.code(null); this.ui.waiting(null);
   }
 

@@ -237,6 +237,20 @@ export class Crowd {
     this.flush();
   }
 
+  /** Everyone who was performing goes back to a neutral, listening face (no frozen open mouths). */
+  settle() {
+    for (const i of this.active) {
+      const p = this.people[i];
+      if (!p) continue;
+      for (const x of [p.expr, p.target]) Object.assign(x, { open: 0, shape: 0, brow: 0, smile: 0.15, lid: 1, nod: 0, lean: 0, armL: 0, armR: 0 });
+      this.writeExpr(i);
+      this.place(i);
+    }
+    this.aDyn.needsUpdate = true; this.aSkinL.needsUpdate = true;
+    this.flush();
+    this.active.clear();
+  }
+
   index(name: string) { return this.people.findIndex((p) => p.name === name); }
   headPos(i: number, out = new THREE.Vector3()) {
     const p = this.people[i];
