@@ -277,7 +277,8 @@ export class Crowd {
   recast(i: number, name: string) {
     if (!this.people[i] || this.people[i].name === name) return;
     const keep = this.people.map((p) => ({ name: p.name, pose: p.pose, expr: { ...p.expr }, target: { ...p.target } }));
-    keep[i] = { name, pose: keep[i].pose, expr: { ...NEUTRAL }, target: { ...NEUTRAL } };
+    // a newcomer to a seat arrives half-standing and sits down into it (the chair tucks in with them)
+    keep[i] = { name, pose: keep[i].pose, expr: { ...NEUTRAL, stand: keep[i].pose.seated ? 0.65 : 0 }, target: { ...NEUTRAL } };
     const active = new Set(this.active);
     this.set(keep.map(({ name, pose }) => ({ name, pose })));
     this.people.forEach((p, k) => { Object.assign(p.expr, keep[k].expr); Object.assign(p.target, keep[k].target); this.writeExpr(k); this.place(k); });

@@ -96,6 +96,7 @@ export class UI {
     if (!s) { this.subTimer = window.setTimeout(() => el.classList.remove('show'), 350); return; }
     const text = s.text.length > 320 ? s.text.slice(0, 317) + '…' : s.text;
     el.innerHTML = `<span class="who" style="color:${s.color}">${esc(s.name)}${s.to && s.to !== s.name ? `<span class="to"> → ${esc(s.to)}</span>` : ''}</span><span class="said">${esc(text)}</span>`;
+    el.dataset.tone = s.emotion;
     el.classList.add('show');
   }
 

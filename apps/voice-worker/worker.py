@@ -265,6 +265,12 @@ def shape_track(text, env):
     return out
 
 
+def urgent(jobs_dir):
+    """Is a listener waiting? Demand jobs (someone sat at a table) sort before the 001000 pre-warm range."""
+    pending = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json"))
+    return bool(pending) and pending[0] < "001000"
+
+
 def main(var):
     import onnxruntime as ort
     from kokoro_onnx import Kokoro
@@ -319,8 +325,13 @@ def main(var):
                     break
             t0 = time.time()
             emotion, stance, intensity, cues = tags.get(j["id"]) or heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
-            clips_out, total = [], 0.0
+            clips_out, total, dropped = [], 0.0, False
             for k, (spoken, shown, who) in enumerate(plan_clips(j)):
+                # background work (pre-warm, re-voicing) yields between clips to anyone actually listening: a long
+                # comment can take a minute, and a table waiting on one line shouldn't. Its job file stays; it's redone later.
+                if k and j["_file"] >= "001000" and urgent(jobs_dir):
+                    dropped = True
+                    break
                 try:
                     if oai:
                         audio, sr = oai.create(spoken, who, emotion)
@@ -342,6 +353,9 @@ def main(var):
                 clips_out.append({"u": rel, "d": round(d, 3), "t": shown, "who": who,
                                   "env": [int(v * 255) for v in env], "shape": [int((v + 1) * 127.5) for v in shp]})
                 total += d
+            if dropped:
+                print(json.dumps({"id": j["id"], "yielded": True, "after_clips": len(clips_out)}), flush=True)
+                break
             side = {"id": j["id"], "rev": j["rev"], "by": j["by"], "emotion": emotion, "stance": stance,
                     "intensity": round(intensity, 2), "cues": cues,
                     "dur": round(total, 3), "clips": clips_out,

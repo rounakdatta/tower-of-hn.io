@@ -64,7 +64,8 @@
           opacity:0; transition:opacity .25s; font-size:clamp(16px, 2.1vw, 21px); line-height:1.42; text-shadow:0 2px 6px rgba(0,0,0,.9), 0 0 24px rgba(0,0,0,.7) }
   #subs.show { opacity:1 }
   #subs .who { font-weight:700; margin-right:.55em; letter-spacing:.2px }
-  #subs .said { color:#f6f2ea }
+  #subs .said { color:#f6f2ea; transition:color .4s }
+  #subs[data-tone="angry"] .said { color:#ffe0d6; text-shadow:0 0 22px rgba(255,90,50,.28), 0 1px 3px rgba(0,0,0,.85) }
   #subs .to { color:#b9b2a6; font-weight:500 }
   body:not([data-mode="table"]) #subs { bottom:28px }
 
