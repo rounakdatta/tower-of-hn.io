@@ -17,7 +17,7 @@ const HAIR_STYLES = 6;             // 0 bald (no mesh) .. 5
 
 export interface Look {
   skin: THREE.Color; outfit: THREE.Color; hair: THREE.Color; style: number; glasses: boolean; beard: boolean;
-  height: number; width: number; eye: number; gap: number; brow: number; mouth: number; phase: number;
+  height: number; width: number; eye: number; gap: number; brow: number; mouth: number; phase: number; hood: boolean;
 }
 
 export function lookOf(name: string): Look {
@@ -26,9 +26,10 @@ export function lookOf(name: string): Look {
   return {
     skin: new THREE.Color(pick(r, SKIN)), outfit: new THREE.Color(pick(r, OUTFIT)),
     hair: new THREE.Color(r() < 0.06 ? pick(r, ['#3a2a4f', '#2b5e63', '#7a2f3a']) : pick(r, HAIR.slice(0, 9))),
-    style, glasses: r() < 0.36, beard: r() < 0.22,
+    style, glasses: r() < 0.36, beard: r() < 0.15,
     height: 0.93 + r() * 0.14, width: 0.9 + r() * 0.22,
     eye: 0.86 + r() * 0.34, gap: 0.86 + r() * 0.26, brow: 0.8 + r() * 0.6, mouth: 0.85 + r() * 0.35, phase: r(),
+    hood: r() < 0.32,                // appended last: never reshuffle existing looks
   };
 }
 
@@ -39,7 +40,7 @@ export interface Pose {
 /** Live expression of one person, eased toward targets every frame. */
 export interface Expr { open: number; shape: number; brow: number; smile: number; lid: number; yaw: number; nod: number; lean: number; armL: number; armR: number }
 
-interface Person { name: string; look: Look; pose: Pose; parts: { hair: number; glasses: number; beard: number }; expr: Expr; target: Expr }
+interface Person { name: string; look: Look; pose: Pose; parts: { hair: number; glasses: number; beard: number; hood: number }; expr: Expr; target: Expr }
 
 function headGeo() { return new THREE.SphereGeometry(0.2, 32, 22); }
 
@@ -88,6 +89,8 @@ export class Crowd {
   private hair: THREE.InstancedMesh[] = [];
   private glasses: THREE.InstancedMesh;
   private beards: THREE.InstancedMesh;
+  private hands: THREE.InstancedMesh;
+  private hoods: THREE.InstancedMesh;
   private aDyn = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 4), 4);
   private aFace = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 4), 4);
   // packed to stay under WebGPU's 8 vertex buffers: skin rgb + eyelid, hair rgb + phase (+2 if bearded)
@@ -130,7 +133,13 @@ export class Crowd {
     this.glasses = new THREE.InstancedMesh(glassesGeo(), new THREE.MeshStandardNodeMaterial({ color: 0x14161c, roughness: 0.3, metalness: 0.6 }), MAX_PEOPLE);
     this.beards = new THREE.InstancedMesh(beardGeo(), hairMat, MAX_PEOPLE);
     this.beards.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 3), 3);
-    for (const im of [this.bodies, this.heads, this.arms, this.glasses, this.beards, ...this.hair]) {
+    this.hands = new THREE.InstancedMesh(new THREE.SphereGeometry(0.052, 14, 10), new THREE.MeshStandardNodeMaterial({ roughness: 0.5 }), MAX_PEOPLE * 2);
+    this.hands.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 6), 3);
+    const hoodGeo = new THREE.TorusGeometry(0.135, 0.055, 10, 24, Math.PI);
+    hoodGeo.rotateX(-Math.PI / 2);
+    this.hoods = new THREE.InstancedMesh(hoodGeo, new THREE.MeshStandardNodeMaterial({ roughness: 0.75 }), MAX_PEOPLE);
+    this.hoods.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 3), 3);
+    for (const im of [this.bodies, this.heads, this.arms, this.glasses, this.beards, this.hands, this.hoods, ...this.hair]) {
       im.frustumCulled = false;
       im.count = 0;
       this.group.add(im);
@@ -178,9 +187,9 @@ export class Crowd {
     // cheeks
     const cheek = smoothstep(0.075, 0.0, length(vec2(abs(p.x).sub(0.17), p.y.add(0.075)))).mul(front).mul(0.28);
     // beard: chin and jaw, never over the mouth
-    const chin = smoothstep(-0.25, -0.31, p.y).mul(smoothstep(-0.2, 0.15, n.z));
-    const jaw = smoothstep(0.38, 0.47, abs(p.x)).mul(smoothstep(0.0, -0.12, p.y)).mul(step(0.0, n.z));
-    const beardM = max(chin, jaw).mul(beard);
+    // a rounded chin curtain: everything outside an ellipse around the mouth, on the lower face
+    const ring = smoothstep(0.96, 1.06, length(vec2(p.x.div(0.4), p.y.add(0.07).div(0.25))));
+    const beardM = ring.mul(smoothstep(-0.02, -0.12, p.y)).mul(smoothstep(-0.25, 0.1, n.z)).mul(beard);
     let col = mix(skin, vec3(0.95, 0.45, 0.42), cheek);
     col = mix(col, hairC.mul(0.85), beardM.mul(0.94));
     col = mix(col, skin.mul(0.62), lip);
@@ -196,16 +205,20 @@ export class Crowd {
     this.people = [];
     this.active.clear();
     const hairCount = new Array(HAIR_STYLES).fill(0);
-    let g = 0, bd = 0;
+    let g = 0, bd = 0, hd = 0;
     const n = Math.min(people.length, MAX_PEOPLE);
     for (let i = 0; i < n; i++) {
       const { name, pose } = people[i];
       const look = lookOf(name);
       const neutral: Expr = { open: 0, shape: 0, brow: 0, smile: 0.15, lid: 1, yaw: 0, nod: 0, lean: 0, armL: 0, armR: 0 };
-      const parts = { hair: look.style > 0 ? hairCount[look.style]++ : -1, glasses: look.glasses ? g++ : -1, beard: -1 };
+      const parts = { hair: look.style > 0 ? hairCount[look.style]++ : -1, glasses: look.glasses ? g++ : -1, beard: -1, hood: look.hood ? hd++ : -1 };
       this.people.push({ name, look, pose, parts, expr: { ...neutral }, target: { ...neutral } });
       (this.bodies.instanceColor!.array as Float32Array).set([look.outfit.r, look.outfit.g, look.outfit.b], i * 3);
-      for (const k of [0, 1]) (this.arms.instanceColor!.array as Float32Array).set([look.outfit.r * 0.9, look.outfit.g * 0.9, look.outfit.b * 0.9], (i * 2 + k) * 3);
+      for (const k of [0, 1]) {
+        (this.arms.instanceColor!.array as Float32Array).set([look.outfit.r * 0.9, look.outfit.g * 0.9, look.outfit.b * 0.9], (i * 2 + k) * 3);
+        (this.hands.instanceColor!.array as Float32Array).set([look.skin.r, look.skin.g, look.skin.b], (i * 2 + k) * 3);
+      }
+      if (parts.hood >= 0) (this.hoods.instanceColor!.array as Float32Array).set([look.outfit.r * 0.82, look.outfit.g * 0.82, look.outfit.b * 0.82], parts.hood * 3);
       (this.aSkinL.array as Float32Array).set([look.skin.r, look.skin.g, look.skin.b, 1], i * 4);
       (this.aHairP.array as Float32Array).set([look.hair.r, look.hair.g, look.hair.b, look.phase + (look.beard ? 2 : 0)], i * 4);
       (this.aFace.array as Float32Array).set([look.eye, look.gap, look.brow, look.mouth], i * 4);
@@ -217,9 +230,9 @@ export class Crowd {
     this.bodies.count = this.heads.count = n;
     this.arms.count = n * 2;
     this.hair.forEach((im, s) => (im.count = hairCount[s]));
-    this.glasses.count = g; this.beards.count = bd;
+    this.glasses.count = g; this.beards.count = bd; this.hoods.count = hd; this.hands.count = n * 2;
     for (const a of [this.aSkinL, this.aHairP, this.aFace, this.aDyn]) a.needsUpdate = true;
-    for (const im of [this.bodies, this.arms, this.beards, ...this.hair]) im.instanceColor!.needsUpdate = true;
+    for (const im of [this.bodies, this.arms, this.beards, this.hands, this.hoods, ...this.hair]) im.instanceColor!.needsUpdate = true;
     this.flush();
   }
 
@@ -248,6 +261,11 @@ export class Crowd {
     this.e.set(expr.lean * 0.25, pose.facing, 0, 'YXZ'); this.q.setFromEuler(this.e);
     this.v.set(pose.pos.x, pose.pos.y + lift, pose.pos.z);
     this.bodies.setMatrixAt(i, this.m.compose(this.v, this.q, this.s.set(look.width, look.height * tall, look.width)));
+    if (p.parts.hood >= 0) {
+      this.e.set(0.15, pose.facing, 0, 'YXZ'); this.q.setFromEuler(this.e);
+      this.v.set(pose.pos.x - Math.sin(pose.facing) * 0.03, pose.pos.y + lift + 0.54 * look.height * tall * 0.93, pose.pos.z - Math.cos(pose.facing) * 0.03);
+      this.hoods.setMatrixAt(p.parts.hood, this.m.compose(this.v, this.q, this.s.set(look.width, 1, look.width)));
+    }
     // head
     const leanOff = Math.sin(expr.lean * 0.25) * 0.3;
     const hx = pose.pos.x + Math.sin(pose.facing) * leanOff, hz = pose.pos.z + Math.cos(pose.facing) * leanOff;
@@ -265,7 +283,10 @@ export class Crowd {
       this.e.set(-0.25 - swing * 1.1, pose.facing, side * (0.18 + swing * 0.25), 'YXZ'); this.q.setFromEuler(this.e);
       const sx = side * 0.19 * look.width;
       this.v.set(pose.pos.x + Math.cos(pose.facing) * sx, pose.pos.y + lift + bodyH * 0.82, pose.pos.z - Math.sin(pose.facing) * sx);
-      this.arms.setMatrixAt(i * 2 + (side < 0 ? 0 : 1), this.m.compose(this.v, this.q, this.s.set(1, tall > 1 ? 1.3 : 1, 1)));
+      const armY = tall > 1 ? 1.3 : 1;
+      this.arms.setMatrixAt(i * 2 + (side < 0 ? 0 : 1), this.m.compose(this.v, this.q, this.s.set(1, armY, 1)));
+      const hand = new THREE.Vector3(0, -0.335 * armY, 0).applyQuaternion(this.q).add(this.v);
+      this.hands.setMatrixAt(i * 2 + (side < 0 ? 0 : 1), this.m.compose(hand, this.q, this.s.set(1, 1, 1)));
     }
   }
 
@@ -296,7 +317,7 @@ export class Crowd {
   }
 
   private flush() {
-    for (const im of [this.bodies, this.heads, this.arms, this.glasses, this.beards, ...this.hair]) im.instanceMatrix.needsUpdate = true;
+    for (const im of [this.bodies, this.heads, this.arms, this.glasses, this.beards, this.hands, this.hoods, ...this.hair]) im.instanceMatrix.needsUpdate = true;
   }
 
   /** Stable per-person randomness for gestures and reactions. */

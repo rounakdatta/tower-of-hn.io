@@ -2,6 +2,7 @@
 import * as THREE from 'three/webgpu';
 import { pass, screenUV, smoothstep, vec3, hash, float, uniform } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { dof } from 'three/addons/tsl/display/DepthOfFieldNode.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LiveSync, type Floor, type Head } from './sync.ts';
 import { AudioEngine } from './audio.ts';
@@ -41,7 +42,19 @@ const uGrain = uniform(0);
 const vignette = smoothstep(0.95, 0.3, screenUV.sub(0.5).length()).mul(0.42).add(0.58);
 const px = screenUV.mul(vec3(1920, 1080, 0).xy).floor();
 const grain = hash(px.x.add(px.y.mul(7919.0)).add(uGrain.mul(104729.0))).sub(0.5).mul(0.02);
-pipeline.outputNode = color.add(bloom(color, 0.62, 0.45, 0.78)).mul(vignette).add(grain);
+const uFocus = uniform(2), uBokeh = uniform(0);
+const bloomed = bloom(color, 0.62, 0.45, 0.78);
+const plainOut = color.add(bloomed).mul(vignette).add(grain);
+const dofOut = dof(color, scenePass.getViewZNode(), uFocus, 0.9, uBokeh).add(bloomed).mul(vignette).add(grain);
+pipeline.outputNode = plainOut;
+let dofOn = false;
+/** shallow focus only at the table: film-like close-ups, no cost elsewhere */
+function setDof(on: boolean) {
+  if (on === dofOn) return;
+  dofOn = on;
+  pipeline.outputNode = on ? dofOut : plainOut;
+  pipeline.needsUpdate = true;
+}
 
 buildSky(scene);
 buildCity(scene);
@@ -73,7 +86,10 @@ let mode: Mode = 'tower';
 let clock = 0;
 let activeStory = -1, activeFloor: Floor | null = null, roomY = 0, roomYaw = 0;
 let spots: TableSpot[] = [];
-let lastBlip = 0;
+let lastBlip = 0, deepLinked = false;
+/** scene-clock timers: identical in live viewing and in deterministic recordings */
+const timers: { at: number; fn: () => void }[] = [];
+const after = (secs: number, fn: () => void) => timers.push({ at: clock + secs, fn });
 
 const camDir2 = () => new THREE.Vector2(camera.position.x, camera.position.z).normalize();
 
@@ -110,7 +126,7 @@ async function enterFloor(sid: number) {
   rig.glide(outside, new THREE.Vector3(0, roomY + 0.8, 0), 2.4, clock);
   audio.sfx('whoosh');
   audio.setMode('floor');
-  setTimeout(() => {
+  after(1.5, () => {
     if (activeStory !== sid) return;
     tower.hidden = slot;
     interior.group.position.y = roomY; crowd.group.position.y = roomY;
@@ -123,9 +139,10 @@ async function enterFloor(sid: number) {
     audio.sfx('ding');
     ui.floorHeader({ rank: rank + 1, title: floor.story.title, id: floor.story.id, url: floor.story.url });
     ui.tableLabels(spots, roomY, (s) => sit(s));
+    after(2.0, () => { if (mode === 'floor') ui.showLabels(true); });
     ui.hint('Pick a table to sit down and listen');
-    if (autopilot) setTimeout(() => { if (mode === 'floor') sit(bestSpot()); }, recording ? 0 : 2600);
-  }, recording ? 0 : 1500);
+    if (autopilot || deepLinked) after(deepLinked ? 1.8 : 3.2, () => { if (mode === 'floor') sit(bestSpot()); deepLinked = false; });
+  });
   sync.watch(sid, (f) => {
     activeFloor = f;
     if (mode === 'table') director.refresh(f);
@@ -141,15 +158,19 @@ function overview(now: number, dur: number) {
   rig.glide(p, t, dur, now, 0.4);
 }
 
+let deepTable = Number(params.get('table') ?? 0);
 function bestSpot(): TableSpot {
   const convo = spots.filter((s) => !s.bar);
+  if (deepTable) { const d = spots.find((s) => s.table.root === deepTable); deepTable = 0; if (d) return d; }
   return convo.find((s) => s.table.turns.filter((t) => t.v).length >= 2) ?? convo[0] ?? spots[0];
 }
 
 function sit(s: TableSpot | undefined) {
   if (!s || !activeFloor) return;
   if (s.bar) return;
-  mode = 'table'; ui.mode('table'); audio.setMode('table'); audio.sfx('sit');
+  mode = 'table'; ui.mode('table'); audio.setMode('table'); audio.sfx('sit'); ui.showLabels(false);
+  ui.flash(); setDof(true);
+  if (!recording) history.replaceState(null, '', `?story=${activeFloor.story.id}&table=${s.table.root}`);
   ui.hint('Esc to stand up · Space to pause · N for the next table');
   director.start(activeFloor, s, roomY, clock);
 }
@@ -163,25 +184,27 @@ function nextTable() {
 director.onEnd = () => { if (mode === 'table') nextTable(); };
 
 function standUp() {
-  director.stop();
+  director.stop(); setDof(false);
   mode = 'floor'; ui.mode('floor'); audio.setMode('floor');
   ui.hint('Pick a table to sit down and listen');
   overview(clock, 1.6);
+  after(1.6, () => { if (mode === 'floor') ui.showLabels(true); });
 }
 
 function leaveFloor() {
-  director.stop();
+  director.stop(); setDof(false);
+  if (!recording) history.replaceState(null, '', location.pathname);
   if (activeStory >= 0) sync.unwatch(activeStory);
   activeStory = -1; activeFloor = null;
   mode = 'tower'; ui.mode('tower'); audio.setMode('tower');
   ui.floorHeader(null); ui.clearLabels(); ui.hint('Tap a floor to step inside');
   rig.glide(HOME.pos.clone().multiplyScalar(0.85), HOME.target, 2.2, clock);
   audio.sfx('whoosh');
-  setTimeout(() => {
+  after(2.25, () => {
     tower.hidden = -1; interior.group.visible = false; crowd.set([]);
     camera.position.copy(rig.pos); controls.target.copy(rig.target);
     controls.enabled = true; controls.autoRotate = true;
-  }, recording ? 0 : 2250);
+  });
 }
 
 document.getElementById('back')!.onclick = () => leaveFloor();
@@ -225,6 +248,7 @@ addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; cam
 const fwd = new THREE.Vector3();
 function frame(dt: number, draw = true) {
   clock += dt;
+  for (let k = timers.length - 1; k >= 0; k--) if (timers[k].at <= clock) { const t = timers.splice(k, 1)[0]; t.fn(); }
   uTime.value = clock; setTimeValue(clock);
   uBeacon.value = Math.max(0, uBeacon.value - dt * 0.9);
   uGrain.value = (clock * 60) % 1000;
@@ -235,6 +259,7 @@ function frame(dt: number, draw = true) {
   director.update(clock, dt);
   crowd.update(dt);
   ui.update();
+  if (dofOn) { uFocus.value = camera.position.distanceTo(rig.target); uBokeh.value = 2.4; }
   camera.getWorldDirection(fwd);
   audio.listener(camera.position, fwd, camera.up);
   if (draw) pipeline.render();
@@ -261,6 +286,14 @@ if (recording) {
   });
   ui.splash(() => {
     audio.ensure();
-    if (autopilot) setTimeout(() => sync.head && enterFloor(sync.head.tower[0]), 4000);
+    const story = Number(params.get('story') ?? 0);
+    if (story && sync.head?.tower.includes(story)) { deepLinked = true; after(1.2, () => enterFloor(story)); }
+    else if (autopilot) after(4, () => sync.head && enterFloor(sync.head.tower[0]));
+  });
+  // keep the conversation going when the tab is hidden (rAF stops; a timer keeps scheduling audio)
+  let bg = 0;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && mode === 'table') bg = window.setInterval(() => frame(0.25, false), 250);
+    else { clearInterval(bg); last = performance.now(); }
   });
 }

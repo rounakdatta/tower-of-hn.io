@@ -45,6 +45,10 @@
   #labels .tlabel span { color:#c9b6a3; font-size:11.5px }
   #labels .tlabel:hover { background:rgba(40,24,14,.8); border-color:rgba(255,170,110,.4) }
   #labels .tlabel.bar { cursor:default; opacity:.8 }
+  #labels { opacity:0; transition:opacity .6s }
+  #labels.show { opacity:1 }
+  #labels .tlabel em { font-style:normal; color:#c9b6a3; font-weight:500 }
+  #labels .tlabel .play { font-style:normal; color:var(--hn); font-size:10px; margin-right:6px; vertical-align:1px }
   body:not([data-mode="floor"]) #labels { display:none }
 
   .lb { position:fixed; left:0; right:0; height:0; background:#000; transition:height .9s cubic-bezier(.2,.8,.2,1); pointer-events:none; z-index:2 }
@@ -75,6 +79,9 @@
   body[data-mode="table"] #controls { display:flex }
   #controls .pill { background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.14) }
 
+  #fade { position:fixed; inset:0; background:#000; opacity:0; pointer-events:none; z-index:5 }
+  #fade.go { animation:fade .9s ease }
+  @keyframes fade { 0% { opacity:0 } 35% { opacity:1 } 100% { opacity:0 } }
   #splash { position:fixed; inset:0; display:grid; place-items:center; z-index:10; background:radial-gradient(ellipse at 50% 70%, rgba(40,22,10,.35), rgba(5,7,14,.82) 60%);
             opacity:0; pointer-events:none; transition:opacity 1.1s }
   #splash.show { opacity:1; pointer-events:auto }
@@ -98,6 +105,7 @@
 <pre id="code"></pre>
 <div id="waiting">•••</div>
 <div id="hint"></div>
+<div id="fade"></div>
 <div id="controls"><button class="pill" id="pause">Pause</button><button class="pill" id="next">Next table</button><button class="pill" id="leave">Stand up</button></div>
 <div id="splash"><div class="inner">
   <h1>Tower<i>Of</i>Han</h1>

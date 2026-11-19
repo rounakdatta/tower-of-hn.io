@@ -26,6 +26,7 @@ export class UI {
   }
 
   live(text: string) { $('live').textContent = text; }
+  flash() { const f = $('fade'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go'); }
   hint(text: string) { $('hint').textContent = text; }
 
   tip(d: { rank: number; title: string; url: string; score: number; comments: number; act: number } | null, x = 0, y = 0) {
@@ -48,15 +49,15 @@ export class UI {
   tableLabels(spots: TableSpot[], roomY: number, onPick: (s: TableSpot) => void) {
     const box = $('labels');
     box.innerHTML = '';
+    box.classList.toggle('show', this.labelsOn);
     this.labels = [];
-    for (const s of spots) {
-      if (s.bar) continue;
+    for (const s of spots.filter((x) => !x.bar).slice(0, 5)) {
       const el = document.createElement('button');
       el.className = 'tlabel';
-      const people = s.table.seated.length + s.table.standing.length;
-      const voiced = s.table.turns.filter((t) => t.v).length;
+      const people = new Set(s.table.turns.map((t) => t.by)).size;
+      const voiced = s.table.turns.some((t) => t.v);
       const mins = s.table.turns.reduce((n, t) => n + (t.v ? t.v[1] : 18), 0) / 60;
-      el.innerHTML = `<b>${esc(s.table.turns[0].by)}</b> and ${people - 1} other${people === 2 ? '' : 's'}<span>${s.table.turns.length} turns · ~${Math.max(1, Math.round(mins))} min${voiced ? '' : ' · not voiced yet'}</span>`;
+      el.innerHTML = `<b>${voiced ? '<i class="play">▶</i>' : ''}${esc(s.table.turns[0].by)}${people > 1 ? ` <em>+${people - 1}</em>` : ''}</b><span>${s.table.turns.length} turns · ~${Math.max(1, Math.round(mins))} min</span>`;
       el.onclick = (e) => { e.stopPropagation(); onPick(s); };
       box.appendChild(el);
       this.labels.push({ el, at: new THREE.Vector3(s.pos.x, roomY + 1.55, s.pos.z) });
@@ -71,7 +72,9 @@ export class UI {
       this.labels.push({ el, at: new THREE.Vector3(b.pos.x * 0.92, roomY + 1.7, b.pos.z * 0.92) });
     }
   }
-  clearLabels() { $('labels').innerHTML = ''; this.labels = []; }
+  clearLabels() { $('labels').innerHTML = ''; this.labels = []; this.showLabels(false); }
+  private labelsOn = false;
+  showLabels(on: boolean) { this.labelsOn = on; $('labels').classList.toggle('show', on); }
 
   subtitle(s: { name: string; text: string; color: string; emotion: string } | null) {
     const el = $('subs');
@@ -117,6 +120,21 @@ export class UI {
       el.style.transform = `translate(-50%, -50%) translate(${(this.v.x * 0.5 + 0.5) * innerWidth}px, ${(-this.v.y * 0.5 + 0.5) * innerHeight + dy}px)`;
     };
     for (const p of this.pinned) place(p.el, p.at, p.dy);
-    for (const l of this.labels) place(l.el, l.at, 0);
+    if (!this.labelsOn) return;
+    // project labels, then nudge apart so none overlap
+    const placed: { x: number; y: number; el: HTMLElement; vis: boolean }[] = [];
+    for (const l of this.labels) {
+      this.v.copy(l.at).project(this.camera);
+      placed.push({ x: (this.v.x * 0.5 + 0.5) * innerWidth, y: (-this.v.y * 0.5 + 0.5) * innerHeight, el: l.el, vis: this.v.z < 1 && Math.abs(this.v.x) < 1.1 && Math.abs(this.v.y) < 1.1 });
+    }
+    placed.sort((a, b) => a.y - b.y);
+    for (let i = 0; i < placed.length; i++) for (let j = 0; j < i; j++) {
+      const a = placed[i], b = placed[j];
+      if (Math.abs(a.x - b.x) < 175 && Math.abs(a.y - b.y) < 46) a.y = b.y + 46;
+    }
+    for (const q of placed) {
+      q.el.style.opacity = q.vis ? '' : '0';
+      q.el.style.transform = `translate(-50%, -50%) translate(${q.x}px, ${q.y}px)`;
+    }
   }
 }
