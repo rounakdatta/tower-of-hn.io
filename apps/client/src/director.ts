@@ -674,7 +674,7 @@ export class Director {
     look.divideScalar(subjects.length).sub(p).normalize();
     const half = Math.atan(Math.tan((fov * Math.PI) / 360) * 1.78);       // half the horizontal field of view (16:9)
     const h = this.tmp;
-    for (let j = 0; j < this.crowd.people.length; j++) {
+    for (const j of this.nearby) {
       this.crowd.headPos(j, h);
       const per = this.crowd.people[j];
       const bottom = Y0 + (per.pose.seated ? 0.42 * (1 - per.expr.stand) : 0), neck = h.y - 0.2;
@@ -723,12 +723,20 @@ export class Director {
     return sc;
   }
   private tmp = new THREE.Vector3();
+  private nearby: number[] = [];
 
   /** Try angles, distances and heights around a preferred direction; cut (or glide) to the best. */
   private frame(target: THREE.Vector3, dir: THREE.Vector3, dist: number, lift: number, fov: number, subjects: Subject[], near: Set<number>,
     o: { glide?: number; now?: number; dry?: boolean; name?: string; exposure?: number } = {}): number {
     let best: THREE.Vector3 | null = null, bestScore = -Infinity;
     const Y = new THREE.Vector3(0, 1, 0);
+    // only people near the shot can block it or crowd the lens (a floor can hold 200): find them once per shot
+    const reach = dist * 1.45 + 2, hp = new THREE.Vector3();
+    this.nearby = [];
+    for (let j = 0; j < this.crowd.people.length; j++) {
+      this.crowd.headPos(j, hp);
+      if (Math.hypot(hp.x - target.x, hp.z - target.z) < reach || subjects.some((s) => s.i === j)) this.nearby.push(j);
+    }
     for (const a of [0, 0.3, -0.3, 0.6, -0.6, 0.95, -0.95, 1.3, -1.3]) {
       for (const m of [1, 0.85, 1.2, 0.7, 1.45]) {
         for (const h of [lift, lift + 0.22, lift - 0.12]) {
