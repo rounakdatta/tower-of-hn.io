@@ -46,6 +46,9 @@ export class Rig {
     this.camera.position.copy(this.pos).addScaledVector(this.drift, d);
     this.camera.lookAt(this.target);
     this.fov += (this.fovTarget - this.fov) * (1 - Math.exp(-dt * 3));
-    if (Math.abs(this.camera.fov - this.fov) > 0.01) { this.camera.fov = this.fov; this.camera.updateProjectionMatrix(); }
+    // shots are composed for 16:9; on a tall phone widen the lens so the framing (not the crop) stays the same
+    const a = this.camera.aspect, k = a < 1.6 ? Math.min(2.3, 1.6 / a) : 1;
+    const v = Math.min(88, (2 * Math.atan(Math.tan((this.fov * Math.PI) / 360) * k) * 180) / Math.PI);
+    if (Math.abs(this.camera.fov - v) > 0.01) { this.camera.fov = v; this.camera.updateProjectionMatrix(); }
   }
 }

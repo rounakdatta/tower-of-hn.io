@@ -34,6 +34,9 @@ scene.add(new THREE.HemisphereLight(0x7080b0, 0x1a120c, 0.5));
 const moon = new THREE.DirectionalLight(0xc3d2ff, 0.7);
 moon.position.set(-60, 90, -100);
 scene.add(moon);
+// cutscene lighting: a cool rim behind whoever the camera looks at, only while seated
+const rim = new THREE.DirectionalLight(0x9ec4ff, 0);
+scene.add(rim, rim.target);
 
 const pipeline = new THREE.RenderPipeline(renderer);
 const scenePass = pass(scene, camera);
@@ -271,6 +274,12 @@ function frame(dt: number, draw = true) {
   crowd.update(dt);
   ui.update();
   if (dofOn) { uFocus.value = camera.position.distanceTo(rig.target); uBokeh.value = 2.4; }
+  rim.intensity += ((mode === 'table' ? 1.6 : 0) - rim.intensity) * Math.min(1, dt * 3);
+  if (rim.intensity > 0.01) {
+    const away = rig.target.clone().sub(camera.position).setY(0).normalize();
+    rim.position.copy(rig.target).addScaledVector(away, 3).add(new THREE.Vector3(0, 1.6, 0));
+    rim.target.position.copy(rig.target);
+  }
   camera.getWorldDirection(fwd);
   audio.listener(camera.position, fwd, camera.up);
   if (draw) pipeline.render();
