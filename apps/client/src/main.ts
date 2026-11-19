@@ -324,6 +324,8 @@ function frame(dt: number, draw = true) {
   uBeacon.value = Math.max(0, uBeacon.value - dt * 0.9);
   uGrain.value = (clock * 60) % 1000;
   uTension.value += ((mode === 'table' ? director.tension : 0) - uTension.value) * Math.min(1, dt * 1.2);
+  const ev = 1.08 * (mode === 'table' ? director.exposure : 1);
+  renderer.toneMappingExposure += (ev - renderer.toneMappingExposure) * Math.min(1, dt * 8);
   if (recording) audio.vclock = clock;
   tower.update(clock, dt);
   if (mode === 'tower' && controls.enabled) controls.update(dt);

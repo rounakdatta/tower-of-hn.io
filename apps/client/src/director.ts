@@ -98,6 +98,8 @@ export class Director {
   private clockNow = 0;
   private flip = 0;
   private flipSide = false;
+  /** exposure for the current shot: stopped down when the lens looks up at someone standing under a lamp */
+  exposure = 1;
   /** 0..1: how heated the table is right now (the frame closes in) */
   tension = 0;
   /** what the camera is doing, for vibe tests */
@@ -344,7 +346,7 @@ export class Director {
         const replyTo = cur.turn.replyTo ? this.authorOf(cur.turn.replyTo) : undefined;
         const li = replyTo !== undefined && listeners.includes(replyTo) ? replyTo : listeners[Math.floor(Math.random() * listeners.length)];
         const standing = this.crowd.people[cur.who]?.expr.stand > 0.5;
-        if (standing) this.overShoulder(cur.who, li, 0.1);       // looking down at them, past the one standing over them
+        if (standing) this.overShoulder(cur.who, li, -0.22, 0.86);   // looking down at them, past the shoulder of the one standing over them
         else this.single(li);
         this.shotUntil = now + 2.2;
       }
@@ -680,7 +682,13 @@ export class Director {
       const ay = Math.max(bottom, Math.min(neck, p.y)), da = Math.hypot(p.x - h.x, p.y - ay, p.z - h.z);
       if (near.has(j)) {
         if (dh < 0.4 || da < 0.33) return -Infinity;
-        if (dh < 0.95 && subjects.some((s) => s.i === j)) return -Infinity;     // too close to the subject: their hands fill the lens
+        const subj = subjects.some((s) => s.i === j);
+        if (dh < 0.95 && subj) return -Infinity;     // too close to the subject: their hands fill the lens
+        // an over-the-shoulder: the shoulder belongs at the edge of the frame, not across a third of it
+        if (!subj && dh < 1.2) {
+          const ang = Math.acos(Math.max(-1, Math.min(1, h.clone().sub(p).divideScalar(dh).dot(look)))), rad = Math.asin(Math.min(1, 0.27 / dh));
+          sc -= (1.2 - dh) * 2.2 * Math.max(0, Math.min(1, (half * 0.75 + rad - ang) / (2 * rad)));
+        }
       }
       else {
         if (dh < 0.5 || da < 0.45) return -Infinity;
@@ -718,7 +726,7 @@ export class Director {
 
   /** Try angles, distances and heights around a preferred direction; cut (or glide) to the best. */
   private frame(target: THREE.Vector3, dir: THREE.Vector3, dist: number, lift: number, fov: number, subjects: Subject[], near: Set<number>,
-    o: { glide?: number; now?: number; dry?: boolean; name?: string } = {}): number {
+    o: { glide?: number; now?: number; dry?: boolean; name?: string; exposure?: number } = {}): number {
     let best: THREE.Vector3 | null = null, bestScore = -Infinity;
     const Y = new THREE.Vector3(0, 1, 0);
     for (const a of [0, 0.3, -0.3, 0.6, -0.6, 0.95, -0.95, 1.3, -1.3]) {
@@ -733,6 +741,7 @@ export class Director {
     if (o.dry) return bestScore;
     if (!best) best = target.clone().add(dir.clone().multiplyScalar(dist)).setY(target.y + lift);
     this.rig.fovTarget = fov;
+    this.exposure = o.exposure ?? 1;
     if (o.glide) this.rig.glide(best, target, o.glide, o.now ?? 0, 0.2, 0); else this.rig.cut(best, target, 0.12);
     this.cutAt = this.clockNow;
     this.shot = `${o.name ?? 'shot'} ${bestScore.toFixed(1)}`;
@@ -782,18 +791,18 @@ export class Director {
       // best: from just behind the one being told off, at their eye level, looking up at the one standing over them
       const lift = sa.head.y + 0.1 - target.y, near = new Set([i, a]);
       if (this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { dry: true }) > -1.6) {
-        this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { name: name + ' ots' });
+        this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { name: name + ' ots', exposure: 0.78 });
         return;
       }
       // glaring across the table: we sit nearly where they do, taking the heat
-      if (toA.dot(toC) > 0.5) { this.frame(target, toA, Math.min(1.6, dA * 0.62), -0.3, 46, [s], new Set([i]), { name: name + ' pov' }); return; }
+      if (toA.dot(toC) > 0.5) { this.frame(target, toA, Math.min(1.6, dA * 0.62), -0.3, 46, [s], new Set([i]), { name: name + ' pov', exposure: 0.78 }); return; }
       // glaring at a neighbour: both of them, low, from the middle of the table, the one standing bigger
       target.x += (sa.head.x - target.x) * 0.3; target.z += (sa.head.z - target.z) * 0.3;
-      this.frame(target, toC, 1.6, -0.3, 50, [s, sa], new Set([i, a]), { name: name + ' two' });
+      this.frame(target, toC, 1.6, -0.3, 50, [s, sa], new Set([i, a]), { name: name + ' two', exposure: 0.78 });
       return;
     }
     // between where they glare and the middle of the table: a 3/4 face
-    this.frame(target, s.face!.clone().add(toC).normalize(), 1.6, -0.3, 46, [s], new Set([i]), { name });
+    this.frame(target, s.face!.clone().add(toC).normalize(), 1.6, -0.3, 46, [s], new Set([i]), { name, exposure: 0.78 });
   }
 
   /** Someone is about to get up: a medium shot from across the table, wide enough to see them rise, with the one they answer in frame. */
@@ -809,11 +818,11 @@ export class Director {
       target.x += (sb.head.x - target.x) * 0.25; target.z += (sb.head.z - target.z) * 0.25;
     }
     const n = this.crowd.people[a].name + (b >= 0 ? '+' + this.crowd.people[b].name : '');
-    this.frame(target, toC, 1.55, 0.06, 54, subjects, new Set(b >= 0 ? [a, b] : [a]), { name: `rise ${n}` });
+    this.frame(target, toC, 1.55, 0.06, 54, subjects, new Set(b >= 0 ? [a, b] : [a]), { name: `rise ${n}`, exposure: 0.84 });
   }
 
   /** Over the shoulder of `over`, onto `at`'s face. A blocked one is worse than a clean single. */
-  private overShoulder(over: number, at: number, lift = 0.18) {
+  private overShoulder(over: number, at: number, lift = 0.18, exposure = 1) {
     const ho = this.crowd.headPos(over), sa = this.subject(at);
     const back = ho.clone().sub(sa.head).setY(0);
     const d = back.length();
@@ -822,7 +831,7 @@ export class Director {
     const dir = back.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.22), near = new Set([over, at]);
     const h = ho.y - target.y + lift;
     if (this.frame(target, dir, d + 0.7, h, 34, [sa], near, { dry: true }) < -1.2) { this.single(at); return; }
-    this.frame(target, dir, d + 0.7, h, 34, [sa], near, { name: `ots ${this.crowd.people[over].name}>${this.crowd.people[at].name}` });
+    this.frame(target, dir, d + 0.7, h, 34, [sa], near, { name: `ots ${this.crowd.people[over].name}>${this.crowd.people[at].name}`, exposure });
   }
 
   /** Whoever is talking: a hero angle if they're on their feet, a single if not. */

@@ -124,7 +124,7 @@ export class Crowd {
 
     // heads: the face lives here
     const hgeo = headGeo();
-    const hmat = new THREE.MeshStandardNodeMaterial({ roughness: 0.42, metalness: 0.0 });
+    const hmat = new THREE.MeshStandardNodeMaterial({ roughness: 0.6, metalness: 0.0 });   // satin vinyl: a soft sheen, never a white blowout under a lamp
     hmat.colorNode = this.faceNode();
     this.heads = new THREE.InstancedMesh(hgeo, hmat, MAX_PEOPLE);
 
