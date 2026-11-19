@@ -215,14 +215,16 @@ def main(var):
     from kokoro_onnx import Kokoro
     jobs_dir, live, log = os.path.join(var, "jobs"), os.path.join(var, "live"), os.path.join(var, "voiced.jsonl")
     os.makedirs(os.path.join(live, "c"), exist_ok=True)
-    models = os.path.expanduser("~/.cache/tohn-models")
-    so = ort.SessionOptions()
-    so.intra_op_num_threads = 1
-    so.inter_op_num_threads = 1
-    sess = ort.InferenceSession(f"{models}/kokoro-v1.0.onnx", so, providers=["CPUExecutionProvider"])
-    kokoro = Kokoro.from_session(sess, f"{models}/voices-v1.0.bin")
-    voices = Voices(kokoro)
     engine = os.environ.get("TTS_ENGINE", "kokoro")
+    kokoro = voices = None
+    if engine == "kokoro":
+        models = os.path.expanduser(os.environ.get("KOKORO_DIR", "~/.cache/tohn-models"))
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = 1
+        so.inter_op_num_threads = 1
+        sess = ort.InferenceSession(f"{models}/kokoro-v1.0.onnx", so, providers=["CPUExecutionProvider"])
+        kokoro = Kokoro.from_session(sess, f"{models}/voices-v1.0.bin")
+        voices = Voices(kokoro)
     oai = OpenAITTS(os.environ["OPENAI_API_KEY"], float(os.environ.get("OPENAI_BUDGET_MIN", "300"))) if engine == "openai" else None
     key = os.environ.get("GEMINI_API_KEY", "")
     last_llm = 0.0
@@ -259,12 +261,12 @@ def main(var):
             emotion, stance = tags.get(j["id"]) or heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
             clips_out, total = [], 0.0
             for k, (spoken, shown, who) in enumerate(plan_clips(j)):
-                style, lang, pace, _ = voices.of(who)
-                speed = pace * SPEED.get(emotion, 1.0) * (0.97 if who != j["by"] else 1.0)
                 try:
                     if oai:
                         audio, sr = oai.create(spoken, who, emotion)
                     else:
+                        style, lang, pace, _ = voices.of(who)
+                        speed = pace * SPEED.get(emotion, 1.0) * (0.97 if who != j["by"] else 1.0)
                         audio, sr = kokoro.create(spoken, voice=style, speed=speed, lang=lang)
                 except Exception as e:  # noqa: BLE001
                     print("tts failed", j["id"], str(e)[:120], file=sys.stderr, flush=True)
@@ -295,7 +297,8 @@ def main(var):
             except FileNotFoundError:
                 pass
             print(json.dumps({"id": j["id"], "by": j["by"], "emotion": emotion, "stance": stance, "clips": len(clips_out),
-                              "audio_s": round(total, 1), "wall_s": round(time.time() - t0, 1), "voice": voices.of(j["by"])[3]}), flush=True)
+                              "audio_s": round(total, 1), "wall_s": round(time.time() - t0, 1),
+                              "voice": voices.of(j["by"])[3] if voices else persona(j["by"])[0]}), flush=True)
 
 
 if __name__ == "__main__":
