@@ -17,7 +17,7 @@ const PORT = Number(process.env.PORT ?? 8787);
 const VAR = resolve(process.env.VAR ?? join(import.meta.dirname, '../../../var'));
 const LIVE = join(VAR, 'live'), JOBS = join(VAR, 'jobs'), VOICED = join(VAR, 'voiced.jsonl');
 const FLOORS = 30;
-const PRE = { floors: Number(process.env.PREWARM_FLOORS ?? 3), tables: Number(process.env.PREWARM_TABLES ?? 3), turns: Number(process.env.PREWARM_TURNS ?? 10) };
+const PRE = { floors: Number(process.env.PREWARM_FLOORS ?? 6), tables: Number(process.env.PREWARM_TABLES ?? 4), turns: Number(process.env.PREWARM_TURNS ?? 14), bar: Number(process.env.PREWARM_BAR ?? 6) };
 const MAX_QUEUED = 12;
 for (const d of [LIVE, JOBS]) mkdirSync(d, { recursive: true });
 
@@ -75,7 +75,11 @@ function wanted(): [number, number][] {
     const f = floors.get(sid);
     if (!f) return;
     f.tables.filter((t) => t.turns.length >= 2).slice(0, PRE.tables).forEach((t, ti) => {
-      t.turns.slice(0, PRE.turns).forEach((u, k) => { if (!out.has(u.id)) out.set(u.id, 1000 + fi * 100 + ti * 12 + k); });
+      t.turns.slice(0, PRE.turns).forEach((u, k) => { if (!out.has(u.id)) out.set(u.id, 1000 + fi * 100 + ti * 15 + k); });
+    });
+    // the bar's one-liners too, after the conversations
+    f.tables.filter((t) => t.turns.length === 1).slice(0, PRE.bar).forEach((t, k) => {
+      if (!out.has(t.turns[0].id)) out.set(t.turns[0].id, 1000 + fi * 100 + 80 + k);
     });
   });
   return [...out].filter(([id]) => !live.voiced.has(id)).sort((a, b) => a[1] - b[1]);
