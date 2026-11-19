@@ -105,8 +105,11 @@ export class Interior {
   }
 
   /** Lay the room out for this floor and return where everyone stands or sits. */
-  layout(floor: Floor, yaw = 0): { spots: TableSpot[]; people: { name: string; pose: Pose }[] } {
+  layout(floor: Floor, yaw = 0, first = 0): { spots: TableSpot[]; people: { name: string; pose: Pose }[] } {
     const convoAll = floor.tables.map((t, i) => ({ t, i })).filter(({ t }) => t.turns.length >= 2);
+    // a deep-linked table is always in the room: it gets the first (best) place
+    const pin = convoAll.findIndex(({ t }) => t.root === first);
+    if (pin > 0) convoAll.unshift(...convoAll.splice(pin, 1));
     const remarks = floor.tables.map((t, i) => ({ t, i })).filter(({ t }) => t.turns.length === 1).slice(0, MAX_BAR);
     // conversation tables, packed: the best thread nearest the front, the rest wherever they fit without anyone's
     // chair (pushed back when they stand up) or standing crowd touching the next table's, the bar or the windows

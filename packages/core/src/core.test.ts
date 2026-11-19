@@ -59,3 +59,9 @@ test('a voice is stable per person and unique at a table', () => {
   assert.equal(voiceFor('K0nserv', new Set(), 115), v1);
   assert.notEqual(voiceFor('K0nserv', new Set([v1]), 115), v1);
 });
+
+test('moderation placeholders are skipped, their replies still play', () => {
+  const t = playOrder({ id: 1, by: 'a', text: 'root', kids: [{ id: 2, by: 'b', text: '[delayed]', kids: [{ id: 3, by: 'c', text: 'still here' }] }] });
+  assert.deepEqual(t.map((x) => x.id), [1, 3]);
+  assert.equal(t[1].replyTo, 1);
+});

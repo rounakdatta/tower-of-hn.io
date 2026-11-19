@@ -141,7 +141,7 @@ async function enterFloor(sid: number) {
     interior.group.position.y = roomY; crowd.group.position.y = roomY;
     interior.group.visible = true;
     roomYaw = Math.atan2(out.x, out.y);           // the room's front (its tables) faces the way we came in
-    const lay = interior.layout(floor, roomYaw);
+    const lay = interior.layout(floor, roomYaw, deepTable);
     spots = lay.spots;
     crowd.set(lay.people);
     overview(clock, 2.0);
@@ -169,6 +169,7 @@ function overview(now: number, dur: number) {
 }
 
 let deepTable = Number(params.get('table') ?? 0);
+let deepFrom = Number(params.get('from') ?? 0);
 function bestSpot(): TableSpot {
   const convo = spots.filter((s) => !s.bar);
   if (deepTable) { const d = spots.find((s) => s.table.root === deepTable); deepTable = 0; if (d) return d; }
@@ -190,6 +191,7 @@ function sit(s: TableSpot | undefined) {
   if (!recording) history.replaceState(null, '', `?story=${activeFloor.story.id}&table=${s.table.root}`);
   ui.hint('Esc to stand up · Space to pause · N for the next table');
   director.others = spots.filter((x) => !x.bar && x !== s).map((x) => ({ pos: x.pos, turns: x.table.turns }));
+  director.jumpTo = deepFrom; deepFrom = 0;
   director.start(activeFloor, s, roomY, clock);
 }
 

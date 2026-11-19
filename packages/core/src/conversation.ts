@@ -14,6 +14,8 @@ export interface Turn {
 }
 
 const GAP = { reply: 220, sibling: 480, backtrack: 800 };   // brisk, like people who know each other
+/** HN's stand-ins for comments held by moderation: nothing to say, so nobody says it */
+const PLACEHOLDER = /^\s*\[(delayed|flagged|dead|deleted|removed)\]\s*$/i;
 
 /**
  * Depth-first in HN's own order (kids arrive ranked best-first from the API),
@@ -24,7 +26,7 @@ export function playOrder(root: Node): Turn[] {
   const out: Turn[] = [];
   let prevDepth = -1;
   const walk = (n: Node, depth: number, parent?: Node) => {
-    const speakable = n.by && n.text && !n.dead && !n.deleted;
+    const speakable = n.by && n.text && !n.dead && !n.deleted && !PLACEHOLDER.test(n.text);
     if (speakable) {
       const gapMs = out.length === 0 ? 0 : depth > prevDepth ? GAP.reply : depth === prevDepth ? GAP.sibling : GAP.backtrack;
       out.push({ id: n.id, by: n.by!, depth, replyTo: parent?.id, gapMs });

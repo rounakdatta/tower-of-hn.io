@@ -101,6 +101,8 @@ export class Director {
   shot = '';
   pushChair: (chair: number, k: number) => void = () => {};
   playing = false;
+  /** play the opener, then jump to this comment (deep links) */
+  jumpTo = 0;
   paused = false;
   others: { pos: THREE.Vector3; turns: Turn[] }[] = [];      // other tables on this floor, for the murmur
   private murmurAt = 0;
@@ -115,7 +117,13 @@ export class Director {
     this.turnIdx = 0; this.playing = true; this.paused = false;
     this.plans.clear(); this.heroAt = 0; this.staged.clear();
     this.cursor = this.audio.now() + 1.6;           // let the establishing shot breathe
-    for (const s of spot.seats) { const i = this.crowd.index(s.name); if (i >= 0) this.crowd.active.add(i); }
+    // the same HN user can sit at several tables (one per thread they joined): always mean the one at this table
+    this.seatOf.clear();
+    for (const s of spot.seats) {
+      const i = this.crowd.people.findIndex((p) => p.pose.pos === s.pos);
+      this.seatOf.set(s.name, i >= 0 ? i : this.crowd.index(s.name));
+    }
+    for (const s of spot.seats) { const i = this.ix(s.name); if (i >= 0) this.crowd.active.add(i); }
     this.wide(now, true);
     this.shotUntil = now + 2.6;
     this.prefetch();
@@ -185,9 +193,14 @@ export class Director {
     }
   }
 
+  private seatOf = new Map<string, number>();
+  private waitSince = 0;
+  /** person index for a name, at this table */
+  private ix(name: string) { return this.seatOf.get(name) ?? this.crowd.index(name); }
+
   private personFor(name: string, fallback: string) {
-    const i = this.crowd.index(name);
-    return i >= 0 ? i : this.crowd.index(fallback);
+    const i = this.ix(name);
+    return i >= 0 ? i : this.ix(fallback);
   }
 
   private scheduleAhead(now: number) {
@@ -200,13 +213,20 @@ export class Director {
       if (!r) {
         this.prefetch();
         if (this.cursor < at) {             // we've run dry: show who we're waiting for
-          const i = this.crowd.index(turn.by);
+          const i = this.ix(turn.by);
           this.ui.waiting(i >= 0 ? this.crowd.headPos(i) : null);
+          // a line still being voiced: after a few seconds the table moves on without it
+          if (!this.waitSince) this.waitSince = now;
+          else if (now - this.waitSince > 4 && turns.slice(this.turnIdx + 1, this.turnIdx + 4).some((u) => this.ready.has(u.id))) {
+            this.turnIdx++; this.waitSince = 0; this.ui.waiting(null);
+            continue;
+          }
         }
         return;
       }
+      this.waitSince = 0;
       this.ui.waiting(null);
-      let t = Math.max(this.cursor + (this.sched.length ? turn.gapMs / 1000 : 0), at + 0.08);
+      let t = Math.max(this.cursor + (this.sched.length ? this.gapFor(turn, r.side) : 0), at + 0.08);
       r.side.clips.forEach((clip, k) => {
         const who = this.personFor(clip.who, turn.by);
         const pos = who >= 0 ? this.crowd.headPos(who) : new THREE.Vector3(this.spot!.pos.x, this.roomY + 1.1, this.spot!.pos.z);
@@ -216,6 +236,12 @@ export class Director {
       });
       this.cursor = t;
       this.turnIdx++;
+      // a deep link into the middle of a long table: the opener for context, then straight to that reply
+      if (this.jumpTo && this.turnIdx === 1) {
+        const k = turns.findIndex((u) => u.id === this.jumpTo);
+        if (k > 1) this.turnIdx = k;
+        this.jumpTo = 0;
+      }
       this.prefetch();
     }
     if (this.turnIdx >= turns.length && at > this.cursor + 1.2 && this.sched.every((s) => s.end < at)) {
@@ -264,7 +290,7 @@ export class Director {
     // a cutaway to a listener in the middle of a long clip, then back
     if (cur && this.reactionAt && now > this.reactionAt) {
       this.reactionAt = 0;
-      const listeners = this.spot.seats.map((s) => this.crowd.index(s.name)).filter((i) => i >= 0 && i !== cur.who);
+      const listeners = this.spot.seats.map((s) => this.ix(s.name)).filter((i) => i >= 0 && i !== cur.who);
       if (listeners.length) {
         const replyTo = cur.turn.replyTo ? this.authorOf(cur.turn.replyTo) : undefined;
         const li = replyTo !== undefined && listeners.includes(replyTo) ? replyTo : listeners[Math.floor(Math.random() * listeners.length)];
@@ -277,6 +303,17 @@ export class Director {
       this.shotUntil = 0;
       this.speakerShot(cur.who);
     }
+  }
+
+  /** Silence before a turn: a heated reply cuts straight in, a joke gets its laugh, a question its quick answer. */
+  private gapFor(turn: Turn, side: Sidecar) {
+    const base = turn.gapMs / 1000, me = tone(side);
+    const prevId = this.spot!.table.turns[this.turnIdx - 1]?.id, prev = prevId !== undefined ? this.ready.get(prevId) : undefined;
+    const before = prev ? tone(prev.side) : null;
+    if ((me.E === 'angry' && me.I >= 0.45) || (me.I >= 0.82 && (me.ST === 'disagree' || me.ST === 'correct'))) return Math.min(base, 0.04);
+    if (before && (before.ST === 'joke' || before.C.includes('joke'))) return base + 0.5;
+    if (before && (before.ST === 'question' || before.C.includes('question')) && turn.replyTo === prevId) return base * 0.6;
+    return base;
   }
 
   /** A heated reply is coming: be on a two-shot before they rise, so the stand-up is seen; then the hero angle. */
@@ -295,7 +332,7 @@ export class Director {
 
   private authorOf(id: number) {
     const t = this.spot?.table.turns.find((u) => u.id === id);
-    return t ? this.crowd.index(t.by) : undefined;
+    return t ? this.ix(t.by) : undefined;
   }
 
   private onClip(s: Scheduled, now: number) {
@@ -342,7 +379,7 @@ export class Director {
     const start = Math.min(s.start, ...clips.map((x) => x.start)), end = Math.max(s.end, ...clips.map((x) => x.end));
     let p = this.plans.get(s.turn.id);
     if (p) { p.start = Math.min(p.start, start); p.end = Math.max(p.end, end); return p; }
-    const S = this.crowd.index(s.turn.by);
+    const S = this.ix(s.turn.by);
     let A = s.turn.replyTo ? this.authorOf(s.turn.replyTo) ?? -1 : -1;
     if (A === S) A = -1;
     if (A < 0) {                                         // nobody to answer here: address whoever spoke last
@@ -384,11 +421,11 @@ export class Director {
     // who speaks next? if their reply pushes back, they're already narrowing their eyes
     const upcoming = new Map<number, string>();
     for (let k = this.turnIdx; k < Math.min(this.turnIdx + 3, this.spot.table.turns.length); k++) {
-      const t = this.spot.table.turns[k], r = this.ready.get(t.id), i = this.crowd.index(t.by);
+      const t = this.spot.table.turns[k], r = this.ready.get(t.id), i = this.ix(t.by);
       if (r && i >= 0 && !upcoming.has(i)) upcoming.set(i, tone(r.side).ST);
     }
     for (const seat of this.spot.seats) {
-      const i = this.crowd.index(seat.name), t = this.crowd.target(i);
+      const i = this.ix(seat.name), t = this.crowd.target(i);
       if (!t || i < 0) continue;
       // everyone starts the frame as a calm listener, turned to whoever has the floor
       t.open = 0; t.shape = 0; t.turn = 0; t.stand = 0; t.bounce = 0;
@@ -467,19 +504,38 @@ export class Director {
         else if (plan.ST === 'joke' || plan.E === 'joyful') t.smile = 0.6;
         else if (plan.ST === 'question') t.tilt = 0.18;
         else if (plan.ST === 'agree') t.nod += Math.max(0, Math.sin(at * 1.8 + i)) * 0.08;
+        else if (plan.I >= 0.6 || plan.C.includes('story')) { t.lean = 0.24; t.brow = Math.max(t.brow, 0.12); }           // leaning in
+        // an insult lands: the table gasps; its target goes stony
+        const k = at - plan.start;
+        if (plan.C.includes('insult') && k > 0.6 && k < 2.6) {
+          const w = smooth01((k - 0.6) / 0.25) * (1 - smooth01((k - 2.2) / 0.4));
+          if (i === plan.A) { t.brow = -0.7 * w; t.smile = -0.35 * w; t.lid = 1 - 0.2 * w; }
+          else { t.brow = Math.max(t.brow, 0.85 * w); t.open = 0.32 * w; t.shape = 0.9 * w; t.lean = -0.25 * w; t.lid = 1 + 0.25 * w; }
+        }
+        // praise: the one praised lights up, a hand to the chest
+        if ((plan.ST === 'praise' || plan.C.includes('praise')) && i === plan.A && k > 0.4) { t.smile = 0.85; t.armR = 1.25; t.spreadR = -0.62; t.nod += 0.12; }
         if (plan.laughEnd && at > plan.end - 1.1 && this.crowd.seed(i, 7) < 0.65) { t.bounce = 1; t.smile = 1; t.lid = 0.55; }
       }
       const coming = upcoming.get(i);
-      if ((coming === 'disagree' || coming === 'correct') && t.brow >= 0 && i !== plan?.A) { t.brow = -0.35; t.lid = 0.85; }   // foreshadowing
+      if ((coming === 'disagree' || coming === 'correct') && t.brow >= 0 && i !== plan?.A) {
+        t.brow = -0.35; t.lid = 0.85;                                                                 // foreshadowing
+        if (Math.sin(at * 0.8 + i * 2.1) > 0.93) t.yaw += Math.sin(at * 11) * 0.14;                     // a small head shake
+      }
     }
     // eyes: they get there before the head does (and cover what the neck can't), with small darts now and then
     for (const seat of this.spot.seats) {
-      const i = this.crowd.index(seat.name), t = this.crowd.target(i);
+      const i = this.ix(seat.name), t = this.crowd.target(i);
       if (!t || i < 0) continue;
       const excess = t.yaw - Math.max(-1.1, Math.min(1.1, t.yaw));
       const dart = Math.sin(Math.floor(at * 0.8 + i * 0.37) * 12.9898 + i) * 0.16;
       t.gaze = Math.max(-1, Math.min(1, t.yaw * 0.4 + excess * 1.6 + dart));
       t.gazeY = Math.max(-1, Math.min(1, -t.nod * 0.35 + dart * 0.4));
+      if (!plan || i !== plan.S) continue;
+      const k = at - plan.start, flip = this.crowd.seed(i, 5) > 0.5 ? 1 : -1;
+      // uncertain: they look up and off to find the words
+      if (plan.C.includes('uncertain') && k > -0.35 && k < 0.75) { const w = Math.sin(Math.PI * (k + 0.35) / 1.1); t.gaze = 0.65 * flip * w; t.gazeY = 0.85 * w; t.tilt += 0.2 * w * flip; }
+      // sarcasm: an eye-roll, once, early on
+      if (plan.C.includes('sarcasm') && k > 1.1 && k < 1.8) { const u = (k - 1.1) / 0.7; t.gazeY = Math.sin(Math.PI * u); t.gaze = Math.cos(Math.PI * u) * 0.8 * flip; t.nod -= 0.15 * Math.sin(Math.PI * u); }
     }
   }
 
@@ -487,7 +543,7 @@ export class Director {
   private chairs() {
     for (const seat of this.spot?.seats ?? []) {
       if (seat.chair === undefined) continue;
-      const i = this.crowd.index(seat.name), k = i >= 0 ? this.crowd.people[i].expr.stand : 0;
+      const i = this.ix(seat.name), k = i >= 0 ? this.crowd.people[i].expr.stand : 0;
       const last = this.chairK.get(seat.chair) ?? 0;
       if (Math.abs(k - last) < 0.004) continue;
       this.chairK.set(seat.chair, k);
@@ -604,7 +660,7 @@ export class Director {
   /** A close single on someone's face, from the open side of the table. */
   private single(i: number, medium = false) {
     if (!this.spot || i < 0) return;
-    const s = this.subject(i), target = s.head.clone().add(new THREE.Vector3(0, medium ? -0.2 : -0.05, 0));
+    const s = this.subject(i), target = s.head.clone().add(new THREE.Vector3(0, medium ? -0.12 : -0.05, 0));
     // from the open middle of the table, a little toward where they look: a 3/4 face, never between them and
     // whoever they're talking to (that's where their hands go)
     const toC = this.spot.bar ? s.face!.clone() : this.center().sub(s.head).setY(0).normalize();
@@ -624,6 +680,12 @@ export class Director {
     if (a >= 0 && this.crowd.people[a]) {
       const sa = this.subject(a, 0.6), toA = sa.head.clone().sub(s.head).setY(0), dA = toA.length();
       toA.normalize();
+      // best: from just behind the one being told off, at their eye level, looking up at the one standing over them
+      const lift = sa.head.y + 0.1 - target.y, near = new Set([i, a]);
+      if (this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { dry: true }) > -1.6) {
+        this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { name: name + ' ots' });
+        return;
+      }
       // glaring across the table: we sit nearly where they do, taking the heat
       if (toA.dot(toC) > 0.5) { this.frame(target, toA, Math.min(1.6, dA * 0.62), -0.3, 46, [s], new Set([i]), { name: name + ' pov' }); return; }
       // glaring at a neighbour: both of them, low, from the middle of the table, the one standing bigger

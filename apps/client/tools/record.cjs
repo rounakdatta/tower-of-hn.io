@@ -1,5 +1,5 @@
 // Record a demo of the real client with deterministic frames; the director's audio log is saved for muxing.
-// usage: node tools/record.cjs <frames dir> <seconds at the table> [fps] [WxH]
+// usage: node tools/record.cjs <frames dir> <seconds at the table> [fps] [WxH] [url]
 const { chromium } = require('/home/rounak/personal/Codeman/node_modules/playwright');
 const fs = require('fs');
 (async () => {
@@ -13,7 +13,7 @@ const fs = require('fs');
   });
   const page = await browser.newPage({ viewport: { width: W, height: H } });
   page.on('pageerror', (e) => console.error('pageerror', e.message));
-  await page.goto('http://127.0.0.1:5288/?record');
+  await page.goto(process.argv[6] || 'http://127.0.0.1:5288/?record');
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
   const dt = 1 / fps;
   let f = 0;
