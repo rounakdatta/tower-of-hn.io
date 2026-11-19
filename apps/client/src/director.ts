@@ -45,13 +45,14 @@ interface Scheduled { clip: Clip; side: Sidecar; turn: Turn; start: number; end:
 type Gesture = 'point' | 'palms' | 'shrug' | 'chin' | 'cross' | 'arms-up' | 'facepalm';
 interface Plan { S: number; A: number; start: number; end: number; stand: boolean; gesture: Gesture | null; gestureLen: number; laughEnd: boolean; E: string; I: number; ST: string; C: string[] }
 
-/** vibe-testing only: ?force=angry|joke|question|uncertain|excited|sad makes every turn play that way */
+/** vibe-testing only: ?force=angry|joke|question|uncertain|excited|sad|list|sarcasm makes every turn play that way */
 const FORCE = new URLSearchParams(location.search).get('force');
 function tone(side: Sidecar) {
   if (!FORCE) return { E: side.emotion, I: side.intensity ?? 0.4, ST: side.stance, C: side.cues ?? [] };
   const m: Record<string, [string, string, number, string[]]> = {
     angry: ['angry', 'disagree', 0.9, ['frustrated']], joke: ['joyful', 'joke', 0.6, ['joke']], question: ['contemplative', 'question', 0.5, ['question']],
     uncertain: ['contemplative', 'inform', 0.4, ['uncertain']], excited: ['excited', 'agree', 0.85, []], sad: ['sad', 'inform', 0.6, ['frustrated']],
+    list: ['mundane', 'inform', 0.4, ['list']], sarcasm: ['stern', 'disagree', 0.45, ['sarcasm']],
   };
   const [E, ST, I, C] = m[FORCE] ?? m.angry;
   return { E, I, ST, C };
@@ -97,6 +98,8 @@ export class Director {
   private clockNow = 0;
   private flip = 0;
   private flipSide = false;
+  /** 0..1: how heated the table is right now (the frame closes in) */
+  tension = 0;
   /** what the camera is doing, for vibe tests */
   shot = '';
   pushChair: (chair: number, k: number) => void = () => {};
@@ -293,6 +296,7 @@ export class Director {
     if (at < this.murmurAt || !this.others.length) return;
     this.murmurAt = at + 4 + Math.random() * 5;
     const o = this.others[Math.floor(Math.random() * this.others.length)];
+    if (Math.random() < 0.3) this.audio.sfxAt('clink', { x: o.pos.x, y: this.roomY + 0.8, z: o.pos.z }, at + 1 + Math.random() * 2);
     const voiced = o.turns.filter((t) => t.v);
     if (!voiced.length) return;
     const t = voiced[Math.floor(Math.random() * voiced.length)];
@@ -471,6 +475,8 @@ export class Director {
     const focus = speaking >= 0 ? speaking : plan?.S ?? -1;
     const focusHead = focus >= 0 ? this.crowd.headPos(focus) : null;
     const voice = cur ? FACE[tone(cur.side).E] ?? FACE.mundane : FACE.mundane;
+    this.tension = plan && inTurn && (plan.stand || (plan.E === 'angry' && plan.I >= 0.45)) ? Math.min(1, 0.5 + plan.I * 0.6) : 0;
+    const clipNo = cur ? cur.side.clips.indexOf(cur.clip) : -1, clipT = cur ? at - cur.start : 0;
     // a heated reply about to start: its speaker is already getting up while the other one finishes
     const nextUp = this.sched.find((x) => x.start > at && x.start - at < RISE_LEAD + 0.1 && x.side.clips[0] === x.clip && x.turn.id !== live?.turn.id);
     const riser = nextUp ? this.planFor(nextUp) : null;
@@ -522,6 +528,12 @@ export class Director {
           t.armR = (right ? gv : gv * 0.3) * amp; t.armL = (right ? gv * 0.3 : gv) * amp;
           t.spreadR = t.spreadL = gv * 0.15;
         }
+        // a list: a hand comes up on each new point, alternating
+        if (plan.C.includes('list') && i === speaking && clipT < 0.7 && !(plan.gesture && gk >= 0 && gk <= 1)) {
+          const w = Math.sin(Math.PI * clipT / 0.7);
+          if (clipNo % 2) { t.armL = 0.85 * w; t.spreadL = 0.3 * w; } else { t.armR = 0.85 * w; t.spreadR = 0.3 * w; }
+        }
+        if (plan.E === 'sad') { t.lean -= 0.2; t.nod += 0.22; t.lid = Math.min(t.lid, 0.8); }          // slumped
         if (plan.laughEnd && at > plan.end - 1.1) { t.bounce = 1; t.smile = 1; t.lid = 0.6; }
       }
       if (riser?.stand && i === riser.S && !performing && i !== speaking) {
@@ -555,7 +567,11 @@ export class Director {
           if (pushback && plan.E === 'angry' && strong) { t.brow = 0.55; t.lid = 1.22; t.lean = -0.3; t.smile = -0.1; }     // taken aback
           else if (pushback) { t.brow = -0.5; t.smile = -0.15; t.lean = -0.12; if (plan.ST === 'correct' && !strong) pose('cross', t, 0.5, 0, false); }
           else if (plan.ST === 'agree' || plan.ST === 'praise') { t.smile = 0.65; t.nod += Math.max(0, Math.sin(at * 2.4 + i)) * 0.14; }
-          else if (plan.ST === 'question') { t.tilt = 0.35; t.brow = 0.25; }
+          else if (plan.ST === 'question' || plan.C.includes('question')) {
+            t.tilt = 0.35; t.brow = 0.25;
+            const w = smooth01((at - (plan.end - 1.6)) / 0.45);                        // the question lands: they start thinking
+            if (w > 0) { t.armR = 2.2 * w; t.spreadR = -0.5 * w; t.nod += 0.1 * w; t.gazeY = 0; }
+          }
         } else if (plan.E === 'angry' && strong) { t.brow = 0.45; t.lid = 1.15; t.lean = -0.2; }                            // whoa
         else if (plan.ST === 'joke' || plan.E === 'joyful') t.smile = 0.6;
         else if (plan.ST === 'question') t.tilt = 0.18;
@@ -683,9 +699,10 @@ export class Director {
         if (k > 0 && k < 1 && x * x + z * z < tr * tr) sc -= 4 * s.w;
       }
       if (s.face) {
+        // the face is small on a big round head: past ~55° it reads as a profile, so aim for ~22° off the nose
         const v = p.clone().sub(s.head).setY(0).normalize(), d = v.dot(s.face);
-        if (d < 0.3) sc -= (0.3 - d) * 9 * s.w;
-        sc -= Math.abs(d - 0.8) * 1.2 * s.w;
+        if (d < 0.55) sc -= (0.55 - d) * 9 * s.w;
+        sc -= Math.abs(d - 0.93) * 1.6 * s.w;
       }
     }
     return sc;
@@ -735,11 +752,15 @@ export class Director {
     // from the open middle of the table, a little toward where they look: a 3/4 face, never between them and
     // whoever they're talking to (that's where their hands go)
     const toC = this.spot.bar ? s.face!.clone() : this.center().sub(s.head).setY(0).normalize();
-    const dir = s.face!.clone().add(toC.multiplyScalar(0.9)).normalize()
-      .applyAxisAngle(new THREE.Vector3(0, 1, 0), (i % 2 ? 0.22 : -0.22) * (this.flipSide ? -1 : 1));
+    const base = s.face!.clone().add(toC.multiplyScalar(0.4)).normalize();
     // a close-up for faces; a medium shot (head, hands, the table edge) when they're about to gesture
-    if (medium) this.frame(target, dir, 1.5, 0.06, 40, [s], new Set([i]), { name: `medium ${this.crowd.people[i].name}` });
-    else this.frame(target, dir, 1.35, 0.04, 31, [s], new Set([i]), { name: `single ${this.crowd.people[i].name}` });
+    const [dist, lift, fov, name] = medium ? [1.5, 0.06, 40, 'medium'] : [1.35, 0.04, 31, 'single'];
+    const near = new Set([i]), Y = new THREE.Vector3(0, 1, 0);
+    // the side we'd like (alternating, for variety), unless the other side is clearly the better picture
+    const want = (i % 2 ? 0.22 : -0.22) * (this.flipSide ? -1 : 1);
+    const a = this.frame(target, base.clone().applyAxisAngle(Y, want), dist, lift, fov, [s], near, { dry: true });
+    const b = this.frame(target, base.clone().applyAxisAngle(Y, -want), dist, lift, fov, [s], near, { dry: true });
+    this.frame(target, base.applyAxisAngle(Y, a >= b - 0.6 ? want : -want), dist, lift, fov, [s], near, { name: `${name} ${this.crowd.people[i].name}` });
   }
 
   /** Low and a little wide: someone stood up to make their point (at `a`, if anyone in particular). */

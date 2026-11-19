@@ -151,7 +151,7 @@ export class AudioEngine {
   }
 
   /** A sound placed in the room, on the scene's audio clock (recorded videos synthesize the same sound when muxing). */
-  sfxAt(kind: 'chair' | 'thump', pos: V3, when: number) {
+  sfxAt(kind: 'chair' | 'thump' | 'clink', pos: V3, when: number) {
     if (this.virtual) { this.log.push({ url: 'sfx:' + kind, when }); return; }
     const ctx = this.ctx;
     if (!ctx) return;
@@ -160,6 +160,15 @@ export class AudioEngine {
     pan.panningModel = 'HRTF'; pan.refDistance = 1.6; pan.rolloffFactor = 0.9;
     pan.positionX.value = pos.x; pan.positionY.value = pos.y; pan.positionZ.value = pos.z;
     pan.connect(this.voiceBus);
+    if (kind === 'clink') {
+      // two glasses touching across the room: two inharmonic partials, a quick ring
+      for (const [f, a, d] of [[2730, 0.05, 0.5], [4120, 0.03, 0.35], [6390, 0.012, 0.2]]) {
+        const o = ctx.createOscillator(); o.frequency.value = f * (0.97 + Math.random() * 0.06);
+        const g = ctx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(a, t + 0.003); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+        o.connect(g).connect(pan); o.start(t); o.stop(t + d + 0.05);
+      }
+      return;
+    }
     if (kind === 'thump') {
       // two palms on a wooden tabletop: a low body and a short knock
       const o = ctx.createOscillator(); o.frequency.setValueAtTime(92, t); o.frequency.exponentialRampToValueAtTime(58, t + 0.2);

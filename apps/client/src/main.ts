@@ -43,13 +43,16 @@ const pipeline = new THREE.RenderPipeline(renderer);
 const scenePass = pass(scene, camera);
 const color = scenePass.getTextureNode('output');
 const uGrain = uniform(0);
-const vignette = smoothstep(0.95, 0.3, screenUV.sub(0.5).length()).mul(0.42).add(0.58);
+/** 0..1 while a table turns heated: the frame closes in and warms a touch */
+const uTension = uniform(0);
+const vignette = smoothstep(float(0.95).sub(uTension.mul(0.2)), 0.3, screenUV.sub(0.5).length()).mul(uTension.mul(0.2).add(0.42)).add(float(0.58).sub(uTension.mul(0.2)));
+const warm = vec3(uTension.mul(0.05).add(1), float(1).sub(uTension.mul(0.015)), float(1).sub(uTension.mul(0.05)));
 const px = screenUV.mul(vec3(1920, 1080, 0).xy).floor();
 const grain = hash(px.x.add(px.y.mul(7919.0)).add(uGrain.mul(104729.0))).sub(0.5).mul(0.02);
 const uFocus = uniform(2), uBokeh = uniform(0);
 const bloomed = bloom(color, 0.62, 0.45, 0.78);
-const plainOut = color.add(bloomed).mul(vignette).add(grain);
-const dofOut = dof(color, scenePass.getViewZNode(), uFocus, 0.9, uBokeh).add(bloomed).mul(vignette).add(grain);
+const plainOut = color.add(bloomed).mul(vignette).mul(warm).add(grain);
+const dofOut = dof(color, scenePass.getViewZNode(), uFocus, 0.9, uBokeh).add(bloomed).mul(vignette).mul(warm).add(grain);
 pipeline.outputNode = plainOut;
 let dofOn = false;
 /** shallow focus only at the table: film-like close-ups, no cost elsewhere */
@@ -320,6 +323,7 @@ function frame(dt: number, draw = true) {
   uTime.value = clock; setTimeValue(clock);
   uBeacon.value = Math.max(0, uBeacon.value - dt * 0.9);
   uGrain.value = (clock * 60) % 1000;
+  uTension.value += ((mode === 'table' ? director.tension : 0) - uTension.value) * Math.min(1, dt * 1.2);
   if (recording) audio.vclock = clock;
   tower.update(clock, dt);
   if (mode === 'tower' && controls.enabled) controls.update(dt);

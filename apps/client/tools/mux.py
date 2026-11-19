@@ -39,7 +39,13 @@ def thump():
     knock = np.fft.irfft(X * (fr < 900), len(t))
     return ((body + knock) * 0.6).astype(np.float32)
 
-SFX = {"sfx:chair": chair(), "sfx:thump": thump()}
+def clink():
+    """audio.ts sfxAt('clink'): glasses touching across the room."""
+    t = np.arange(int(0.55 * sr)) / sr
+    y = sum(a * np.sin(2 * np.pi * f * t) * np.exp(-t / (d / 5)) for f, a, d in ((2730, 0.05, 0.5), (4120, 0.03, 0.35), (6390, 0.012, 0.2)))
+    return (y * 0.7).astype(np.float32)
+
+SFX = {"sfx:chair": chair(), "sfx:thump": thump(), "sfx:clink": clink()}
 for c in meta["timeline"]:
     if c["url"] in SFX:
         at = int((c["when"] - clock0) * sr)
