@@ -350,7 +350,7 @@ export class Director {
         const replyTo = cur.turn.replyTo ? this.authorOf(cur.turn.replyTo) : undefined;
         const li = replyTo !== undefined && listeners.includes(replyTo) ? replyTo : listeners[Math.floor(Math.random() * listeners.length)];
         const standing = this.crowd.people[cur.who]?.expr.stand > 0.5;
-        if (standing) this.overShoulder(cur.who, li, -0.22, 0.86);   // looking down at them, past the shoulder of the one standing over them
+        if (standing) this.overShoulder(cur.who, li, -0.22, 0.92);   // looking down at them, past the shoulder of the one standing over them
         else this.single(li);
         this.shotUntil = now + 2.2;
       }
@@ -819,18 +819,18 @@ export class Director {
       // standing over them (from across the table that would be a crowd shot: the POV below is better there)
       const lift = sa.head.y + 0.1 - target.y, near = new Set([i, a]);
       if (dA < 1.5 && this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { dry: true }) > -1.6) {
-        this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { name: name + ' ots', exposure: 0.78 });
+        this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { name: name + ' ots', exposure: 0.9 });
         return;
       }
       // glaring across the table: we sit nearly where they do, taking the heat
-      if (dA >= 1.5 || toA.dot(toC) > 0.5) { this.frame(target, toA, Math.min(1.6, dA * 0.62), -0.3, 46, [s], new Set([i]), { name: name + ' pov', exposure: 0.78 }); return; }
+      if (dA >= 1.5 || toA.dot(toC) > 0.5) { this.frame(target, toA, Math.min(1.6, dA * 0.62), -0.3, 46, [s], new Set([i]), { name: name + ' pov', exposure: 0.9 }); return; }
       // glaring at a neighbour: both of them, low, from the middle of the table, the one standing bigger
       target.x += (sa.head.x - target.x) * 0.3; target.z += (sa.head.z - target.z) * 0.3;
-      this.frame(target, toC, 1.6, -0.3, 50, [s, sa], new Set([i, a]), { name: name + ' two', exposure: 0.78 });
+      this.frame(target, toC, 1.6, -0.3, 50, [s, sa], new Set([i, a]), { name: name + ' two', exposure: 0.9 });
       return;
     }
     // between where they glare and the middle of the table: a 3/4 face
-    this.frame(target, s.face!.clone().add(toC).normalize(), 1.6, -0.3, 46, [s], new Set([i]), { name, exposure: 0.78 });
+    this.frame(target, s.face!.clone().add(toC).normalize(), 1.6, -0.3, 46, [s], new Set([i]), { name, exposure: 0.9 });
   }
 
   /** Someone is about to get up: a medium shot from across the table, wide enough to see them rise, with the one they answer in frame. */
@@ -848,13 +848,13 @@ export class Director {
     const n = this.crowd.people[a].name + (b >= 0 ? '+' + this.crowd.people[b].name : '');
     const near = new Set(b >= 0 ? [a, b] : [a]);
     if (this.frame(target, toC, 1.55, 0.06, 54, subjects, near, { dry: true }) > -2) {
-      this.frame(target, toC, 1.55, 0.06, 54, subjects, near, { name: `rise ${n}`, exposure: 0.84 });
+      this.frame(target, toC, 1.55, 0.06, 54, subjects, near, { name: `rise ${n}`, exposure: 0.94 });
       return;
     }
     // a crowded table: just them, framed high enough to watch them come up into it
     const solo = this.subject(a), up = solo.head.clone().add(new THREE.Vector3(0, 0.1, 0));
     const dir = solo.face!.clone().add(toC.multiplyScalar(0.4)).normalize();
-    this.frame(up, dir, 1.6, 0.0, 48, [solo], new Set([a]), { name: `rise ${this.crowd.people[a].name} solo`, exposure: 0.84 });
+    this.frame(up, dir, 1.6, 0.0, 48, [solo], new Set([a]), { name: `rise ${this.crowd.people[a].name} solo`, exposure: 0.94 });
   }
 
   /** Over the shoulder of `over`, onto `at`'s face. A blocked one is worse than a clean single. */

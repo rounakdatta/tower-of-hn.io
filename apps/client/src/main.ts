@@ -361,6 +361,8 @@ if (recording) {
     timeline: () => director.timeline(),
     mode: () => mode,
     shot: () => director.shot,
+    /** debug: stand someone up (outside a table scene the director leaves them be) */
+    stand: (name: string, k = 1) => { const i = crowd.index(name); if (i < 0) return false; crowd.active.add(i); crowd.target(i)!.stand = k; return true; },
     /** debug: put the lens straight in front of someone's face (angle off their nose, metres away) */
     look: (name: string, off = 0, dist = 1.2) => {
       const i = crowd.index(name); if (i < 0) return null;

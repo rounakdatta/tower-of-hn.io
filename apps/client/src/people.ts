@@ -6,7 +6,7 @@
 import * as THREE from 'three/webgpu';
 import {
   instancedBufferAttribute, normalLocal, positionLocal, vec2, vec3, float, mix, smoothstep, length, min, max, clamp,
-  step, fract, abs, sin, mx_noise_float, instanceIndex, floor as tfloor,
+  step, fract, abs, sin, mx_noise_float, instanceIndex, floor as tfloor, output, dot, vec4,
 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { rngFor, pick, SKIN, OUTFIT, HAIR, hash32 } from './util.ts';
@@ -51,6 +51,18 @@ const STAND_TALL = 2.5;           // a standing body vs a seated one (the chair 
 interface Person { name: string; look: Look; pose: Pose; parts: { hair: number; glasses: number; beard: number; hood: number }; expr: Expr; target: Expr }
 
 function headGeo() { return new THREE.SphereGeometry(0.2, 32, 22); }
+
+/**
+ * Skin has a shoulder, like film: brightness above a knee rolls off instead of clipping. A face close under a
+ * table lamp (someone standing up) stays a face; faces in ordinary light never reach the knee.
+ */
+function skinRolloff() {
+  // measured: lit faces at a table sit at 0.25–0.5 (linear luminance); standing under a lamp doubles that
+  const c = output.rgb, l = dot(c, vec3(0.2126, 0.7152, 0.0722)).max(1e-4);
+  const over = l.sub(0.45).max(0);
+  const rolled = over.div(over.mul(3).add(1)).add(min(l, 0.45));
+  return vec4(c.mul(rolled.div(l)), output.a);
+}
 
 function hairGeos(): THREE.BufferGeometry[] {
   const cap = (r: number, theta: number) => new THREE.SphereGeometry(r, 28, 14, 0, Math.PI * 2, 0, theta);
@@ -126,6 +138,7 @@ export class Crowd {
     const hgeo = headGeo();
     const hmat = new THREE.MeshStandardNodeMaterial({ roughness: 0.6, metalness: 0.0 });   // satin vinyl: a soft sheen, never a white blowout under a lamp
     hmat.colorNode = this.faceNode();
+    hmat.outputNode = skinRolloff();
     this.heads = new THREE.InstancedMesh(hgeo, hmat, MAX_PEOPLE);
 
     const amat = new THREE.MeshStandardNodeMaterial({ roughness: 0.65 });
@@ -143,7 +156,9 @@ export class Crowd {
     this.glasses = new THREE.InstancedMesh(glassesGeo(), new THREE.MeshStandardNodeMaterial({ color: 0x14161c, roughness: 0.3, metalness: 0.6 }), MAX_PEOPLE);
     this.beards = new THREE.InstancedMesh(beardGeo(), hairMat, MAX_PEOPLE);
     this.beards.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 3), 3);
-    this.hands = new THREE.InstancedMesh(new THREE.SphereGeometry(0.052, 14, 10), new THREE.MeshStandardNodeMaterial({ roughness: 0.5 }), MAX_PEOPLE * 2);
+    const handMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.5 });
+    handMat.outputNode = skinRolloff();
+    this.hands = new THREE.InstancedMesh(new THREE.SphereGeometry(0.052, 14, 10), handMat, MAX_PEOPLE * 2);
     this.hands.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 6), 3);
     const hoodGeo = new THREE.TorusGeometry(0.135, 0.055, 10, 24, Math.PI);
     hoodGeo.rotateX(-Math.PI / 2);
