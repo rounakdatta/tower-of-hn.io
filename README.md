@@ -90,6 +90,23 @@ The client renders headlessly on a software GPU (`?record` makes time determinis
   - `?freeze` ignores table updates while seated.
   - `?skip=<id>,<id>` leaves comments out.
 
+## Production
+
+It runs on the homelab (`homelab.setup/kubernetes/apps/towerofhan`) as one pod with two containers sharing `/data`:
+- `towerofhan-web` (towerd, which also serves the built client)
+- `towerofhan-voice` (Kokoro, on one CPU thread)
+
+Both images are private, in GHCR. `docs/DEPLOY.md` covers the costs and the reasoning.
+
+- **Release.** Push an annotated tag `vX.Y.Z` on its own; CI builds and pushes both images at that version. Then bump both image tags in homelab.setup's `values.yaml` (tag AND digest), deploy that branch with `deploy-stuff.yml --ref`, check it, and merge.
+- **Housekeeping is automatic.**
+  - Deltas, old floor revisions and audio past `RETENTION_DAYS` are pruned.
+  - Stories two days off the front page are forgotten.
+  - A comment HN deletes or kills loses its audio.
+- **Opt-out.** Add the HN username to `/data/optout.txt` (one per line; read every minute), or to `OPTOUT`. Their comments leave every table and their audio is deleted; replies to them still play.
+- **Tagging.** Claude Haiku through the in-cluster auth2api by default; set `ANTHROPIC_API_KEY` to use the Anthropic API directly.
+- **Health.** `/livez` is liveness. `/status` reports counts: items, voiced, queued, demand.
+
 ## Status
 
 This is the first cut and runs locally only. Deployment follows `docs/PLAN.md` (Cloudflare R2 + CDN, one GPU box).
