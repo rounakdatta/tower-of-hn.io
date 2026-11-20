@@ -1,4 +1,5 @@
-numpy
-soundfile
-onnxruntime
-kokoro-onnx
+# the voice worker: Kokoro (ONNX) on CPU, or on a GPU with onnxruntime-gpu and KOKORO_PROVIDER=cuda
+numpy==2.5.5
+soundfile==0.14.0
+onnxruntime==1.32.0
+kokoro-onnx==0.6.1

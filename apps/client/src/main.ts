@@ -10,11 +10,13 @@ import { buildSky, buildCity, buildSnow, Tower, uTime, uBeacon, floorY, FLOOR_H,
 import { Interior, type TableSpot } from './interior.ts';
 import { Crowd, setTimeValue } from './people.ts';
 import { Director } from './director.ts';
+import { esc } from './util.ts';
 import { Rig } from './rig.ts';
 import { UI } from './ui.ts';
 
 const params = new URLSearchParams(location.search);
-const DATA = params.get('data') ?? `http://${location.hostname || 'localhost'}:8787/live/`;
+// development: towerd on its own port next to Vite; production: towerd serves this page, so the same origin
+const DATA = params.get('data') ?? (import.meta.env.DEV ? `http://${location.hostname || 'localhost'}:8787/live/` : '/live/');
 const recording = params.has('record');
 const autopilot = params.has('auto') || recording;
 let leanBack = autopilot;            // hands-free: floor to floor, table to table
@@ -216,7 +218,7 @@ director.onEnd = () => {
     after(2.6, () => enterFloor(next));
   } else nextTable();
 };
-director.onNewReply = (by) => ui.toast(`<b>${by}</b> just replied on Hacker News`);
+director.onNewReply = (by) => ui.toast(`<b>${esc(by)}</b> just replied on Hacker News`);
 
 function standUp() {
   leanBack = false;

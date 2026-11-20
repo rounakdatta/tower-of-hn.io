@@ -3,10 +3,14 @@
 //   - writes head.json / e/<n>.json / f/<story>/<rev>.json under var/live
 //   - queues voicing jobs for the Python worker (prewarm the best tables, and any table someone sits at)
 //   - serves var/live over HTTP with production-like cache headers
-// usage: node src/main.ts            (env: PORT, VAR, PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS)
+//   - in production also serves the built client, and keeps var/ tidy (old deltas, floor revisions, audio)
+// usage: node src/main.ts
+// env: PORT, VAR, STATIC (the client's dist), RETENTION_DAYS (audio, default 30), OPTOUT (comma-separated HN
+//      users never voiced; also var/optout.txt, one per line, re-read every minute),
+//      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_VERSION
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, openSync, readSync, closeSync, rmdirSync } from 'node:fs';
 import { dirname, join, extname, resolve } from 'node:path';
 import { Live, type Item, type FloorSnapshot } from '../../../packages/core/src/live.ts';
 import { speakable } from '../../../packages/core/src/speakable.ts';
@@ -21,6 +25,8 @@ const PRE = { floors: Number(process.env.PREWARM_FLOORS ?? 6), tables: Number(pr
 const MAX_QUEUED = 12;
 /** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
 const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v2';
+const STATIC = resolve(process.env.STATIC ?? join(import.meta.dirname, '../../client/dist'));
+const RETENTION_DAYS = Number(process.env.RETENTION_DAYS ?? 30);
 for (const d of [LIVE, JOBS]) mkdirSync(d, { recursive: true });
 
 // ---------------------------------------------------------------- HN access
@@ -53,6 +59,7 @@ const queued = new Map<number, string>();            // comment id -> job file n
 const stale = new Set<number>();                     // voiced with an older VOICE_VERSION: re-voice in the background
 const partial = new Set<number>();                   // playable, but the worker is still voicing the rest of it
 let voicedOffset = 0;
+let booting = true;
 
 function readVoiced() {
   if (!existsSync(VOICED)) return;
@@ -67,6 +74,7 @@ function readVoiced() {
   for (const line of text.slice(0, lastNl).split('\n')) {
     try {
       const v = JSON.parse(line);
+      if (booting && !existsSync(join(LIVE, v.path))) continue;   // pruned or lost: it will be voiced again if wanted
       const prev = live.voiced.get(v.id);
       const want = revOf(v.id), got = String(v.path).split('.')[1];
       if (want && got !== want) {                   // an older version: use it until the new one lands
@@ -157,19 +165,35 @@ function syncJobs() {
   }
 }
 
-// ---------------------------------------------------------------- HTTP: the CDN, plus one local-only endpoint
-const TYPES: Record<string, string> = { '.json': 'application/json', '.ogg': 'audio/ogg', '.aac': 'audio/aac' };
+// ---------------------------------------------------------------- HTTP: the CDN, the client, one write endpoint
+const TYPES: Record<string, string> = {
+  '.json': 'application/json', '.ogg': 'audio/ogg', '.aac': 'audio/aac', '.m4a': 'audio/mp4',
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
+  '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.txt': 'text/plain; charset=utf-8', '.woff2': 'font/woff2',
+};
+// The page loads nothing from anywhere else; comments are text, and links in them are plain http(s) anchors.
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+  "media-src 'self' blob:; connect-src 'self'; font-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'none'";
+// POST /want only ever queues voicing of real comments on the current front page, but bound it anyway:
+// every client renews its requests while seated, so 6/s with a burst of 60 is far above honest use.
+let bucket = 60, bucketAt = Date.now();
+const allow = () => { bucket = Math.min(60, bucket + ((Date.now() - bucketAt) / 1000) * 6); bucketAt = Date.now(); return bucket >= 1 && bucket-- >= 1; };
 createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'content-type');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
   const url = new URL(req.url ?? '/', 'http://x');
+  if (url.pathname === '/livez') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end('{"ok":true}'); return; }
   if (req.method === 'POST' && url.pathname === '/want') {
+    if (!allow()) { res.writeHead(429, { 'retry-after': '2' }); res.end(); return; }
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       try {
+        if (body.length > 200) throw new Error('too big');
         const { story, table, from = 0 } = JSON.parse(body);
+        if (![story, table, from].every((n) => Number.isInteger(n) && n >= 0)) throw new Error('bad request');
         const f = floors.get(story);
         const turns = f?.tables[table]?.turns.slice(from, from + 24) ?? [];
         const fresh = (id: number) => Date.now() - (demandAt.get(id) ?? 0) < DEMAND_TTL;
@@ -186,11 +210,26 @@ createServer((req, res) => {
     return;
   }
   if (url.pathname === '/status') {
-    res.writeHead(200, { 'content-type': 'application/json' });
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: queued.size, demand: demand.size, tower: live.tower.length }));
     return;
   }
-  if (!url.pathname.startsWith('/live/')) { res.writeHead(404); res.end(); return; }
+  if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
+  if (!url.pathname.startsWith('/live/')) {
+    // the client: index.html is always revalidated; everything under /assets/ is content-hashed, so forever
+    let p = resolve(STATIC, '.' + decodeURIComponent(url.pathname));
+    if (!p.startsWith(STATIC + '/') && p !== STATIC) { res.writeHead(404); res.end(); return; }
+    if (!existsSync(p) || statSync(p).isDirectory()) p = join(STATIC, 'index.html');
+    if (!existsSync(p)) { res.writeHead(404); res.end(); return; }
+    const forever = url.pathname.startsWith('/assets/');
+    res.writeHead(200, {
+      'content-type': TYPES[extname(p)] ?? 'application/octet-stream',
+      'cache-control': forever ? 'public, max-age=31536000, immutable' : 'no-cache',
+      ...(extname(p) === '.html' ? { 'content-security-policy': CSP, 'referrer-policy': 'strict-origin-when-cross-origin' } : {}),
+    });
+    res.end(req.method === 'HEAD' ? undefined : readFileSync(p));
+    return;
+  }
   const p = resolve(LIVE, '.' + url.pathname.slice(5));
   if (!p.startsWith(LIVE) || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
   const isHead = url.pathname === '/live/head.json';
@@ -200,6 +239,67 @@ createServer((req, res) => {
   });
   res.end(readFileSync(p));
 }).listen(PORT, () => console.log(`towerd on http://localhost:${PORT}  (var: ${VAR})`));
+
+// ---------------------------------------------------------------- housekeeping
+/** Remove a comment's audio (HN deleted or killed it, or its author opted out). */
+function unvoice(id: number) {
+  if (!live.voiced.has(id)) return;
+  live.voiced.delete(id);
+  stale.delete(id); partial.delete(id);
+  // every version of it: c/<id>.<rev>.json, its clips, its partial snapshots
+  const dir = join(LIVE, 'c');
+  for (const n of readdirSync(dir)) if (n.startsWith(id + '.')) { try { unlinkSync(join(dir, n)); } catch { /* gone */ } }
+}
+
+let optOutKey = '';
+function readOptOut() {
+  const names = new Set<string>(String(process.env.OPTOUT ?? '').split(',').map((x) => x.trim()).filter(Boolean));
+  if (existsSync(join(VAR, 'optout.txt'))) {
+    for (const l of readFileSync(join(VAR, 'optout.txt'), 'utf8').split('\n')) { const x = l.trim(); if (x && !x.startsWith('#')) names.add(x); }
+  }
+  const key = [...names].sort().join(',');
+  if (key === optOutKey) return;
+  optOutKey = key;
+  live.optOut = names;
+  live.touchAll();
+  for (const id of [...live.voiced.keys()]) { const by = live.items.get(id)?.by; if (by && names.has(by)) unvoice(id); }
+  console.log(JSON.stringify({ optout: names.size }));
+}
+
+/** var/ only grows otherwise: deltas every tick, a floor revision per change, audio forever. */
+function prune() {
+  const now = Date.now();
+  let removed = 0;
+  // deltas: clients catch up from at most the last 20 epochs
+  const gone = (f: string) => { try { unlinkSync(f); removed++; } catch { /* already gone, or mid-write */ } };
+  const epochs = readdirSync(join(LIVE, 'e')).map((n) => parseInt(n)).filter(Number.isFinite);
+  const latest = epochs.reduce((a, b) => Math.max(a, b), 0);
+  for (const n of readdirSync(join(LIVE, 'e'))) if (parseInt(n) < latest - 600) gone(join(LIVE, 'e', n));
+  // floor revisions: keep the newest few per story (a client may be fetching the previous one); drop old stories
+  const head = existsSync(join(LIVE, 'head.json')) ? JSON.parse(readFileSync(join(LIVE, 'head.json'), 'utf8')) : { floors: {} };
+  for (const sid of readdirSync(join(LIVE, 'f'))) {
+    const dir = join(LIVE, 'f', sid);
+    const revs = readdirSync(dir).filter((n) => /^\d+\.json$/.test(n)).map((n) => parseInt(n)).sort((a, b) => b - a);
+    const onTower = head.floors?.[sid] !== undefined;
+    revs.forEach((r, k) => {
+      if ((onTower && k < 4) || r === head.floors?.[sid]) return;
+      if (!onTower && k === 0 && now - statSync(join(dir, `${r}.json`)).mtimeMs < 3 * 86400_000) return;   // a story that just left
+      gone(join(dir, `${r}.json`));
+    });
+    try { if (!readdirSync(dir).length) rmdirSync(dir); } catch { /* not empty after all */ }
+  }
+  // audio: older than RETENTION_DAYS goes (it is voiced again if it is ever wanted), partial snapshots after a day
+  const dir = join(LIVE, 'c');
+  for (const n of readdirSync(dir)) {
+    const age = now - statSync(join(dir, n)).mtimeMs;
+    if (age > RETENTION_DAYS * 86400_000 || (/\.p\d+\.json$/.test(n) && age > 86400_000)) {
+      const id = parseInt(n);
+      if (!/\.p\d+\.json$/.test(n) && live.voiced.has(id)) live.voiced.delete(id);
+      gone(join(dir, n));
+    }
+  }
+  if (removed) console.log(JSON.stringify({ pruned: removed }));
+}
 
 // ---------------------------------------------------------------- bootstrap, then follow the firehose
 const t0 = Date.now();
@@ -211,13 +311,15 @@ while (frontier.length) {
   frontier = items.flatMap((it) => (it.dead || it.deleted ? [] : it.kids ?? []));
 }
 live.setTower(top);
+readOptOut();
 readVoiced();
+booting = false;
 // clear stale job files from a previous run; they are re-planned from current state
 for (const n of readdirSync(JOBS)) if (n.endsWith('.json')) unlinkSync(join(JOBS, n));
 let maxitem = await get<number>('maxitem');
 console.log(JSON.stringify({ bootstrap: { items: live.items.size, voiced: live.voiced.size, seconds: (Date.now() - t0) / 1000 } }));
 
-let lastTop = Date.now(), lastUpdates = '';
+let lastTop = Date.now(), lastUpdates = '', lastChores = 0;
 for (;;) {
   const loopStart = Date.now();
   try {
@@ -233,7 +335,10 @@ for (;;) {
     const key = (upd.items ?? []).join();
     if (key !== lastUpdates) {
       lastUpdates = key;
-      for (const it of await many((upd.items ?? []).filter((id) => live.items.has(id)))) live.upsert(it);
+      for (const it of await many((upd.items ?? []).filter((id) => live.items.has(id)))) {
+        live.upsert(it);
+        if (it.dead || it.deleted) unvoice(it.id);                  // HN took it down: so do we
+      }
     }
     if (Date.now() - lastTop > 30_000) {
       const order = (await get<number[]>('topstories')).slice(0, FLOORS);
@@ -244,6 +349,10 @@ for (;;) {
     }
   } catch (e) { console.error('ingest', String(e).slice(0, 200)); }
   readVoiced();
+  if (Date.now() - lastChores > 60_000) {
+    lastChores = Date.now();
+    try { readOptOut(); if (new Date().getMinutes() % 10 === 0) prune(); } catch (e) { console.error('chores', String(e).slice(0, 200)); }
+  }
   const r = live.tick(Date.now());
   for (const s of r.snapshots) { floors.set(s.story.id, s); write(`f/${s.story.id}/${s.rev}.json`, s); }
   if (r.delta) write(`e/${r.delta.epoch}.json`, r.delta);

@@ -16,6 +16,7 @@ const fs = require('fs');
   const page = await browser.newPage({ viewport: { width: W, height: H } });
   const errs = [];
   page.on('pageerror', (e) => errs.push(e.message.slice(0, 200)));
+  page.on('console', (m) => { if (m.type() === 'error') errs.push('console: ' + m.text().slice(0, 200)); });
   await page.goto(url);
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
   const fps = 24, step = async (s) => { for (let i = 0, n = Math.round(s * fps); i < n; i++) await page.evaluate((d) => window.__tohn.frame(d, false), 1 / fps); };

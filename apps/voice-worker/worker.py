@@ -162,15 +162,20 @@ def llm_tags(batch, key):
 
 
 def claude_json(prompt):
-    """Claude via Rounak's auth2api gateway (in-cluster URL, no rate limiter); None if unavailable."""
-    key = os.environ.get("AUTH2API_KEY", "")
-    kf = os.path.expanduser("~/.cache/tohn-auth2api.key")
-    if not key and os.path.exists(kf):
-        key = open(kf).read().strip()
+    """Claude Haiku for the tags: the Anthropic API when ANTHROPIC_API_KEY is set (production), else the
+    in-cluster auth2api gateway (development); None if neither is available."""
+    key, url = os.environ.get("ANTHROPIC_API_KEY", ""), "https://api.anthropic.com"
+    if not key:
+        url = os.environ.get("AUTH2API_URL", "http://auth2api.apps.svc.cluster.local:8317")
+        key = os.environ.get("AUTH2API_KEY", "")
+        kf = os.path.expanduser("~/.cache/tohn-auth2api.key")
+        if not key and os.path.exists(kf):
+            key = open(kf).read().strip()
     if not key:
         return None
-    url = os.environ.get("AUTH2API_URL", "http://auth2api.apps.svc.cluster.local:8317") + "/v1/messages"
-    body = {"model": os.environ.get("TAG_MODEL", "claude-haiku-5-5"), "max_tokens": 1500,
+    url += "/v1/messages"
+    # a short classification: no thinking (cheaper, faster; Haiku 5.5 thinks by default otherwise)
+    body = {"model": os.environ.get("TAG_MODEL", "claude-haiku-5-5"), "max_tokens": 1500, "thinking": {"type": "disabled"},
             "messages": [{"role": "user", "content": prompt}]}
     try:
         req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={
@@ -280,6 +285,8 @@ def urgent(jobs_dir):
 
 def main(var):
     import onnxruntime as ort
+    if os.environ.get("NICE"):
+        os.nice(int(os.environ["NICE"]))      # yield the CPU to the node's other work
     from kokoro_onnx import Kokoro
     jobs_dir, live, log = os.path.join(var, "jobs"), os.path.join(var, "live"), os.path.join(var, "voiced.jsonl")
     os.makedirs(os.path.join(live, "c"), exist_ok=True)

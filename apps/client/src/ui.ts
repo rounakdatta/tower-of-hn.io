@@ -103,7 +103,7 @@ export class UI {
   placard(p: { url: string; domain: string; at: THREE.Vector3 } | null) {
     this.pinned = this.pinned.filter((x) => x.el.id !== 'placard');
     const el = $('placard');
-    if (!p) { el.classList.remove('show'); return; }
+    if (!p || !/^https?:\/\//i.test(p.url)) { el.classList.remove('show'); return; }   // plain web links only
     el.innerHTML = `<span class="ico">↗</span>${esc(p.domain || 'link')}`;
     (el as HTMLAnchorElement).href = p.url;
     el.classList.add('show');

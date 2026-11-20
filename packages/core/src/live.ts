@@ -50,6 +50,8 @@ export class Live {
   voices = new Map<string, number>();
   /** comment -> its voiced sidecar, filled in by the voice worker */
   voiced = new Map<number, [string, number]>();
+  /** HN users who asked not to be voiced: their comments are left out like dead ones (their replies still play) */
+  optOut = new Set<string>();
 
   private opts: { snapshotEvery: number };
   constructor(opts = { snapshotEvery: 30 }) { this.opts = opts; }
@@ -65,6 +67,9 @@ export class Live {
       (this.pending.stories ??= []).push(meta(it));
     }
   }
+
+  /** Rebuild every floor on the next tick (the opt-out list changed). */
+  touchAll(): void { for (const sid of this.tower) this.dirtyStories.add(sid); }
 
   /** The voice worker finished a comment: its audio is ready for everyone. */
   markVoiced(id: number, path: string, dur: number): void {
@@ -151,7 +156,8 @@ export class Live {
     const toNode = (id: number): Node | undefined => {
       const it = this.items.get(id);
       if (!it) return undefined;
-      return { id, by: it.by, text: it.text, dead: it.dead, deleted: it.deleted, kids: (it.kids ?? []).map(toNode).filter(Boolean) as Node[] };
+      const out = it.by !== undefined && this.optOut.has(it.by);
+      return { id, by: it.by, text: it.text, dead: it.dead || out, deleted: it.deleted, kids: (it.kids ?? []).map(toNode).filter(Boolean) as Node[] };
     };
     const tables: TableOut[] = [];
     for (const rootId of (st.kids ?? []).slice(0, MAX_TABLES)) {

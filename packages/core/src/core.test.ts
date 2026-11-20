@@ -65,3 +65,18 @@ test('moderation placeholders are skipped, their replies still play', () => {
   assert.deepEqual(t.map((x) => x.id), [1, 3]);
   assert.equal(t[1].replyTo, 1);
 });
+
+test('opted-out users are left out, the conversation around them still plays', async () => {
+  const { Live } = await import('./live.ts');
+  const live = new Live({ snapshotEvery: 1 });
+  live.upsert({ id: 1, type: 'story', title: 'S', kids: [2] });
+  live.upsert({ id: 2, type: 'comment', by: 'a', text: 'root', parent: 1, kids: [3] });
+  live.upsert({ id: 3, type: 'comment', by: 'quiet', text: 'please no', parent: 2, kids: [4] });
+  live.upsert({ id: 4, type: 'comment', by: 'c', text: 'reply', parent: 3 });
+  live.setTower([1]);
+  live.optOut.add('quiet');
+  live.touchAll();
+  const r = live.tick(Date.now());
+  const turns = r.snapshots[0].tables[0].turns;
+  assert.deepEqual(turns.map((t) => t.by), ['a', 'c']);
+});
