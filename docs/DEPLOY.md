@@ -2,6 +2,24 @@
 
 Written 20 Nov 2026. Prices were read on the day; sources are listed at the end.
 
+## Where it stands (20 Nov, evening)
+
+**Live privately at https://towerofhan.taptappers.club** (tailnet only), as 0.1.2.
+- **Images:** a `v*` tag builds `towerofhan-web` and `towerofhan-voice` into GHCR. Both are private.
+- **Deploy:**
+  1. Pin the new tag by digest in `homelab.setup/kubernetes/apps/towerofhan/values.yaml`.
+  2. Deploy that branch with `deploy-stuff.yml --ref`.
+  3. Merge.
+- **Done:** steps 1 and 2 below, and most of step 3:
+  - retention
+  - takedowns that remove every version
+  - opt-out, through `optout.txt` on the volume or `OPTOUT`
+  - per-visitor rate limits
+  - crash-proof start-up
+  - three review passes
+- **Phones:** browsers that can't decode Ogg Opus (Safari before 26) use a 68 KB WebAssembly decoder.
+- **Still to do:** an iPhone test (WebGPU, frame rate, audio), then step 3's about page and self-serve opt-out, then step 4.
+
 ## The short answer
 
 **About $10–25 a month and three to four days of work.** That's far below the $263/month in PLAN.md §10, because the homelab replaces the Workers plan and the rented GPU box.
