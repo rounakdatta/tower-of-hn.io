@@ -38,10 +38,11 @@ async function get<T>(path: string): Promise<T> {
 }
 /** Items in parallel batches. lenient: an item that can't be fetched is skipped (bootstrap; it comes back with
  *  the next update or tower refresh) instead of failing the batch (the live loop retries the whole step). */
+let skipped = 0;                                     // items the bootstrap couldn't fetch (the tower refresh repairs them)
 async function many(ids: number[], lenient = false, conc = 24): Promise<Item[]> {
   const res: Item[] = [];
   for (let i = 0; i < ids.length; i += conc) {
-    const one = (id: number) => (lenient ? get<Item>(`item/${id}`).catch(() => null as unknown as Item) : get<Item>(`item/${id}`));
+    const one = (id: number) => (lenient ? get<Item>(`item/${id}`).catch(() => { skipped++; return null as unknown as Item; }) : get<Item>(`item/${id}`));
     res.push(...(await Promise.all(ids.slice(i, i + conc).map(one))).filter(Boolean));
     heartbeat = Date.now();                            // progress, even in a long bootstrap
   }
@@ -83,9 +84,18 @@ function readVoiced() {
     try {
       const v = JSON.parse(line);
       if (booting && !existsSync(join(LIVE, v.path))) continue;   // pruned or lost: it will be voiced again if wanted
-      remember(v.id, v.path, v.by);
+      if (!v.by || !v.voices) {
+        try {
+          const side = JSON.parse(readFileSync(join(LIVE, v.path), 'utf8'));
+          v.by ??= side.by;
+          v.voices ??= [...new Set((side.clips ?? []).map((c: { who: string }) => c.who))];
+          v.of ??= side.of ?? (side.clips ?? []).length;
+        } catch { /* gone: nothing to remember */ }
+      }
+      remember(v.id, v.path, v.by, v.of, v.voices);
       const it = live.items.get(v.id), by = v.by ?? it?.by;
-      if ((it && (it.dead || it.deleted)) || (by && live.optOut.has(by))) { unvoice(v.id); continue; }
+      const hushed = (by && live.optOut.has(by)) || (v.voices ?? []).some((w: string) => live.optOut.has(w));
+      if ((it && (it.dead || it.deleted)) || hushed) { unvoice(v.id); continue; }
       const prev = live.voiced.get(v.id);
       const want = revOf(v.id), got = String(v.path).split('.')[1];
       if (want && got !== want) {                   // an older version: use it until the new one lands
@@ -135,8 +145,11 @@ function needsVoice(id: number) {
 }
 
 function revOf(id: number): string | undefined {
-  const t = live.items.get(id)?.text;
-  return t ? createHash('sha1').update(VOICE_VERSION + ':' + t).digest('hex').slice(0, 8) : undefined;
+  const it = live.items.get(id), t = it?.text;
+  if (!t) return undefined;
+  const parent = it.parent !== undefined ? live.items.get(it.parent) : undefined;
+  const hush = parent?.by && live.optOut.has(parent.by) ? ':hush' : '';   // its quotes of them, in the replier's voice
+  return createHash('sha1').update(VOICE_VERSION + ':' + t + hush).digest('hex').slice(0, 8);
 }
 
 function jobFor(id: number, prio: number) {
@@ -211,7 +224,13 @@ function clientOf(req: import('node:http').IncomingMessage) {
   // when that address is a Cloudflare edge, the edge names the visitor
   const peer = String(req.headers['x-real-ip'] ?? req.socket.remoteAddress ?? '?').replace(/^::ffff:/, '');
   const cf = req.headers['cf-connecting-ip'];
-  return (typeof cf === 'string' && cloudflare(peer) ? cf : peer).slice(0, 64);
+  const ip = (typeof cf === 'string' && cloudflare(peer) ? cf : peer).replace(/%.*$/, '').slice(0, 64);
+  return ip.includes(':') ? v6net(ip) : ip;
+}
+function v6net(ip: string) {
+  const [head, tail] = ip.split('::'), h = head ? head.split(':') : [], t = tail ? tail.split(':') : [];
+  const full = tail !== undefined ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t] : h;
+  return full.slice(0, 4).map((x) => x.toLowerCase().replace(/^0+(?=.)/, '')).join(':') + '::/64';
 }
 function allow(req: import('node:http').IncomingMessage) {
   const ip = clientOf(req);
@@ -321,13 +340,15 @@ function readOr503(p: string, res: import('node:http').ServerResponse) {
 // ---------------------------------------------------------------- housekeeping
 /** Every version of every comment voiced (c/<id>.<rev> stems) and its author, from the voiced log: a takedown
  *  removes all of them, even for stories long off the front page whose items aren't loaded any more. */
-const known = new Map<number, { by?: string; stems: Set<string> }>();
+const known = new Map<number, { by?: string; stems: Map<string, number>; voices: Set<string> }>();   // stem -> clips planned
 const stemOf = (path: string) => String(path).replace(/\.(p\d+\.)?json$/, '');
-function remember(id: number, path: string, by?: string) {
+function remember(id: number, path: string, by?: string, of?: number, voices?: string[]) {
   let k = known.get(id);
-  if (!k) known.set(id, (k = { stems: new Set() }));
-  k.stems.add(stemOf(path));
+  if (!k) known.set(id, (k = { stems: new Map(), voices: new Set() }));
+  const stem = stemOf(path);
+  k.stems.set(stem, Math.max(k.stems.get(stem) ?? 0, Math.min(200, Number(of) || 120)));
   if (by) k.by = by;
+  for (const w of voices ?? []) k.voices.add(w);
 }
 
 /** Remove a comment's audio, every version of it (HN deleted or killed it, or its author opted out). */
@@ -336,12 +357,12 @@ function unvoice(id: number) {
   if (!v && !k) return;
   if (v) live.voiced.delete(id);
   stale.delete(id); partial.delete(id);
-  const stems = new Set(k?.stems ?? []);
-  if (v) stems.add(stemOf(String(v[0])));
-  for (const stem of stems) {
+  const stems = new Map(k?.stems ?? []);
+  if (v && !stems.has(stemOf(String(v[0])))) stems.set(stemOf(String(v[0])), 120);
+  for (const [stem, of] of stems) {
     if (!stem.startsWith(`c/${id}.`)) continue;
     // a clip per planned chunk (c/<id>.<rev>.<k>.ogg), a snapshot per clip count (.p<n>.json), the sidecar
-    for (let n = 0; n < 120; n++) for (const f of [`${stem}.${n}.ogg`, `${stem}.p${n}.json`]) { try { unlinkSync(join(LIVE, f)); } catch { /* none */ } }
+    for (let n = 0; n <= of; n++) for (const f of [`${stem}.${n}.ogg`, `${stem}.p${n}.json`]) { try { unlinkSync(join(LIVE, f)); } catch { /* none */ } }
     try { unlinkSync(join(LIVE, `${stem}.json`)); } catch { /* none */ }
   }
   known.delete(id);
@@ -358,7 +379,8 @@ function readOptOut() {
   optOutKey = key;
   live.optOut = names;
   live.touchAll();
-  for (const [id, k] of [...known]) { const by = k.by ?? live.items.get(id)?.by; if (by && names.has(by)) unvoice(id); }
+  // their own comments, and replies voiced with a quote of them in their voice
+  for (const [id, k] of [...known]) { const by = k.by ?? live.items.get(id)?.by; if ((by && names.has(by)) || [...k.voices].some((w) => names.has(w))) unvoice(id); }
   for (const id of [...live.voiced.keys()]) { const by = live.items.get(id)?.by; if (by && names.has(by)) unvoice(id); }
   console.log(JSON.stringify({ optout: names.size }));
 }
@@ -400,7 +422,7 @@ async function prune() {
       if (!snap && n.endsWith('.json')) {
         if (live.voiced.get(id)?.[0] === `c/${n}`) live.voiced.delete(id);
         const k = known.get(id);
-        if (k) { k.stems.delete(`c/${n.replace(/\.json$/, '')}`); if (!k.stems.size) known.delete(id); }
+        if (k) { k.stems.delete(`c/${n.replace(/\.json$/, '')}`); if (!k.stems.size) known.delete(id); }   // voices kept with the id
       }
       gone(join(dir, n));
     }
@@ -416,6 +438,7 @@ async function prune() {
   if (removed || forgot) console.log(JSON.stringify({ pruned: removed, forgot }));
 }
 const offSince = new Map<number, number>();
+const tries = new Map<number, number>();
 
 // ---------------------------------------------------------------- bootstrap, then follow the firehose
 const t0 = Date.now();
@@ -432,13 +455,13 @@ while (frontier.length) {
   frontier = items.flatMap((it) => (it.dead || it.deleted ? [] : it.kids ?? []));
 }
 live.setTower(top);
+readOptOut();
 readVoiced();
 booting = false;
-readOptOut();
 // clear stale job files from a previous run; they are re-planned from current state
 for (const n of readdirSync(JOBS)) if (n.endsWith('.json')) { try { unlinkSync(join(JOBS, n)); } catch { /* the worker took it */ } }
 let maxitem = await forever('maxitem', () => get<number>('maxitem'));
-console.log(JSON.stringify({ bootstrap: { items: live.items.size, voiced: live.voiced.size, seconds: (Date.now() - t0) / 1000 } }));
+console.log(JSON.stringify({ bootstrap: { items: live.items.size, voiced: live.voiced.size, skipped, seconds: (Date.now() - t0) / 1000 } }));
 
 let lastTop = Date.now(), lastUpdates = '', lastChores = 0, lastPrune = 0, pruning = false;
 for (;;) {
@@ -466,6 +489,12 @@ for (;;) {
     if (Date.now() - lastTop > 30_000) {
       const order = (await get<number[]>('topstories')).slice(0, FLOORS);
       let fr = order.filter((id) => !live.items.has(id));
+      // replies never fetched (a failure at start-up, or mid-walk): a few tries each
+      for (const it of live.items.values()) {
+        if (it.dead || it.deleted) continue;
+        for (const k of it.kids ?? []) if (!live.items.has(k) && (tries.get(k) ?? 0) < 3) { fr.push(k); tries.set(k, (tries.get(k) ?? 0) + 1); }
+      }
+      if (fr.length > order.length) console.log(JSON.stringify({ repair: fr.length }));
       while (fr.length) { const its = await many(fr); its.forEach((it) => live.upsert(it)); fr = its.flatMap((it) => it.kids ?? []); }
       live.setTower(order);
       lastTop = Date.now();

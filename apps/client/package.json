@@ -8,7 +8,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 5288 --strictPort"
   },
   "dependencies": {
-    "ogg-opus-decoder": "1.7.5",
+    "opus-decoder": "0.7.12",
     "three": "0.187.0"
   },
   "devDependencies": {

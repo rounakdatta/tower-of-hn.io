@@ -21,7 +21,8 @@ export class AudioEngine {
   /** Ogg Opus, natively where the browser can (Chrome, Firefox, Safari 26); older Safari gets a small
    *  WebAssembly decoder, fetched only then. ?wasmopus forces it, to test that path anywhere. */
   private native = !new URLSearchParams(location.search).has('wasmopus');
-  private wasm?: Promise<import('ogg-opus-decoder').OggOpusDecoder>;
+  private wasm?: Promise<typeof import('opus-decoder').OpusDecoder>;
+  private decoder?: { key: string; d: import('opus-decoder').OpusDecoder };
   private queue: Promise<unknown> = Promise.resolve();
   private decode(b: ArrayBuffer): Promise<AudioBuffer> {
     if (!this.native) return this.decodeWasm(b);
@@ -30,18 +31,21 @@ export class AudioEngine {
       this.decodeWasm(b).then((buf) => { this.native = false; console.info('audio: Ogg Opus via WebAssembly'); return buf; }, () => { throw e; }));
   }
   private decodeWasm(b: ArrayBuffer): Promise<AudioBuffer> {
-    this.wasm ??= import('ogg-opus-decoder').then(async ({ OggOpusDecoder }) => {
-      const d = new OggOpusDecoder();
-      await d.ready;
-      return d;
-    }).catch((e) => { this.wasm = undefined; throw e; });
+    this.wasm ??= import('opus-decoder').then((m) => m.OpusDecoder).catch((e) => { this.wasm = undefined; throw e; });
     const run = this.queue.then(async () => {             // one decoder, one file at a time
-      const d = await this.wasm!;
-      const { channelData, samplesDecoded, sampleRate } = await d.decodeFile(new Uint8Array(b));
-      await d.reset();
-      if (!samplesDecoded) throw new Error('audio: nothing decoded');
-      const buf = this.ctx!.createBuffer(channelData.length, samplesDecoded, sampleRate);
-      channelData.forEach((c, i) => buf.copyToChannel(c as Float32Array<ArrayBuffer>, i));
+      const { channels, preSkip, frames, samples } = oggOpus(new Uint8Array(b));
+      const key = `${channels}:${preSkip}`;
+      if (this.decoder?.key !== key) {
+        this.decoder?.d.free();
+        const OpusDecoder = await this.wasm!;
+        this.decoder = { key, d: new OpusDecoder({ channels, preSkip }) };
+        await this.decoder.d.ready;
+      } else await this.decoder.d.reset();
+      const { channelData, samplesDecoded, sampleRate } = this.decoder.d.decodeFrames(frames);
+      const n = samples > 0 ? Math.min(samplesDecoded, samples) : samplesDecoded;   // the last frame's padding
+      if (!n) throw new Error('audio: nothing decoded');
+      const buf = this.ctx!.createBuffer(channelData.length, n, sampleRate);
+      channelData.forEach((c, i) => buf.copyToChannel(c.subarray(0, n) as Float32Array<ArrayBuffer>, i));
       return buf;
     });
     this.queue = run.catch(() => {});
@@ -248,4 +252,35 @@ export class AudioEngine {
     }
     return buf;
   }
+}
+
+/** Opus packets out of an Ogg Opus file (RFC 3533 pages, RFC 7845 mapping): the channel count and pre-skip from
+ *  its head, the audio packets, and how many samples it really holds (the last page's granule, less pre-skip). */
+function oggOpus(b: Uint8Array) {
+  const packets: Uint8Array[] = [];
+  let parts: Uint8Array[] = [], pos = 0, granule = 0;
+  while (pos + 27 <= b.length) {
+    if (b[pos] !== 0x4f || b[pos + 1] !== 0x67 || b[pos + 2] !== 0x67 || b[pos + 3] !== 0x53) throw new Error('audio: not Ogg');
+    const g = new DataView(b.buffer, b.byteOffset + pos + 6, 8).getBigInt64(0, true);
+    if (g >= 0n) granule = Number(g);
+    const segs = b[pos + 26];
+    let at = pos + 27 + segs;
+    for (let i = 0; i < segs; i++) {
+      const len = b[pos + 27 + i];
+      parts.push(b.subarray(at, at + len));
+      at += len;
+      if (len < 255) {                                    // a packet ends here (else it continues)
+        const out = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
+        let o = 0;
+        for (const x of parts) { out.set(x, o); o += x.length; }
+        packets.push(out);
+        parts = [];
+      }
+    }
+    pos = at;
+  }
+  const head = packets[0];
+  if (!head || String.fromCharCode(...head.subarray(0, 8)) !== 'OpusHead') throw new Error('audio: not Opus');
+  const channels = head[9], preSkip = head[10] | (head[11] << 8);
+  return { channels, preSkip, frames: packets.slice(2), samples: granule - preSkip };   // [1] is OpusTags
 }

@@ -383,7 +383,8 @@ def main(var):
                     done = None
                 if done is not None:
                     with open(log, "a") as f:
-                        f.write(json.dumps({"id": j["id"], "by": j["by"], "path": final, "dur": round(done.get("dur", 0), 2)}) + "\n")
+                        f.write(json.dumps({"id": j["id"], "by": j["by"], "path": final, "dur": round(done.get("dur", 0), 2),
+                                            "of": len(plan_clips(j)), "voices": sorted({c["who"] for c in done.get("clips", [])})}) + "\n")
                     try:
                         os.remove(os.path.join(jobs_dir, j["_file"]))
                     except FileNotFoundError:
@@ -443,7 +444,8 @@ def main(var):
                         json.dump(sidecar(k + 1), f)
                     os.replace(os.path.join(live, prel + ".tmp"), os.path.join(live, prel))
                     with open(log, "a") as f:
-                        f.write(json.dumps({"id": j["id"], "by": j["by"], "path": prel, "dur": round(total, 2), "partial": True}) + "\n")
+                        f.write(json.dumps({"id": j["id"], "by": j["by"], "path": prel, "dur": round(total, 2), "partial": True,
+                                            "of": len(plan), "voices": sorted({c["who"] for c in clips_out})}) + "\n")
             if dropped:
                 print(json.dumps({"id": j["id"], "yielded": True, "after_clips": len(clips_out)}), flush=True)
                 break
@@ -454,7 +456,8 @@ def main(var):
                 json.dump(side, f)
             os.replace(tmp, os.path.join(live, rel))
             with open(log, "a") as f:
-                f.write(json.dumps({"id": j["id"], "by": j["by"], "path": rel, "dur": round(total, 2)}) + "\n")
+                f.write(json.dumps({"id": j["id"], "by": j["by"], "path": rel, "dur": round(total, 2),
+                                    "of": len(plan), "voices": sorted({c["who"] for c in clips_out})}) + "\n")
             try:
                 os.remove(os.path.join(jobs_dir, j["_file"]))
             except FileNotFoundError:
