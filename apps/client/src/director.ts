@@ -188,7 +188,7 @@ export class Director {
         const r = { side, bufs }, have = this.ready.get(turn.id);
         if (!have || side.clips.length >= have.side.clips.length) this.ready.set(turn.id, r);
         return r;
-      }).catch(() => { this.loading.delete(path); return null; });
+      }).catch(() => { setTimeout(() => this.loading.delete(path), 5000); return null; });   // retry, but not every frame
       this.loading.set(path, p);
     }
     return p;
@@ -202,7 +202,8 @@ export class Director {
       const t = turns[k];
       if (this.skipIds.has(t.id)) continue;
       if (t.v) this.load(t);
-      else {
+      // not voiced yet, or still arriving clip by clip: ask, and keep asking (demand lapses server-side unless renewed)
+      if (!t.v || /\.p\d+\.json$/.test(t.v[0])) {
         const ti = this.spot.tableOf?.get(t.id) ?? this.spot.index, from = this.spot.tableOf ? 0 : k;
         const key = `${this.floor.story.id}:${ti}:${from}`, last = this.asked.get(key) ?? -1e9, nowS = performance.now() / 1000;
         if (nowS - last > 30) { this.asked.set(key, nowS); this.sync.want(this.floor.story.id, ti, from); }
@@ -259,6 +260,11 @@ export class Director {
       const turn = turns[this.turnIdx];
       if (this.skipIds.has(turn.id)) { this.turnIdx++; this.clipsDone = 0; continue; }
       const r = this.ready.get(turn.id);
+      // voicing finished with nothing more to say (its last clip failed, or it had none): the turn is over
+      if (r && !r.side.partial && r.side.clips.length <= this.clipsDone) {
+        this.clipsDone = 0; this.turnIdx++; this.waitSince = 0; this.ui.waiting(null);
+        continue;
+      }
       if (!r || r.side.clips.length <= this.clipsDone) {
         this.prefetch();
         if (this.cursor < at) {             // we've run dry: show who we're waiting for
@@ -268,6 +274,9 @@ export class Director {
           if (!this.waitSince) this.waitSince = now;
           else if (!this.clipsDone && now - this.waitSince > 4 && turns.slice(this.turnIdx + 1, this.turnIdx + 4).some((u) => this.ready.has(u.id))) {
             this.turnIdx++; this.waitSince = 0; this.ui.waiting(null);
+            continue;
+          } else if (this.clipsDone && now - this.waitSince > 30) {   // the rest of a comment never came: move on
+            this.clipsDone = 0; this.turnIdx++; this.waitSince = 0; this.ui.waiting(null);
             continue;
           }
         }

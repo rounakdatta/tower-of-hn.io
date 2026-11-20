@@ -5,7 +5,7 @@
 //   - serves var/live over HTTP with production-like cache headers
 //   - in production also serves the built client, and keeps var/ tidy (old deltas, floor revisions, audio)
 // usage: node src/main.ts
-// env: PORT, VAR, STATIC (the client's dist), RETENTION_DAYS (audio, default 30), OPTOUT (comma-separated HN
+// env: PORT, VAR, STATIC (the client's dist), RETENTION_DAYS (audio, default 14), OPTOUT (comma-separated HN
 //      users never voiced; also var/optout.txt, one per line, re-read every minute),
 //      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_VERSION
 import { createServer } from 'node:http';
@@ -16,7 +16,7 @@ import { Live, type Item, type FloorSnapshot } from '../../../packages/core/src/
 import { speakable } from '../../../packages/core/src/speakable.ts';
 
 const HN = 'https://hacker-news.firebaseio.com/v0';
-const UA = { 'User-Agent': 'towerofhan-towerd/0.1 (local dev)' };
+const UA = { 'User-Agent': 'towerofhan-towerd/0.1' };
 const PORT = Number(process.env.PORT ?? 8787);
 const VAR = resolve(process.env.VAR ?? join(import.meta.dirname, '../../../var'));
 const LIVE = join(VAR, 'live'), JOBS = join(VAR, 'jobs'), VOICED = join(VAR, 'voiced.jsonl');
@@ -26,19 +26,22 @@ const MAX_QUEUED = 12;
 /** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
 const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v2';
 const STATIC = resolve(process.env.STATIC ?? join(import.meta.dirname, '../../client/dist'));
-const RETENTION_DAYS = Number(process.env.RETENTION_DAYS ?? 30);
+const RETENTION_DAYS = Math.max(1, Number(process.env.RETENTION_DAYS) || 14);
 for (const d of [LIVE, JOBS]) mkdirSync(d, { recursive: true });
 
 // ---------------------------------------------------------------- HN access
 async function get<T>(path: string): Promise<T> {
   for (let a = 0; ; a++) {
-    try { return (await (await fetch(`${HN}/${path}.json`, { headers: UA })).json()) as T; }
+    try { return (await (await fetch(`${HN}/${path}.json`, { headers: UA, signal: AbortSignal.timeout(15_000) })).json()) as T; }
     catch (e) { if (a > 4) throw e; await sleep(500 * 2 ** a); }
   }
 }
 async function many(ids: number[], conc = 24): Promise<Item[]> {
   const res: Item[] = [];
-  for (let i = 0; i < ids.length; i += conc) res.push(...(await Promise.all(ids.slice(i, i + conc).map((id) => get<Item>(`item/${id}`)))).filter(Boolean));
+  for (let i = 0; i < ids.length; i += conc) {
+    res.push(...(await Promise.all(ids.slice(i, i + conc).map((id) => get<Item>(`item/${id}`)))).filter(Boolean));
+    heartbeat = Date.now();                            // progress, even in a long bootstrap
+  }
   return res;
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -50,7 +53,9 @@ function write(rel: string, data: unknown) {
 }
 
 // ---------------------------------------------------------------- state
-const live = new Live({ snapshotEvery: 1 });
+const live = new Live({ snapshotEvery: 1, base: Date.now() });
+let heartbeat = Date.now();                          // /livez: the ingest loop (or the bootstrap) is making progress
+process.on('SIGTERM', () => process.exit(0));        // PID 1 in a container: exit at once on a rollout
 const floors = new Map<number, FloorSnapshot>();
 const demand = new Map<number, number>();            // comment id -> priority (lower = sooner)
 const demandAt = new Map<number, number>();          // when a listener last asked: demand lapses unless renewed
@@ -75,6 +80,8 @@ function readVoiced() {
     try {
       const v = JSON.parse(line);
       if (booting && !existsSync(join(LIVE, v.path))) continue;   // pruned or lost: it will be voiced again if wanted
+      const it = live.items.get(v.id);
+      if (it && (it.dead || it.deleted || (it.by && live.optOut.has(it.by)))) { removeFiles(v.id, v.path); continue; }
       const prev = live.voiced.get(v.id);
       const want = revOf(v.id), got = String(v.path).split('.')[1];
       if (want && got !== want) {                   // an older version: use it until the new one lands
@@ -130,7 +137,7 @@ function revOf(id: number): string | undefined {
 
 function jobFor(id: number, prio: number) {
   const it = live.items.get(id);
-  if (!it?.text || !it.by) return undefined;
+  if (!it?.text || !it.by || it.dead || it.deleted || live.optOut.has(it.by)) return undefined;
   const parent = it.parent !== undefined ? live.items.get(it.parent) : undefined;
   const sp = speakable(it.text, parent?.text ? { id: parent.id, text: parent.text } : undefined);
   const sid = live.storyOf(id)!;
@@ -175,23 +182,49 @@ const TYPES: Record<string, string> = {
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
   "media-src 'self' blob:; connect-src 'self'; font-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'none'";
 // POST /want only ever queues voicing of real comments on the current front page, but bound it anyway:
-// every client renews its requests while seated, so 6/s with a burst of 60 is far above honest use.
-let bucket = 60, bucketAt = Date.now();
-const allow = () => { bucket = Math.min(60, bucket + ((Date.now() - bucketAt) / 1000) * 6); bucketAt = Date.now(); return bucket >= 1 && bucket-- >= 1; };
+// per client (a seated listener renews about once every 30 s per table) and overall.
+type Bucket = { n: number; at: number };
+const take = (b: Bucket, rate: number, burst: number) => {
+  b.n = Math.min(burst, b.n + ((Date.now() - b.at) / 1000) * rate); b.at = Date.now();
+  if (b.n < 1) return false;
+  b.n--; return true;
+};
+const everyone: Bucket = { n: 120, at: Date.now() }, clients = new Map<string, Bucket>();
+function allow(req: import('node:http').IncomingMessage) {
+  // behind Cloudflare the client's address is CF-Connecting-IP; on the tailnet, the socket's
+  const ip = String(req.headers['cf-connecting-ip'] ?? req.socket.remoteAddress ?? '?').slice(0, 64);
+  let b = clients.get(ip);
+  if (!b) { if (clients.size > 5000) clients.clear(); b = { n: 20, at: Date.now() }; clients.set(ip, b); }
+  return take(b, 1, 20) && take(everyone, 30, 120);
+}
 createServer((req, res) => {
+  try { handle(req, res); } catch (e) {
+    console.error('http', String(e).slice(0, 160));
+    if (!res.headersSent) res.writeHead(400);
+    res.end();
+  }
+}).listen(PORT, () => console.log(`towerd on http://localhost:${PORT}  (var: ${VAR})`));
+
+function handle(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'content-type');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
   const url = new URL(req.url ?? '/', 'http://x');
-  if (url.pathname === '/livez') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end('{"ok":true}'); return; }
+  if (url.pathname === '/livez') {
+    // alive = the ingest loop has gone round lately (a hung loop gets the container restarted)
+    const ok = Date.now() - heartbeat < 120_000;
+    res.writeHead(ok ? 200 : 503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ ok }));
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/want') {
-    if (!allow()) { res.writeHead(429, { 'retry-after': '2' }); res.end(); return; }
+    if (!allow(req)) { res.writeHead(429, { 'retry-after': '5' }); res.end(); return; }
     let body = '';
-    req.on('data', (c) => (body += c));
+    req.on('data', (c) => { body += c; if (body.length > 200 && !res.writableEnded) { res.writeHead(413); res.end(); req.destroy(); } });
     req.on('end', () => {
+      if (res.writableEnded) return;
       try {
-        if (body.length > 200) throw new Error('too big');
         const { story, table, from = 0 } = JSON.parse(body);
         if (![story, table, from].every((n) => Number.isInteger(n) && n >= 0)) throw new Error('bad request');
         const f = floors.get(story);
@@ -219,7 +252,9 @@ createServer((req, res) => {
     // the client: index.html is always revalidated; everything under /assets/ is content-hashed, so forever
     let p = resolve(STATIC, '.' + decodeURIComponent(url.pathname));
     if (!p.startsWith(STATIC + '/') && p !== STATIC) { res.writeHead(404); res.end(); return; }
-    if (!existsSync(p) || statSync(p).isDirectory()) p = join(STATIC, 'index.html');
+    const missing = !existsSync(p) || statSync(p).isDirectory();
+    if (missing && url.pathname.startsWith('/assets/')) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+    if (missing) p = join(STATIC, 'index.html');
     if (!existsSync(p)) { res.writeHead(404); res.end(); return; }
     const forever = url.pathname.startsWith('/assets/');
     res.writeHead(200, {
@@ -231,24 +266,37 @@ createServer((req, res) => {
     return;
   }
   const p = resolve(LIVE, '.' + url.pathname.slice(5));
-  if (!p.startsWith(LIVE) || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+  if (!p.startsWith(LIVE + '/') || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
   const isHead = url.pathname === '/live/head.json';
   res.writeHead(200, {
     'content-type': TYPES[extname(p)] ?? 'application/octet-stream',
     'cache-control': isHead ? 'public, max-age=1, stale-while-revalidate=10' : 'public, max-age=31536000, immutable',
   });
-  res.end(readFileSync(p));
-}).listen(PORT, () => console.log(`towerd on http://localhost:${PORT}  (var: ${VAR})`));
+  res.end(req.method === 'HEAD' ? undefined : readFileSync(p));
+}
 
 // ---------------------------------------------------------------- housekeeping
 /** Remove a comment's audio (HN deleted or killed it, or its author opted out). */
 function unvoice(id: number) {
-  if (!live.voiced.has(id)) return;
+  const v = live.voiced.get(id);
+  if (!v) return;
   live.voiced.delete(id);
   stale.delete(id); partial.delete(id);
-  // every version of it: c/<id>.<rev>.json, its clips, its partial snapshots
-  const dir = join(LIVE, 'c');
-  for (const n of readdirSync(dir)) if (n.startsWith(id + '.')) { try { unlinkSync(join(dir, n)); } catch { /* gone */ } }
+  removeFiles(id, String(v[0]));
+}
+
+/** A sidecar's own files: its clips, its partial snapshots and itself (older versions age out with retention). */
+function removeFiles(id: number, path: string) {
+  const stem = path.replace(/\.(p\d+\.)?json$/, '');                      // c/<id>.<rev>
+  const files = new Set<string>([`${stem}.json`, path]);
+  for (const f of [`${stem}.json`, path]) {
+    try {
+      const side = JSON.parse(readFileSync(join(LIVE, f), 'utf8'));
+      for (const c of side.clips ?? []) files.add(String(c.u));
+      for (let k = 1; k <= Math.min(60, Number(side.of) || 0); k++) files.add(`${stem}.p${k}.json`);
+    } catch { /* not there */ }
+  }
+  for (const f of files) if (f.startsWith(`c/${id}.`)) { try { unlinkSync(join(LIVE, f)); } catch { /* gone */ } }
 }
 
 let optOutKey = '';
@@ -266,10 +314,12 @@ function readOptOut() {
   console.log(JSON.stringify({ optout: names.size }));
 }
 
-/** var/ only grows otherwise: deltas every tick, a floor revision per change, audio forever. */
-function prune() {
+/** var/ only grows otherwise: deltas every tick, a floor revision per change, audio forever. Runs in slices,
+ *  letting the server and the ingest loop breathe between them. */
+async function prune() {
   const now = Date.now();
-  let removed = 0;
+  let removed = 0, seen = 0;
+  const breathe = async () => { if (++seen % 400 === 0) await new Promise((r) => setImmediate(r)); };
   // deltas: clients catch up from at most the last 20 epochs
   const gone = (f: string) => { try { unlinkSync(f); removed++; } catch { /* already gone, or mid-write */ } };
   const epochs = readdirSync(join(LIVE, 'e')).map((n) => parseInt(n)).filter(Number.isFinite);
@@ -281,17 +331,20 @@ function prune() {
     const dir = join(LIVE, 'f', sid);
     const revs = readdirSync(dir).filter((n) => /^\d+\.json$/.test(n)).map((n) => parseInt(n)).sort((a, b) => b - a);
     const onTower = head.floors?.[sid] !== undefined;
-    revs.forEach((r, k) => {
-      if ((onTower && k < 4) || r === head.floors?.[sid]) return;
-      if (!onTower && k === 0 && now - statSync(join(dir, `${r}.json`)).mtimeMs < 3 * 86400_000) return;   // a story that just left
+    for (const [k, r] of revs.entries()) {
+      await breathe();
+      if ((onTower && k < 4) || r === head.floors?.[sid]) continue;
+      try { if (!onTower && k === 0 && now - statSync(join(dir, `${r}.json`)).mtimeMs < 3 * 86400_000) continue; } catch { continue; }   // a story that just left
       gone(join(dir, `${r}.json`));
-    });
+    }
     try { if (!readdirSync(dir).length) rmdirSync(dir); } catch { /* not empty after all */ }
   }
   // audio: older than RETENTION_DAYS goes (it is voiced again if it is ever wanted), partial snapshots after a day
   const dir = join(LIVE, 'c');
   for (const n of readdirSync(dir)) {
-    const age = now - statSync(join(dir, n)).mtimeMs;
+    await breathe();
+    let age = 0;
+    try { age = now - statSync(join(dir, n)).mtimeMs; } catch { continue; }
     if (age > RETENTION_DAYS * 86400_000 || (/\.p\d+\.json$/.test(n) && age > 86400_000)) {
       const id = parseInt(n);
       if (!/\.p\d+\.json$/.test(n) && live.voiced.has(id)) live.voiced.delete(id);
@@ -320,15 +373,15 @@ while (frontier.length) {
   frontier = items.flatMap((it) => (it.dead || it.deleted ? [] : it.kids ?? []));
 }
 live.setTower(top);
-readOptOut();
 readVoiced();
 booting = false;
+readOptOut();
 // clear stale job files from a previous run; they are re-planned from current state
 for (const n of readdirSync(JOBS)) if (n.endsWith('.json')) unlinkSync(join(JOBS, n));
 let maxitem = await get<number>('maxitem');
 console.log(JSON.stringify({ bootstrap: { items: live.items.size, voiced: live.voiced.size, seconds: (Date.now() - t0) / 1000 } }));
 
-let lastTop = Date.now(), lastUpdates = '', lastChores = 0;
+let lastTop = Date.now(), lastUpdates = '', lastChores = 0, lastPrune = 0, pruning = false;
 for (;;) {
   const loopStart = Date.now();
   try {
@@ -359,15 +412,19 @@ for (;;) {
       lastTop = Date.now();
     }
   } catch (e) { console.error('ingest', String(e).slice(0, 200)); }
-  readVoiced();
-  if (Date.now() - lastChores > 60_000) {
-    lastChores = Date.now();
-    try { readOptOut(); if (new Date().getMinutes() % 10 === 0) prune(); } catch (e) { console.error('chores', String(e).slice(0, 200)); }
-  }
-  const r = live.tick(Date.now());
-  for (const s of r.snapshots) { floors.set(s.story.id, s); write(`f/${s.story.id}/${s.rev}.json`, s); }
-  if (r.delta) write(`e/${r.delta.epoch}.json`, r.delta);
-  write('head.json', r.head);
-  syncJobs();
+  try {
+    readVoiced();
+    if (Date.now() - lastChores > 60_000) { lastChores = Date.now(); readOptOut(); }
+    if (Date.now() - lastPrune > 600_000 && !pruning) {
+      lastPrune = Date.now(); pruning = true;
+      prune().catch((e) => console.error('prune', String(e).slice(0, 200))).finally(() => { pruning = false; });
+    }
+    const r = live.tick(Date.now());
+    for (const s of r.snapshots) { floors.set(s.story.id, s); write(`f/${s.story.id}/${s.rev}.json`, s); }
+    if (r.delta) write(`e/${r.delta.epoch}.json`, r.delta);
+    write('head.json', r.head);
+    syncJobs();
+  } catch (e) { console.error('tick', String(e).slice(0, 200)); }      // a full disk, say: keep serving, keep trying
+  heartbeat = Date.now();
   await sleep(Math.max(0, 2000 - (Date.now() - loopStart)));
 }

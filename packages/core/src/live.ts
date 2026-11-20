@@ -53,8 +53,14 @@ export class Live {
   /** HN users who asked not to be voiced: their comments are left out like dead ones (their replies still play) */
   optOut = new Set<string>();
 
-  private opts: { snapshotEvery: number };
-  constructor(opts = { snapshotEvery: 30 }) { this.opts = opts; }
+  /** epochs and revisions are one sequence each, seeded from boot time (ms): every URL they name (immutable,
+   *  cached for a year) is new, across restarts and for a story that leaves and comes back */
+  private revSeq = 0;
+  private opts: { snapshotEvery: number; base?: number };
+  constructor(opts: { snapshotEvery: number; base?: number } = { snapshotEvery: 30 }) {
+    this.opts = opts;
+    this.epoch = this.revSeq = opts.base ?? 0;
+  }
 
   /** A new or changed item from HN (new comment, edit, death, score change). */
   upsert(it: Item): void {
@@ -111,8 +117,9 @@ export class Live {
       if (!next) continue;
       const prev = this.floors.get(sid);
       const added = diffTurns(prev, next);
-      if (added.length || !prev || voicedCount(prev) !== voicedCount(next)) {
-        const rev = (this.revs.get(sid) ?? 0) + 1;
+      // any change a listener can hear: a turn added, removed or moved, or new audio (a first clip, more clips, the final)
+      if (!prev || signature(prev) !== signature(next)) {
+        const rev = ++this.revSeq;
         this.revs.set(sid, rev);
         next.rev = rev;
         next.epoch = this.epoch + 1;
@@ -187,6 +194,10 @@ export class Live {
 
 function meta(it: Item): StoryMeta {
   return { id: it.id, title: it.title ?? '', url: it.url, by: it.by, score: it.score ?? 0, comments: it.descendants ?? 0 };
+}
+
+function signature(f: FloorSnapshot): string {
+  return f.tables.map((t) => t.root + ':' + t.turns.map((u) => u.id + (u.v ? '@' + u.v[0] : '')).join(',')).join('|');
 }
 
 function voicedCount(f: FloorSnapshot): number {

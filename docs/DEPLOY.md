@@ -21,7 +21,7 @@ Written 20 Nov 2026. Prices were read on the day; sources are listed at the end.
   - Kokoro runs at 0.7× real time on one thread (int8: 0.87×, fp16: 0.83×). One thread covers roughly 75% of an average day's front page: every table a listener sits at first, then the best tables of the top floors.
   - At US daytime peaks it falls behind. With streaming (shipped today), a listener still hears a comment's first words within seconds; long comments may pause between sentences.
   - Two or more busy threads raise CPU steal for the whole VM, k3s and etcd included. So the worker stays at one thread, and full coverage needs a GPU somewhere else.
-- **Memory.** The worker uses 866 MB with the full model and towerd 147 MB, against about 2 GB free on kanmani (6 Nov). Use the int8 model there (`KOKORO_MODEL=kokoro-v1.0.int8.onnx`, about 0.6 GB), or re-check headroom first.
+- **Memory.** The worker uses 866 MB with the full model and towerd 150–260 MB. kanmani has 16 GB with about 4.7 GB free (20 Nov), so the image ships the full fp32 model, which sounds best. The int8 model is 24% faster on CPU (`KOKORO_MODEL=kokoro-v1.0.int8.onnx`), but the image would have to include it, and its voices haven't been ear-tested.
 - **Bandwidth isn't a problem.**
   - The client is 263 KB gzipped, and a listener streams about 4.5 KB/s.
   - Everything except `head.json` is immutable and cached at Cloudflare, so the origin barely notices a Show HN spike.

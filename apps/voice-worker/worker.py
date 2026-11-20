@@ -14,7 +14,7 @@ usage: worker.py <var dir>
 env:   TTS_ENGINE=kokoro (default, local CPU) | openai (gpt-4o-mini-tts, needs OPENAI_API_KEY;
        each person gets a persistent persona prompt; OPENAI_BUDGET_MIN caps spend, default 300 minutes)
 """
-import hashlib, json, os, re, sys, time, urllib.request
+import hashlib, json, os, re, signal, sys, time, urllib.request
 import numpy as np
 import soundfile as sf
 
@@ -190,16 +190,19 @@ def claude_json(prompt):
 
 def parse_tags(raw):
     out = {}
-    if True:
-        if True:
-            for k, v in raw.items():
-                if isinstance(v, dict) and v.get("e") in EMOTIONS:
-                    try:
-                        inten = max(0.0, min(1.0, float(v.get("i", 0.4))))
-                    except (TypeError, ValueError):
-                        inten = 0.4
-                    cues = [c for c in (v.get("c") or []) if c in CUES]
-                    out[int(k)] = (v["e"], v.get("s") if v.get("s") in STANCES else "inform", inten, cues)
+    for k, v in raw.items():
+        if not (isinstance(v, dict) and v.get("e") in EMOTIONS):
+            continue
+        try:
+            cid = int(k)
+        except (TypeError, ValueError):
+            continue
+        try:
+            inten = max(0.0, min(1.0, float(v.get("i", 0.4))))
+        except (TypeError, ValueError):
+            inten = 0.4
+        cues = [c for c in (v.get("c") or []) if c in CUES]
+        out[cid] = (v["e"], v.get("s") if v.get("s") in STANCES else "inform", inten, cues)
     return out
 
 
@@ -277,6 +280,19 @@ def shape_track(text, env):
     return out
 
 
+def resume(live, j, n_plan):
+    """A comment that yielded (or whose worker died) part-way carries on from its newest snapshot: the same
+    tags and the same clips, so a listener who already heard the start hears the rest in the same voice."""
+    for n in range(n_plan - 1, 0, -1):
+        try:
+            snap = json.load(open(os.path.join(live, f"c/{j['id']}.{j['rev']}.p{n}.json")))
+        except Exception:  # noqa: BLE001  (none, or unreadable)
+            continue
+        if snap.get("next") and all(os.path.exists(os.path.join(live, c["u"])) for c in snap["clips"]):
+            return snap
+    return None
+
+
 def urgent(jobs_dir):
     """Is a listener waiting? Demand jobs (someone sat at a table) sort before the 001000 pre-warm range."""
     pending = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json"))
@@ -284,6 +300,7 @@ def urgent(jobs_dir):
 
 
 def main(var):
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # PID 1 in a container; every write is atomic
     import onnxruntime as ort
     if os.environ.get("NICE"):
         os.nice(int(os.environ["NICE"]))      # yield the CPU to the node's other work
@@ -344,21 +361,43 @@ def main(var):
                 if pending and not any(pending[0] == b["_file"] for b in batch[bi:]):
                     break
             t0 = time.time()
+            final = f"c/{j['id']}.{j['rev']}.json"
+            if os.path.exists(os.path.join(live, final)):
+                # voiced already (a job queued again, or a crash before the log line): say so again, don't redo it
+                try:
+                    done = json.load(open(os.path.join(live, final)))
+                except Exception:  # noqa: BLE001  (unreadable: voice it again below)
+                    done = None
+                if done is not None:
+                    with open(log, "a") as f:
+                        f.write(json.dumps({"id": j["id"], "path": final, "dur": round(done.get("dur", 0), 2)}) + "\n")
+                    try:
+                        os.remove(os.path.join(jobs_dir, j["_file"]))
+                    except FileNotFoundError:
+                        pass
+                    continue
             emotion, stance, intensity, cues = tags.get(j["id"]) or heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
-            clips_out, total, dropped = [], 0.0, False
+            clips_out, total, dropped, start = [], 0.0, False, 0
             plan = plan_clips(j)
+            prev = resume(live, j, len(plan))
+            if prev:
+                emotion, stance, intensity, cues = prev["emotion"], prev["stance"], prev["intensity"], prev["cues"]
+                clips_out, total, start = list(prev["clips"]), float(prev["dur"]), int(prev["next"])
 
-            def sidecar(partial):
+            def sidecar(nxt=None):
                 return {"id": j["id"], "rev": j["rev"], "by": j["by"], "emotion": emotion, "stance": stance,
                         "intensity": round(intensity, 2), "cues": cues, "dur": round(total, 3), "clips": clips_out,
                         "links": [s for s in j["segments"] if s["kind"] == "link"],
                         "code": [s["code"] for s in j["segments"] if s["kind"] == "code"],
-                        **({"partial": True, "of": len(plan)} if partial else {})}
+                        **({"partial": True, "of": len(plan), "next": nxt} if nxt is not None else {})}
 
             for k, (spoken, shown, who) in enumerate(plan):
+                if k < start:
+                    continue
                 # background work (pre-warm, re-voicing) yields between clips to anyone actually listening: a long
-                # comment can take a minute, and a table waiting on one line shouldn't. Its job file stays; it's redone later.
-                if k and j["_file"] >= "001000" and urgent(jobs_dir):
+                # comment can take a minute, and a table waiting on one line shouldn't. Its job file stays; it
+                # resumes from its last snapshot later.
+                if k > start and j["_file"] >= "001000" and urgent(jobs_dir):
                     dropped = True
                     break
                 try:
@@ -375,7 +414,9 @@ def main(var):
                 peak = float(np.abs(audio).max() or 1)
                 audio = audio / peak * 0.9
                 rel = f"c/{j['id']}.{j['rev']}.{k}.ogg"
-                sf.write(os.path.join(live, rel), audio, sr, format="OGG", subtype="OPUS")
+                # atomically: a clip is cached as immutable, so nobody may ever read half of one
+                sf.write(os.path.join(live, rel + ".tmp"), audio, sr, format="OGG", subtype="OPUS")
+                os.replace(os.path.join(live, rel + ".tmp"), os.path.join(live, rel))
                 env = envelope(audio, sr)
                 shp = shape_track(spoken, env)
                 d = len(audio) / sr
@@ -385,17 +426,19 @@ def main(var):
                 if k < len(plan) - 1:
                     # playable so far: an immutable snapshot per clip count, so caches never need busting
                     prel = f"c/{j['id']}.{j['rev']}.p{len(clips_out)}.json"
-                    json.dump(sidecar(True), open(os.path.join(live, prel + ".tmp"), "w"))
+                    with open(os.path.join(live, prel + ".tmp"), "w") as f:
+                        json.dump(sidecar(k + 1), f)
                     os.replace(os.path.join(live, prel + ".tmp"), os.path.join(live, prel))
                     with open(log, "a") as f:
                         f.write(json.dumps({"id": j["id"], "path": prel, "dur": round(total, 2), "partial": True}) + "\n")
             if dropped:
                 print(json.dumps({"id": j["id"], "yielded": True, "after_clips": len(clips_out)}), flush=True)
                 break
-            side = sidecar(False)
-            rel = f"c/{j['id']}.{j['rev']}.json"
+            side = sidecar()
+            rel = final
             tmp = os.path.join(live, rel + ".tmp")
-            json.dump(side, open(tmp, "w"))
+            with open(tmp, "w") as f:
+                json.dump(side, f)
             os.replace(tmp, os.path.join(live, rel))
             with open(log, "a") as f:
                 f.write(json.dumps({"id": j["id"], "path": rel, "dur": round(total, 2)}) + "\n")

@@ -95,3 +95,37 @@ test('a story that left long ago is forgotten whole, others untouched', async ()
   assert.equal(live.voiced.has(3), false);
   assert.equal(live.storyOf(11), 10);
 });
+
+test('every change a listener can hear makes a new revision: more clips, the final, a removed turn', async () => {
+  const { Live } = await import('./live.ts');
+  const live = new Live({ snapshotEvery: 1, base: 1000 });
+  live.upsert({ id: 1, type: 'story', title: 'S', kids: [2] });
+  live.upsert({ id: 2, type: 'comment', by: 'a', text: 'root', parent: 1, kids: [3] });
+  live.upsert({ id: 3, type: 'comment', by: 'b', text: 'long reply', parent: 2 });
+  live.setTower([1]);
+  const revs: number[] = [];
+  const step = (fn: () => void) => { fn(); live.touchAll(); const r = live.tick(Date.now()); revs.push(r.snapshots[0]?.rev ?? -1); };
+  step(() => {});
+  step(() => live.markVoiced(3, 'c/3.r.p1.json', 2));
+  step(() => live.markVoiced(3, 'c/3.r.p2.json', 5));
+  step(() => live.markVoiced(3, 'c/3.r.json', 9));
+  step(() => live.upsert({ id: 3, type: 'comment', by: 'b', dead: true, parent: 2 }));
+  step(() => {});                                                 // nothing changed: no new revision
+  assert.ok(revs.slice(0, 5).every((r, k) => r > 1000 && (k === 0 || r > revs[k - 1])), String(revs));
+  assert.equal(revs[5], -1);
+});
+
+test('revisions keep rising for a story that is forgotten and comes back', async () => {
+  const { Live } = await import('./live.ts');
+  const live = new Live({ snapshotEvery: 1, base: 5000 });
+  live.upsert({ id: 1, type: 'story', title: 'S', kids: [2] });
+  live.upsert({ id: 2, type: 'comment', by: 'a', text: 'x', parent: 1 });
+  live.setTower([1]);
+  const first = live.tick(Date.now()).snapshots[0].rev;
+  live.setTower([]); live.forget(1);
+  live.upsert({ id: 1, type: 'story', title: 'S', kids: [2] });
+  live.upsert({ id: 2, type: 'comment', by: 'a', text: 'x', parent: 1 });
+  live.setTower([1]);
+  const again = live.tick(Date.now());
+  assert.ok(again.snapshots[0].rev > first && again.head.epoch > 5000);
+});
