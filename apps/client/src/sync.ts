@@ -76,7 +76,8 @@ export class LiveSync {
   url(path: string) { return this.base + path; }
 
   /** Local-only: ask the voice worker to voice a table, from a turn onwards ("first listen"). */
-  want(story: number, table: number, from = 0) {
-    return fetch(this.base.replace(/live\/$/, 'want'), { method: 'POST', body: JSON.stringify({ story, table, from }) }).catch(() => {});
+  /** Ask for a table's voicing from a turn on. False when refused (starting up, too many asks) or unreachable. */
+  want(story: number, table: number, from = 0): Promise<boolean> {
+    return fetch(this.base.replace(/live\/$/, 'want'), { method: 'POST', body: JSON.stringify({ story, table, from }) }).then((r) => r.ok, () => false);
   }
 }

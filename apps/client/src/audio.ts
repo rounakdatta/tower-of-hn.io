@@ -18,6 +18,36 @@ export class AudioEngine {
   vclock = 0;
   log: { url: string; when: number }[] = [];
 
+  /** Ogg Opus, natively where the browser can (Chrome, Firefox, Safari 26); older Safari gets a small
+   *  WebAssembly decoder, fetched only then. ?wasmopus forces it, to test that path anywhere. */
+  private native = !new URLSearchParams(location.search).has('wasmopus');
+  private wasm?: Promise<import('ogg-opus-decoder').OggOpusDecoder>;
+  private queue: Promise<unknown> = Promise.resolve();
+  private decode(b: ArrayBuffer): Promise<AudioBuffer> {
+    if (!this.native) return this.decodeWasm(b);
+    // a copy: a failed native decode may leave the buffer detached
+    return this.ctx!.decodeAudioData(b.slice(0)).catch((e) =>
+      this.decodeWasm(b).then((buf) => { this.native = false; console.info('audio: Ogg Opus via WebAssembly'); return buf; }, () => { throw e; }));
+  }
+  private decodeWasm(b: ArrayBuffer): Promise<AudioBuffer> {
+    this.wasm ??= import('ogg-opus-decoder').then(async ({ OggOpusDecoder }) => {
+      const d = new OggOpusDecoder();
+      await d.ready;
+      return d;
+    }).catch((e) => { this.wasm = undefined; throw e; });
+    const run = this.queue.then(async () => {             // one decoder, one file at a time
+      const d = await this.wasm!;
+      const { channelData, samplesDecoded, sampleRate } = await d.decodeFile(new Uint8Array(b));
+      await d.reset();
+      if (!samplesDecoded) throw new Error('audio: nothing decoded');
+      const buf = this.ctx!.createBuffer(channelData.length, samplesDecoded, sampleRate);
+      channelData.forEach((c, i) => buf.copyToChannel(c as Float32Array<ArrayBuffer>, i));
+      return buf;
+    });
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
   /** Must be called from a user gesture (browsers require it). */
   ensure() {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
@@ -69,7 +99,7 @@ export class AudioEngine {
     if (this.virtual) return Promise.resolve(null as unknown as AudioBuffer);
     let p = this.cache.get(url);
     if (!p) {
-      p = fetch(url).then((r) => r.arrayBuffer()).then((b) => this.ctx!.decodeAudioData(b));
+      p = fetch(url).then((r) => { if (!r.ok) throw new Error(`${r.status} ${url}`); return r.arrayBuffer(); }).then((b) => this.decode(b));
       p.catch(() => this.cache.delete(url));
       this.cache.set(url, p);
       this.order.push(url);

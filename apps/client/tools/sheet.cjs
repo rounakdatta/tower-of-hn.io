@@ -11,7 +11,8 @@ const fs = require('fs');
   const browser = await chromium.launch({
     executablePath: '/home/rounak/.local/state/nix/profiles/home-manager/home-path/bin/google-chrome',
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-unsafe-webgpu',
-      '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader', '--use-angle=swiftshader'],
+      '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader', '--use-angle=swiftshader',
+      ...(process.env.CHROME_ARG ? [process.env.CHROME_ARG] : [])],   // one extra flag, e.g. --host-resolver-rules=MAP host ip
   });
   const page = await browser.newPage({ viewport: { width: W, height: H } });
   const errs = [];

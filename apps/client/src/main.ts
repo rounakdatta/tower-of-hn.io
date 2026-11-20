@@ -354,6 +354,14 @@ function frame(dt: number, draw = true) {
 await sync.start();
 ui.mode('tower');
 ui.hint('Tap a floor to step inside');
+// ?probe: decode one clip exactly as playback does, and describe it (tests the native and the WebAssembly Opus paths)
+if (params.has('probe')) (window as any).__probe = async (url: string) => {
+  audio.ensure();
+  const b = await audio.load(url);
+  let peak = 0;
+  for (const x of b.getChannelData(0)) peak = Math.max(peak, Math.abs(x));
+  return { seconds: b.duration, rate: b.sampleRate, channels: b.numberOfChannels, peak };
+};
 if (recording) {
   (window as any).__tohn = {
     frame: (dt: number, draw = true) => frame(dt, draw),

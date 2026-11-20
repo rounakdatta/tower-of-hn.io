@@ -124,7 +124,7 @@ export class Director {
   start(floor: Floor, spot: TableSpot, roomY: number, now: number) {
     this.stop();
     this.floor = floor; this.spot = spot; this.roomY = roomY;
-    this.turnIdx = 0; this.playing = true; this.paused = false; this.clipsDone = 0;
+    this.turnIdx = 0; this.playing = true; this.paused = false; this.clipsDone = 0; this.waitSince = 0;
     this.plans.clear(); this.heroAt = 0; this.staged.clear();
     this.cursor = this.audio.now() + 1.6;           // let the establishing shot breathe
     // the same HN user can sit at several tables (one per thread they joined): always mean the one at this table
@@ -206,7 +206,11 @@ export class Director {
       if (!t.v || /\.p\d+\.json$/.test(t.v[0])) {
         const ti = this.spot.tableOf?.get(t.id) ?? this.spot.index, from = this.spot.tableOf ? 0 : k;
         const key = `${this.floor.story.id}:${ti}:${from}`, last = this.asked.get(key) ?? -1e9, nowS = performance.now() / 1000;
-        if (nowS - last > 30) { this.asked.set(key, nowS); this.sync.want(this.floor.story.id, ti, from); }
+        if (nowS - last > 30) {
+          this.asked.set(key, nowS);
+          // refused (the server is starting, or busy): ask again in ~5 s rather than 30
+          this.sync.want(this.floor.story.id, ti, from).then((ok) => { if (!ok) this.asked.set(key, performance.now() / 1000 - 25); });
+        }
       }
     }
   }
@@ -917,6 +921,7 @@ export class Director {
     const ctx = this.audio.ctx;
     if (!ctx) return;
     this.paused = !this.paused;
+    this.waitSince = 0;                              // a pause is not a wait: never skip a line because of one
     if (this.paused) ctx.suspend(); else ctx.resume();
   }
 }

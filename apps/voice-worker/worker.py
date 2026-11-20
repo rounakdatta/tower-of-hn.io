@@ -180,7 +180,7 @@ def claude_json(prompt):
     try:
         req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={
             "x-api-key": key, "content-type": "application/json", "anthropic-version": "2023-06-01"})
-        j = json.load(urllib.request.urlopen(req, timeout=90))
+        j = json.load(urllib.request.urlopen(req, timeout=25))
         text = "".join(c.get("text", "") for c in j.get("content", []) if c.get("type") == "text")
         return json.loads(text[text.index("{"): text.rindex("}") + 1])
     except Exception as e:  # noqa: BLE001
@@ -250,7 +250,7 @@ def plan_clips(job):
                 shown = spoken
             clips += [(a, b, job["by"]) for a, b in zip(spoken, shown)]
         elif k == "quote":
-            who = job.get("parentBy") if s.get("of") else job["by"]
+            who = (job.get("parentBy") or job["by"]) if s.get("of") else job["by"]
             for a in chunk(sentences(s["text"])):
                 clips.append((a, "“" + a + "”", who or job["by"]))
         elif k == "link":
@@ -293,9 +293,18 @@ def resume(live, j, n_plan):
     return None
 
 
-def urgent(jobs_dir):
-    """Is a listener waiting? Demand jobs (someone sat at a table) sort before the 001000 pre-warm range."""
-    pending = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json"))
+def job_id(name):
+    """<6-digit priority>-<comment id>.json"""
+    try:
+        return int(name.split("-", 1)[1].split(".", 1)[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def urgent(jobs_dir, own=None):
+    """Is a listener waiting on something else? Demand jobs (someone sat at a table) sort before the 001000
+    pre-warm range. The comment being voiced doesn't count: towerd renames its job when a listener sits down."""
+    pending = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json") and job_id(n) != own)
     return bool(pending) and pending[0] < "001000"
 
 
@@ -348,17 +357,21 @@ def main(var):
                 batch.append(j)
             if len(batch) >= 8:
                 break
-        wait = 1 - (time.time() - last_llm)
-        if wait > 0:
-            time.sleep(wait)
-        tags = llm_tags(batch, key)
-        last_llm = time.time()
+        # a comment that yielded part-way keeps its tags (resume() reads them back): tag only the rest
+        fresh = [j for j in batch if not resume(live, j, len(plan_clips(j)))]
+        tags = {}
+        if fresh:
+            wait = 1 - (time.time() - last_llm)
+            if wait > 0:
+                time.sleep(wait)
+            tags = llm_tags(fresh, key)
+            last_llm = time.time()
         for bi, j in enumerate(batch):
             # the batch exists to tag a table's comments in one call; voicing always takes the most urgent job
             # next, so a listener at another table never waits behind the rest of this one
             if bi:
                 pending = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json"))
-                if pending and not any(pending[0] == b["_file"] for b in batch[bi:]):
+                if pending and not any(job_id(pending[0]) == b["id"] for b in batch[bi:]):
                     break
             t0 = time.time()
             final = f"c/{j['id']}.{j['rev']}.json"
@@ -370,7 +383,7 @@ def main(var):
                     done = None
                 if done is not None:
                     with open(log, "a") as f:
-                        f.write(json.dumps({"id": j["id"], "path": final, "dur": round(done.get("dur", 0), 2)}) + "\n")
+                        f.write(json.dumps({"id": j["id"], "by": j["by"], "path": final, "dur": round(done.get("dur", 0), 2)}) + "\n")
                     try:
                         os.remove(os.path.join(jobs_dir, j["_file"]))
                     except FileNotFoundError:
@@ -397,7 +410,7 @@ def main(var):
                 # background work (pre-warm, re-voicing) yields between clips to anyone actually listening: a long
                 # comment can take a minute, and a table waiting on one line shouldn't. Its job file stays; it
                 # resumes from its last snapshot later.
-                if k > start and j["_file"] >= "001000" and urgent(jobs_dir):
+                if k > start and j["_file"] >= "001000" and urgent(jobs_dir, own=j["id"]):
                     dropped = True
                     break
                 try:
@@ -430,7 +443,7 @@ def main(var):
                         json.dump(sidecar(k + 1), f)
                     os.replace(os.path.join(live, prel + ".tmp"), os.path.join(live, prel))
                     with open(log, "a") as f:
-                        f.write(json.dumps({"id": j["id"], "path": prel, "dur": round(total, 2), "partial": True}) + "\n")
+                        f.write(json.dumps({"id": j["id"], "by": j["by"], "path": prel, "dur": round(total, 2), "partial": True}) + "\n")
             if dropped:
                 print(json.dumps({"id": j["id"], "yielded": True, "after_clips": len(clips_out)}), flush=True)
                 break
@@ -441,7 +454,7 @@ def main(var):
                 json.dump(side, f)
             os.replace(tmp, os.path.join(live, rel))
             with open(log, "a") as f:
-                f.write(json.dumps({"id": j["id"], "path": rel, "dur": round(total, 2)}) + "\n")
+                f.write(json.dumps({"id": j["id"], "by": j["by"], "path": rel, "dur": round(total, 2)}) + "\n")
             try:
                 os.remove(os.path.join(jobs_dir, j["_file"]))
             except FileNotFoundError:
