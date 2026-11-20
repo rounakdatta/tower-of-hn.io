@@ -81,9 +81,12 @@ export class Director {
   private turnIdx = 0;
   private cursor = 0;
   private sched: Scheduled[] = [];
-  private loading = new Map<number, Promise<{ side: Sidecar; bufs: AudioBuffer[] } | null>>();
+  private loading = new Map<string, Promise<{ side: Sidecar; bufs: AudioBuffer[] } | null>>();
+  /** clips of turns[turnIdx] already scheduled: a long comment that is still being voiced plays as it arrives */
+  private clipsDone = 0;
+  private partialId = 0;
   private ready = new Map<number, { side: Sidecar; bufs: AudioBuffer[] }>();
-  private asked = new Set<string>();
+  private asked = new Map<string, number>();       // want key -> when we last asked (demand lapses server-side; renew it)
   private current: Scheduled | null = null;
   private shotUntil = 0;
   private reactionAt = 0;
@@ -121,7 +124,7 @@ export class Director {
   start(floor: Floor, spot: TableSpot, roomY: number, now: number) {
     this.stop();
     this.floor = floor; this.spot = spot; this.roomY = roomY;
-    this.turnIdx = 0; this.playing = true; this.paused = false;
+    this.turnIdx = 0; this.playing = true; this.paused = false; this.clipsDone = 0;
     this.plans.clear(); this.heroAt = 0; this.staged.clear();
     this.cursor = this.audio.now() + 1.6;           // let the establishing shot breathe
     // the same HN user can sit at several tables (one per thread they joined): always mean the one at this table
@@ -168,20 +171,25 @@ export class Director {
     for (const u of t.turns) if (!known.has(u.id)) this.onNewReply(u.by);
     this.turnIdx = t.turns.findIndex((u) => !played.has(u.id));
     if (this.turnIdx < 0) this.turnIdx = t.turns.length;
+    if (this.clipsDone) {                         // mid-way through a comment that is still arriving: stay on it
+      const k = t.turns.findIndex((u) => u.id === this.partialId);
+      if (k >= 0) this.turnIdx = k; else this.clipsDone = 0;
+    }
     this.prefetch();
   }
 
   private load(turn: Turn) {
     if (!turn.v) return null;
-    let p = this.loading.get(turn.id);
+    const path = turn.v[0];                       // a comment still being voiced gets a new path per clip
+    let p = this.loading.get(path);
     if (!p) {
-      p = this.sync.sidecar(turn.v[0]).then(async (side) => {
+      p = this.sync.sidecar(path).then(async (side) => {
         const bufs = await Promise.all(side.clips.map((c) => this.audio.load(this.sync.url(c.u))));
-        const r = { side, bufs };
-        this.ready.set(turn.id, r);
+        const r = { side, bufs }, have = this.ready.get(turn.id);
+        if (!have || side.clips.length >= have.side.clips.length) this.ready.set(turn.id, r);
         return r;
-      }).catch(() => null);
-      this.loading.set(turn.id, p);
+      }).catch(() => { this.loading.delete(path); return null; });
+      this.loading.set(path, p);
     }
     return p;
   }
@@ -196,8 +204,8 @@ export class Director {
       if (t.v) this.load(t);
       else {
         const ti = this.spot.tableOf?.get(t.id) ?? this.spot.index, from = this.spot.tableOf ? 0 : k;
-        const key = `${this.floor.story.id}:${ti}:${from}`;
-        if (!this.asked.has(key)) { this.asked.add(key); this.sync.want(this.floor.story.id, ti, from); }
+        const key = `${this.floor.story.id}:${ti}:${from}`, last = this.asked.get(key) ?? -1e9, nowS = performance.now() / 1000;
+        if (nowS - last > 30) { this.asked.set(key, nowS); this.sync.want(this.floor.story.id, ti, from); }
       }
     }
   }
@@ -249,16 +257,16 @@ export class Director {
     const at = this.audio.now();
     while (this.cursor - at < 2.5 && this.turnIdx < turns.length) {
       const turn = turns[this.turnIdx];
-      if (this.skipIds.has(turn.id)) { this.turnIdx++; continue; }
+      if (this.skipIds.has(turn.id)) { this.turnIdx++; this.clipsDone = 0; continue; }
       const r = this.ready.get(turn.id);
-      if (!r) {
+      if (!r || r.side.clips.length <= this.clipsDone) {
         this.prefetch();
         if (this.cursor < at) {             // we've run dry: show who we're waiting for
           const i = this.ix(turn.by);
           this.ui.waiting(i >= 0 ? this.crowd.headPos(i) : null);
-          // a line still being voiced: after a few seconds the table moves on without it
+          // a line still being voiced: after a few seconds the table moves on without it (never mid-comment)
           if (!this.waitSince) this.waitSince = now;
-          else if (now - this.waitSince > 4 && turns.slice(this.turnIdx + 1, this.turnIdx + 4).some((u) => this.ready.has(u.id))) {
+          else if (!this.clipsDone && now - this.waitSince > 4 && turns.slice(this.turnIdx + 1, this.turnIdx + 4).some((u) => this.ready.has(u.id))) {
             this.turnIdx++; this.waitSince = 0; this.ui.waiting(null);
             continue;
           }
@@ -267,20 +275,24 @@ export class Director {
       }
       this.waitSince = 0;
       this.ui.waiting(null);
-      // audio voiced while HN still showed a placeholder ([delayed]): the real text is being re-voiced; skip it meanwhile
-      if (r.side.clips.length === 1 && /^\s*\[(delayed|flagged|dead|deleted|removed)\]\s*$/i.test(r.side.clips[0].t)) {
-        if (this.floor && !this.spot.tableOf) this.sync.want(this.floor.story.id, this.spot.index, this.turnIdx);
-        this.turnIdx++;
-        continue;
+      const fresh = this.clipsDone === 0;
+      if (fresh) {
+        // audio voiced while HN still showed a placeholder ([delayed]): the real text is being re-voiced; skip it meanwhile
+        if (r.side.clips.length === 1 && /^\s*\[(delayed|flagged|dead|deleted|removed)\]\s*$/i.test(r.side.clips[0].t)) {
+          if (this.floor && !this.spot.tableOf) this.sync.want(this.floor.story.id, this.spot.index, this.turnIdx);
+          this.turnIdx++;
+          continue;
+        }
+        // whoever is about to talk, whoever they answer and whoever they quote must be at the table
+        const prevBy = turns[this.turnIdx - 1]?.by, keep = new Set([turn.by, ...(prevBy ? [prevBy] : [])]);
+        this.ensure(turn.by, keep);
+        const to = turn.replyTo ? turns.find((u) => u.id === turn.replyTo)?.by : undefined;
+        if (to) { keep.add(to); this.ensure(to, keep); }
+        for (const c of r.side.clips) if (c.who !== turn.by) { keep.add(c.who); this.ensure(c.who, keep); }
       }
-      // whoever is about to talk, whoever they answer and whoever they quote must be at the table
-      const prevBy = turns[this.turnIdx - 1]?.by, keep = new Set([turn.by, ...(prevBy ? [prevBy] : [])]);
-      this.ensure(turn.by, keep);
-      const to = turn.replyTo ? turns.find((u) => u.id === turn.replyTo)?.by : undefined;
-      if (to) { keep.add(to); this.ensure(to, keep); }
-      for (const c of r.side.clips) if (c.who !== turn.by) { keep.add(c.who); this.ensure(c.who, keep); }
-      let t = Math.max(this.cursor + (this.sched.length ? this.gapFor(turn, r.side) : 0), at + 0.08);
+      let t = fresh ? Math.max(this.cursor + (this.sched.length ? this.gapFor(turn, r.side) : 0), at + 0.08) : Math.max(this.cursor + 0.06, at + 0.08);
       r.side.clips.forEach((clip, k) => {
+        if (k < this.clipsDone) return;
         const who = this.personFor(clip.who, turn.by);
         const pos = who >= 0 ? this.crowd.headPos(who) : new THREE.Vector3(this.spot!.pos.x, this.roomY + 1.1, this.spot!.pos.z);
         const src = this.audio.voice(r.bufs[k], t, pos, this.sync.url(clip.u));
@@ -288,6 +300,8 @@ export class Director {
         t += clip.d + (k < r.side.clips.length - 1 ? 0.06 : 0);
       });
       this.cursor = t;
+      if (r.side.partial) { this.clipsDone = r.side.clips.length; this.partialId = turn.id; continue; }   // the rest is on its way
+      this.clipsDone = 0;
       this.turnIdx++;
       // a deep link into the middle of a long table: the opener for context, then straight to that reply
       if (this.jumpTo && this.turnIdx === 1) {

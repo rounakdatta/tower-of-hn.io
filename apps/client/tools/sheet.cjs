@@ -25,8 +25,12 @@ const fs = require('fs');
   for (let i = 0; i < 3; i++) { await page.evaluate(() => window.__tohn.frame(1 / 24, true)); await page.waitForTimeout(400); }   // compile the room's shaders
   const meta = [];
   await step(skip);
+  // REALTIME=1: never let scene time outrun the wall clock (the voice worker runs in real time)
+  const t0 = Date.now(), v0 = await page.evaluate(() => window.__tohn.clock());
+  const pace = async () => { if (!process.env.REALTIME) return; const ahead = (await page.evaluate(() => window.__tohn.clock())) - v0 - (Date.now() - t0) / 1000; if (ahead > 0) await page.waitForTimeout(ahead * 1000); };
   for (let t = 0, k = 0; t < secs; t += every, k++) {
     await step(every);
+    await pace();
     await page.evaluate(() => window.__tohn.frame(1 / 24, true));
     await page.waitForTimeout(150);
     const info = await page.evaluate(() => ({ clock: window.__tohn.clock(), shot: window.__tohn.shot(), mode: window.__tohn.mode(), sub: (document.getElementById('subs')?.textContent || '').slice(0, 70), scene: window.__tohn.scene() }));
@@ -34,7 +38,8 @@ const fs = require('fs');
     await page.screenshot({ timeout: 120000, type: 'jpeg', quality: 85, path: file });
     meta.push({ file, ...info });
   }
-  fs.writeFileSync(`${out}/sheet.json`, JSON.stringify({ meta, errs }, null, 1));
+  const timeline = await page.evaluate(() => window.__tohn.timeline());
+  fs.writeFileSync(`${out}/sheet.json`, JSON.stringify({ meta, errs, timeline }, null, 1));
   console.log(JSON.stringify({ frames: meta.length, errs: errs.slice(0, 5) }));
   await browser.close();
 })();

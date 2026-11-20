@@ -47,8 +47,11 @@ function write(rel: string, data: unknown) {
 const live = new Live({ snapshotEvery: 1 });
 const floors = new Map<number, FloorSnapshot>();
 const demand = new Map<number, number>();            // comment id -> priority (lower = sooner)
+const demandAt = new Map<number, number>();          // when a listener last asked: demand lapses unless renewed
+const DEMAND_TTL = 90_000;
 const queued = new Map<number, string>();            // comment id -> job file name
 const stale = new Set<number>();                     // voiced with an older VOICE_VERSION: re-voice in the background
+const partial = new Set<number>();                   // playable, but the worker is still voicing the rest of it
 let voicedOffset = 0;
 
 function readVoiced() {
@@ -71,16 +74,24 @@ function readVoiced() {
         stale.add(v.id);
         continue;
       }
+      if (v.partial) {                              // a long comment arriving clip by clip: playable already
+        const done = prev && !partial.has(v.id) && String(prev[0]).split('.')[1] === got;
+        if (!done && (!prev || !partial.has(v.id) || v.dur > prev[1])) { live.markVoiced(v.id, v.path, v.dur); partial.add(v.id); }
+        continue;                                   // the job is still running: keep it queued
+      }
       live.markVoiced(v.id, v.path, v.dur);
+      partial.delete(v.id);
       stale.delete(v.id);
       queued.delete(v.id);
-      demand.delete(v.id);
+      demand.delete(v.id); demandAt.delete(v.id);
     } catch { /* partial line */ }
   }
 }
 
 // ---------------------------------------------------------------- voicing queue
 function wanted(): [number, number][] {
+  // listeners who left stop costing anyone else: their requests lapse after DEMAND_TTL unless renewed
+  for (const [id, at] of demandAt) if (Date.now() - at > DEMAND_TTL) { demand.delete(id); demandAt.delete(id); }
   const out = new Map<number, number>(demand);
   live.tower.slice(0, PRE.floors).forEach((sid, fi) => {
     const f = floors.get(sid);
@@ -101,7 +112,7 @@ const PLACEHOLDER_REVS = new Set(['delayed', 'flagged', 'dead', 'deleted', 'remo
   .map((w) => createHash('sha1').update(`${VOICE_VERSION}:[${w}]`).digest('hex').slice(0, 8)));
 function needsVoice(id: number) {
   const v = live.voiced.get(id);
-  return !v || (stale.has(id) && PLACEHOLDER_REVS.has(String(v[0]).split('.')[1]));
+  return !v || partial.has(id) || (stale.has(id) && PLACEHOLDER_REVS.has(String(v[0]).split('.')[1]));
 }
 
 function revOf(id: number): string | undefined {
@@ -126,6 +137,13 @@ function jobFor(id: number, prio: number) {
 
 function syncJobs() {
   const target = wanted().slice(0, MAX_QUEUED);
+  // jobs nobody wants any more (a listener left, demand lapsed) leave the queue, so the worker voices what's needed now
+  const keep = new Set(target.map(([id]) => id));
+  for (const [id, name] of queued) {
+    if (keep.has(id)) continue;
+    try { unlinkSync(join(JOBS, name)); } catch { /* the worker has it already */ }
+    queued.delete(id);
+  }
   for (const [id, prio] of target) {
     const name = `${String(prio).padStart(6, '0')}-${id}.json`;
     const cur = queued.get(id);
@@ -154,7 +172,12 @@ createServer((req, res) => {
         const { story, table, from = 0 } = JSON.parse(body);
         const f = floors.get(story);
         const turns = f?.tables[table]?.turns.slice(from, from + 24) ?? [];
-        turns.forEach((u, k) => { if (needsVoice(u.id)) demand.set(u.id, Math.min(demand.get(u.id) ?? 999, k)); });
+        const fresh = (id: number) => Date.now() - (demandAt.get(id) ?? 0) < DEMAND_TTL;
+        turns.forEach((u, k) => {
+          if (!needsVoice(u.id)) return;
+          demand.set(u.id, fresh(u.id) ? Math.min(demand.get(u.id) ?? 999, k) : k);
+          demandAt.set(u.id, Date.now());
+        });
         syncJobs();
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ queued: turns.filter((u) => needsVoice(u.id)).length }));

@@ -203,9 +203,13 @@ def sentences(text):
     return [p.replace("․", ".").strip() for p in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(\"'])", t) if p.strip()]
 
 
-def chunk(sents, limit=220):
-    out, cur = [], ""
+def chunk(sents, limit=220, first=None):
+    """Sentences packed into clips of <= limit characters; the first clip can be shorter (first words sooner)."""
+    full, out, cur = limit, [], ""
+    limit = first or full
     for s in sents:
+        if out:
+            limit = full
         while len(s) > limit:
             cut = max(s.rfind(", ", 0, limit), s.rfind(" ", 0, limit))
             cut = cut if cut > 40 else limit
@@ -214,9 +218,11 @@ def chunk(sents, limit=220):
                 cur = ""
             out.append(s[:cut + 1].strip())
             s = s[cut + 1:].strip()
+            limit = full
         if cur and len(cur) + 1 + len(s) > limit:
             out.append(cur)
             cur = s
+            limit = full
         else:
             cur = (cur + " " + s).strip()
     if cur:
@@ -230,7 +236,8 @@ def plan_clips(job):
     for s in job["segments"]:
         k = s["kind"]
         if k == "say":
-            spoken, shown = chunk(sentences(s["text"])), chunk(sentences(s["display"]))
+            first = None if clips else 110
+            spoken, shown = chunk(sentences(s["text"]), first=first), chunk(sentences(s["display"]), first=first)
             if len(spoken) != len(shown):
                 shown = spoken
             clips += [(a, b, job["by"]) for a, b in zip(spoken, shown)]
@@ -283,7 +290,12 @@ def main(var):
         so = ort.SessionOptions()
         so.intra_op_num_threads = 1
         so.inter_op_num_threads = 1
-        sess = ort.InferenceSession(f"{models}/kokoro-v1.0.onnx", so, providers=["CPUExecutionProvider"])
+        # KOKORO_MODEL: kokoro-v1.0.onnx (default, best), .int8.onnx (~24% faster on CPU, 92 MB instead of 325 MB)
+        # KOKORO_PROVIDER=cuda runs the same model, and so the same voices, on a GPU (onnxruntime-gpu)
+        model = os.environ.get("KOKORO_MODEL", "kokoro-v1.0.onnx")
+        providers = (["CUDAExecutionProvider"] if os.environ.get("KOKORO_PROVIDER") == "cuda" else []) + ["CPUExecutionProvider"]
+        sess = ort.InferenceSession(f"{models}/{model}", so, providers=providers)
+        print("kokoro", model, sess.get_providers()[0], flush=True)
         kokoro = Kokoro.from_session(sess, f"{models}/voices-v1.0.bin")
         voices = Voices(kokoro)
     oai = OpenAITTS(os.environ["OPENAI_API_KEY"], float(os.environ.get("OPENAI_BUDGET_MIN", "300"))) if engine == "openai" else None
@@ -318,15 +330,25 @@ def main(var):
         tags = llm_tags(batch, key)
         last_llm = time.time()
         for bi, j in enumerate(batch):
-            # someone just sat at another table: yield to them between comments
+            # the batch exists to tag a table's comments in one call; voicing always takes the most urgent job
+            # next, so a listener at another table never waits behind the rest of this one
             if bi:
                 pending = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json"))
-                if pending and pending[0] < batch[0]["_file"] and not any(pending[0] == b["_file"] for b in batch):
+                if pending and not any(pending[0] == b["_file"] for b in batch[bi:]):
                     break
             t0 = time.time()
             emotion, stance, intensity, cues = tags.get(j["id"]) or heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
             clips_out, total, dropped = [], 0.0, False
-            for k, (spoken, shown, who) in enumerate(plan_clips(j)):
+            plan = plan_clips(j)
+
+            def sidecar(partial):
+                return {"id": j["id"], "rev": j["rev"], "by": j["by"], "emotion": emotion, "stance": stance,
+                        "intensity": round(intensity, 2), "cues": cues, "dur": round(total, 3), "clips": clips_out,
+                        "links": [s for s in j["segments"] if s["kind"] == "link"],
+                        "code": [s["code"] for s in j["segments"] if s["kind"] == "code"],
+                        **({"partial": True, "of": len(plan)} if partial else {})}
+
+            for k, (spoken, shown, who) in enumerate(plan):
                 # background work (pre-warm, re-voicing) yields between clips to anyone actually listening: a long
                 # comment can take a minute, and a table waiting on one line shouldn't. Its job file stays; it's redone later.
                 if k and j["_file"] >= "001000" and urgent(jobs_dir):
@@ -353,14 +375,17 @@ def main(var):
                 clips_out.append({"u": rel, "d": round(d, 3), "t": shown, "who": who,
                                   "env": [int(v * 255) for v in env], "shape": [int((v + 1) * 127.5) for v in shp]})
                 total += d
+                if k < len(plan) - 1:
+                    # playable so far: an immutable snapshot per clip count, so caches never need busting
+                    prel = f"c/{j['id']}.{j['rev']}.p{len(clips_out)}.json"
+                    json.dump(sidecar(True), open(os.path.join(live, prel + ".tmp"), "w"))
+                    os.replace(os.path.join(live, prel + ".tmp"), os.path.join(live, prel))
+                    with open(log, "a") as f:
+                        f.write(json.dumps({"id": j["id"], "path": prel, "dur": round(total, 2), "partial": True}) + "\n")
             if dropped:
                 print(json.dumps({"id": j["id"], "yielded": True, "after_clips": len(clips_out)}), flush=True)
                 break
-            side = {"id": j["id"], "rev": j["rev"], "by": j["by"], "emotion": emotion, "stance": stance,
-                    "intensity": round(intensity, 2), "cues": cues,
-                    "dur": round(total, 3), "clips": clips_out,
-                    "links": [s for s in j["segments"] if s["kind"] == "link"],
-                    "code": [s["code"] for s in j["segments"] if s["kind"] == "code"]}
+            side = sidecar(False)
             rel = f"c/{j['id']}.{j['rev']}.json"
             tmp = os.path.join(live, rel + ".tmp")
             json.dump(side, open(tmp, "w"))

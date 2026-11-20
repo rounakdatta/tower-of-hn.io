@@ -13,7 +13,7 @@ export interface Head {
 }
 export interface Delta { epoch: number; tower?: number[]; turns?: { story: number; table: number; at: number; turn: Turn }[]; voiced?: { id: number; v: [string, number] }[]; gone?: number[] }
 export interface Clip { u: string; d: number; t: string; who: string; env: number[]; shape: number[] }
-export interface Sidecar { id: number; by: string; emotion: string; stance: string; intensity?: number; cues?: string[]; dur: number; clips: Clip[]; links: { url: string; domain: string; text: string }[]; code: string[] }
+export interface Sidecar { id: number; by: string; emotion: string; stance: string; intensity?: number; cues?: string[]; dur: number; clips: Clip[]; links: { url: string; domain: string; text: string }[]; code: string[]; /** still being voiced: more clips will follow at a new path */ partial?: boolean; of?: number }
 
 export class LiveSync {
   head: Head | null = null;
