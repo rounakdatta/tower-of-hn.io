@@ -68,6 +68,19 @@ export class Live {
     }
   }
 
+  /** Forget a story and everything under it (it left the front page long ago), so memory stays flat for months. */
+  forget(sid: number): number {
+    let n = 0;
+    for (const stack = [sid]; stack.length;) {
+      const id = stack.pop()!, it = this.items.get(id);
+      if (!it) continue;
+      this.items.delete(id); this.voiced.delete(id); n++;
+      for (const k of it.kids ?? []) stack.push(k);
+    }
+    this.floors.delete(sid); this.revs.delete(sid); this.sinceSnapshot.delete(sid); this.dirtyStories.delete(sid);
+    return n;
+  }
+
   /** Rebuild every floor on the next tick (the opt-out list changed). */
   touchAll(): void { for (const sid of this.tower) this.dirtyStories.add(sid); }
 

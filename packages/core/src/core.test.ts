@@ -80,3 +80,18 @@ test('opted-out users are left out, the conversation around them still plays', a
   const turns = r.snapshots[0].tables[0].turns;
   assert.deepEqual(turns.map((t) => t.by), ['a', 'c']);
 });
+
+test('a story that left long ago is forgotten whole, others untouched', async () => {
+  const { Live } = await import('./live.ts');
+  const live = new Live({ snapshotEvery: 1 });
+  live.upsert({ id: 1, type: 'story', title: 'old', kids: [2] });
+  live.upsert({ id: 2, type: 'comment', by: 'a', text: 'x', parent: 1, kids: [3] });
+  live.upsert({ id: 3, type: 'comment', by: 'b', text: 'y', parent: 2 });
+  live.upsert({ id: 10, type: 'story', title: 'new', kids: [11] });
+  live.upsert({ id: 11, type: 'comment', by: 'c', text: 'z', parent: 10 });
+  live.markVoiced(3, 'c/3.r.json', 1);
+  assert.equal(live.forget(1), 3);
+  assert.deepEqual([...live.items.keys()].sort(), [10, 11]);
+  assert.equal(live.voiced.has(3), false);
+  assert.equal(live.storyOf(11), 10);
+});

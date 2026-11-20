@@ -298,8 +298,17 @@ function prune() {
       gone(join(dir, n));
     }
   }
-  if (removed) console.log(JSON.stringify({ pruned: removed }));
+  // stories off the front page for two days: forgotten, comments and all
+  let forgot = 0;
+  const onTower = new Set(live.tower);
+  for (const [id, it] of live.items) {
+    if (it.type !== 'story' || onTower.has(id)) { offSince.delete(id); continue; }
+    if (!offSince.has(id)) offSince.set(id, now);
+    else if (now - offSince.get(id)! > 2 * 86400_000) { forgot += live.forget(id); offSince.delete(id); floors.delete(id); }
+  }
+  if (removed || forgot) console.log(JSON.stringify({ pruned: removed, forgot }));
 }
+const offSince = new Map<number, number>();
 
 // ---------------------------------------------------------------- bootstrap, then follow the firehose
 const t0 = Date.now();
@@ -326,7 +335,9 @@ for (;;) {
     const mx = await get<number>('maxitem');
     if (mx > maxitem) {
       const fresh = await many(Array.from({ length: Math.min(200, mx - maxitem) }, (_, i) => maxitem + 1 + i));
-      for (const it of fresh) live.upsert(it);
+      // only replies inside threads we follow (new stories come in through topstories): the rest of HN is
+      // ~13k items a day that would otherwise pile up in memory
+      for (const it of fresh) if (it.parent !== undefined && live.items.has(it.parent)) live.upsert(it);
       const parents = [...new Set(fresh.map((it) => it.parent).filter((p): p is number => !!p && live.items.has(p)))];
       for (const it of await many(parents)) live.upsert(it);
       maxitem = mx;
