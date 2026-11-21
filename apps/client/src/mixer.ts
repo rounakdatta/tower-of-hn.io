@@ -23,7 +23,11 @@ interface Player {
   sched: Scheduled[];
   ready: Map<number, Ready>;
   loading: Set<string>;                                  // sidecar paths in flight
+  /** what the table is waiting on (and for which comment), since waitFrom: each wait has its own clock */
+  stage: string;
   waitFrom: number;
+  /** the comment whose first `done` clips are scheduled (the rest still being voiced): it's finished first */
+  doing: number;
   /** comments that arrived live (ids, resolved against the table's current turns): said next */
   breaking: number[];
   /** what's been said here (ids): the table's order shifts as replies land, so a position would replay things */
@@ -44,7 +48,7 @@ export class Mixer {
   start(floor: Floor, spots: TableSpot[]) {
     this.stop();
     this.story = floor.story.id;
-    this.players = spots.filter((s) => !s.bar).map((spot) => ({ spot, cursor: 0, done: 0, sched: [], ready: new Map(), loading: new Set(), waitFrom: 0, breaking: [], played: new Set(), resting: true }));
+    this.players = spots.filter((s) => !s.bar).map((spot) => ({ spot, cursor: 0, done: 0, sched: [], ready: new Map(), loading: new Set(), stage: '', waitFrom: 0, doing: 0, breaking: [], played: new Set(), resting: true }));
   }
 
   stop() {
@@ -55,7 +59,7 @@ export class Mixer {
   /** Where a table had got to: the director hands back the table we stood up from (what it had said there). */
   handBack(spot: TableSpot, said: number[]) {
     const p = this.players.find((x) => x.spot === spot);
-    if (p) { for (const id of said) p.played.add(id); p.done = 0; p.waitFrom = 0; p.cursor = this.audio.now() + 0.8; p.resting = false; }
+    if (p) { for (const id of said) p.played.add(id); p.done = 0; p.stage = ''; p.cursor = this.audio.now() + 0.8; p.resting = false; }
   }
   /** We sit down at this table: it stops mid-word here and the director takes it from the comment in progress. */
   take(spot: TableSpot) {
@@ -65,7 +69,7 @@ export class Mixer {
     const cut = p.sched.find((s) => s.end > now)?.turn;   // the comment we cut off: the director says it again, whole
     this.hush(p);
     if (cut !== undefined) p.played.delete(cut);
-    p.done = 0;
+    p.done = 0; p.stage = '';
     const turns = p.spot.table.turns, at = turns.findIndex((u) => !p.played.has(u.id));
     return at < 0 ? turns.length : at;
   }
@@ -113,41 +117,39 @@ export class Mixer {
     if (p.cursor - now > LEAD) return;
     const turns = p.spot.table.turns;
     p.breaking = p.breaking.filter((id) => !p.played.has(id) && turns.some((u) => u.id === id));
-    const live = p.breaking.length ? turns.find((u) => u.id === p.breaking[0]) : undefined;
-    const turn = live ?? turns.find((u) => !p.played.has(u.id));
+    // a comment half said (the rest still being voiced) is finished first; then whatever just arrived; then the rest
+    const going = p.done ? turns.find((u) => u.id === p.doing && !p.played.has(u.id)) : undefined;
+    if (!going) p.done = 0;                              // (it went: deleted, or hidden)
+    const turn = going ?? (p.breaking.length ? turns.find((u) => u.id === p.breaking[0]) : undefined) ?? turns.find((u) => !p.played.has(u.id));
     if (!turn) {                                         // the whole thread said: a pause, then round again
-      if (turns.length) { p.played.clear(); p.done = 0; p.cursor = Math.max(p.cursor, now) + 6; }
+      if (turns.length) { p.played.clear(); p.done = 0; p.stage = ''; p.cursor = Math.max(p.cursor, now) + 6; }
       return;
     }
-    const at = turns.indexOf(turn);
+    const live = p.breaking.includes(turn.id), at = turns.indexOf(turn);
     if (!turn.v) {
       this.want(p, live ? 0 : rank, at);
-      if (!p.waitFrom) p.waitFrom = now;
-      if (now - p.waitFrom > (live ? 40 : 4)) this.next(p, turn);   // not voiced yet: the table moves on
+      if (this.waited(p, `voice:${turn.id}`, now) > (live ? 40 : 4)) this.next(p, turn);   // not voiced yet: the table moves on
       return;
     }
     const r = this.load(p, turn);
     if (!r) {                                            // fetching: or failing to, which must not stall the table
-      if (!p.waitFrom) p.waitFrom = now;
-      if (now - p.waitFrom > 15) this.next(p, turn);
+      if (this.waited(p, `load:${turn.id}`, now) > 15) this.next(p, turn);
       return;
     }
     // nobody speaks from across the room: the speaker comes to the table first (or, if the room is full, speaks
     // from the table without a body)
     const here = this.room.callOver(turn.by, p.spot, now);
     if (here === 'coming' || here === 'busy') {
-      if (!p.waitFrom) p.waitFrom = now;
-      if (now - p.waitFrom > 30) this.next(p, turn);
+      if (this.waited(p, `call:${turn.id}`, now) > 30) this.next(p, turn);
       return;
     }
     if (r.side.clips.length <= p.done) {                // nothing new yet (still being voiced), or nothing at all
       if (!r.side.partial) { this.next(p, turn); return; }
       this.want(p, rank, at);
-      if (!p.waitFrom) p.waitFrom = now;
-      if (now - p.waitFrom > 30) this.next(p, turn);
+      if (this.waited(p, `more:${turn.id}`, now) > 30) this.next(p, turn);
       return;
     }
-    p.waitFrom = 0;
+    p.stage = '';
     const i = here === 'here' ? this.room.who(turn.by) : -1;
     let t = Math.max(p.cursor, now + 0.05) + (p.done ? 0 : (turn.gapMs ?? 500) / 1000);
     r.side.clips.forEach((c, k) => {
@@ -162,17 +164,23 @@ export class Mixer {
     });
     if (i >= 0) this.room.speaking(i, t);
     p.cursor = t;
-    if (r.side.partial) { p.done = r.side.clips.length; return; }   // the rest is on its way: stay on this turn
+    if (r.side.partial) { p.done = r.side.clips.length; p.doing = turn.id; return; }   // the rest is on its way: stay on this turn
     this.next(p, turn);
     // fetch the next turn while this one plays
     const nt = turns.find((u) => !p.played.has(u.id));
     if (nt?.v) this.load(p, nt);
   }
 
+  /** How long the table has waited on this (a new wait starts its own clock). */
+  private waited(p: Player, stage: string, now: number) {
+    if (p.stage !== stage) { p.stage = stage; p.waitFrom = now; }
+    return now - p.waitFrom;
+  }
+
   private next(p: Player, turn: Turn) {
     p.played.add(turn.id);
     p.breaking = p.breaking.filter((id) => id !== turn.id);
-    p.done = 0; p.waitFrom = 0;
+    p.done = 0; p.stage = '';
     p.ready.delete(turn.id);                             // decoded audio goes once it's been said
   }
 

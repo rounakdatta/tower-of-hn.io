@@ -139,7 +139,7 @@ export class Director {
   start(floor: Floor, spot: TableSpot, roomY: number, now: number, from = 0) {
     this.stop();
     this.floor = floor; this.spot = spot; this.roomY = roomY;
-    this.turnIdx = Math.max(0, Math.min(from, spot.table.turns.length)); this.playing = true; this.paused = false; this.clipsDone = 0; this.waitSince = 0; this.breaking = [];
+    this.turnIdx = Math.max(0, Math.min(from, spot.table.turns.length)); this.playing = true; this.paused = false; this.clipsDone = 0; this.waitSince = 0; this.callingSince = 0; this.breaking = [];
     this.plans.clear(); this.heroAt = 0; this.staged.clear();
     this.cursor = this.audio.now() + 1.6;           // let the establishing shot breathe
     for (const s of spot.seats) { const i = this.ix(s.name); if (i >= 0) this.crowd.active.add(i); }
@@ -468,6 +468,11 @@ export class Director {
     }
     if (this.heroAt) return;                    // the stand-up is still playing out
     if (now < this.shotUntil && first && this.sched.indexOf(s) === 0) return;          // the establishing shot is still running
+    if (s.who < 0) {                            // said from the table by someone the full room couldn't let in: hold the table
+      if (first) { this.wide(now); this.shotUntil = now + 2.4; }
+      this.reactionAt = 0;
+      return;
+    }
     const replyTo = s.turn.replyTo ? this.authorOf(s.turn.replyTo) : undefined;
     const turnNo = this.spot!.table.turns.indexOf(s.turn);
     if (first && turnNo > 0 && turnNo % 5 === 0) { this.wide(now); this.shotUntil = now + 2.4; }
