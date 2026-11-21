@@ -108,6 +108,7 @@ walk.obstacles = () => [
   ...spots.filter((s) => !s.bar).map((s) => ({ x: s.pos.x, z: s.pos.z, r: s.radius + 0.42 })),
   ...crowd.people.map((p) => ({ x: p.pose.pos.x, z: p.pose.pos.z, r: 0.34 })),
 ];
+walk.route = (a, b) => room.route(a, b);
 walk.onMove = () => { if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); ui.hint(''); } };
 const HOME = { pos: new THREE.Vector3(96, 58, 128), target: new THREE.Vector3(0, TOWER_TOP * 0.5, 0) };
 camera.position.copy(HOME.pos); camera.lookAt(HOME.target);
@@ -358,7 +359,7 @@ function sit(s: TableSpot | undefined, push = false) {
   }
   // the table we leave (next table) goes back to the room where we left it; this one comes to the director from
   // where the room had got to: the conversation you were overhearing goes on
-  if (mode === 'table' && director.spot && !director.spot.bar && director.spot !== s) mixer.handBack(director.spot, director.turnAt);
+  if (mode === 'table' && director.spot && !director.spot.bar && director.spot !== s) mixer.handBack(director.spot, director.said);
   const from = s.bar ? 0 : mixer.take(s);
   mixer.exclude = s;
   if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.enabled = false; }
@@ -396,9 +397,9 @@ director.onNewReply = (by) => ui.toast(`<b>${esc(by)}</b> just replied on Hacker
 /** Up from the table and on your feet beside it, facing it: the room plays on, this table where you left it. */
 function standUp() {
   leanBack = false;
-  const sp = director.spot, idx = director.turnAt;
+  const sp = director.spot, said = director.said;
   director.stop(); setDof(false);
-  if (sp && !sp.bar) mixer.handBack(sp, idx);
+  if (sp && !sp.bar) mixer.handBack(sp, said);
   mixer.exclude = null;
   mode = 'floor'; ui.mode('floor'); audio.setMode('floor'); awake();
   ui.hint('');
@@ -522,14 +523,34 @@ function showProfile(name: string) {
   const said = here.reduce((n, s) => n + s.table.turns.filter((t) => t.by === name).length, 0);
   let p = profiles.get(name);
   if (!p) {
-    p = fetch(`/profile/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    // busy writing other cards: once more after a moment. Nothing at all: the card stays, without the summary
+    const get = (again: boolean): Promise<unknown> => fetch(`/profile/${encodeURIComponent(name)}`)
+      .then((r) => (r.ok ? r.json() : r.status === 503 && again ? new Promise((ok) => setTimeout(ok, 3000)).then(() => get(false)) : null))
+      .catch(() => null);
+    p = get(true);
     profiles.set(name, p);
     p.then((x) => { if (!x) profiles.delete(name); });
   }
   ui.profile({ name, said, tables: here.length, data: null });
-  p.then((data) => ui.profile({ name, said, tables: here.length, data: data as never }, true));
+  p.then((data) => ui.profile({ name, said, tables: here.length, data: (data ?? {}) as never }, true));
 }
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); showFocus(); });
+
+/**
+ * Compile the room's shaders (tables, people and their faces, the clearing glass) while the splash is up, out of
+ * sight far below the city: the first flight into a floor would otherwise stall a phone right as it begins.
+ */
+async function warmShaders() {
+  const vis = interior.group.visible;
+  interior.group.position.y = crowd.group.position.y = -400; interior.group.visible = true;
+  crowd.set([{ name: 'warm-up', pose: { pos: new THREE.Vector3(0, 0, 0), facing: 0, seated: true } }]);
+  tower.setDoor(0, 0.5); tower.update(clock, 0);
+  try { await renderer.compileAsync(scene, camera); } catch { /* then they compile on first use */ }
+  if (mode === 'tower' && doorSlot < 0) {
+    crowd.set([]); interior.group.visible = vis;
+    tower.setDoor(-1); tower.update(clock, 0);
+  }
+}
 
 // ---------------------------------------------------------------- the lock screen and control centre: what's playing
 function media(title: string, by?: string) {
@@ -723,6 +744,7 @@ if (recording) {
     if (slow > 2 && dpr > 1) { dpr = Math.max(1, dpr - 0.25); renderer.setPixelRatio(dpr); slow = 0; settle = 1.5; }
     else if (quick > 12 && dpr < DPR_CAP) { dpr = Math.min(DPR_CAP, dpr + 0.25); renderer.setPixelRatio(dpr); quick = 0; settle = 1.5; }
   });
+  warmShaders();
   ui.splash(() => {
     audio.ensure();
     arrive();

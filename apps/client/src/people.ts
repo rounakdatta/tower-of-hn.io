@@ -317,14 +317,14 @@ export class Crowd {
   settle() {
     for (const i of this.active) {
       const p = this.people[i];
-      if (!p) continue;
+      if (!p || p.walk) continue;                         // someone on their way somewhere keeps going
       for (const x of [p.expr, p.target]) Object.assign(x, NEUTRAL);
       this.writeExpr(i);
       this.place(i);
     }
     this.exprTex.needsUpdate = true;
     this.flush();
-    this.active.clear();
+    this.active = new Set([...this.active].filter((i) => this.people[i]?.walk));
   }
 
   private byName = new Map<string, number>();
@@ -373,7 +373,7 @@ export class Crowd {
   }
 
   /** stop updating someone every frame (they've eased back to rest) */
-  release(i: number) { this.active.delete(i); }
+  release(i: number) { if (!this.people[i]?.walk) this.active.delete(i); }
   /** Seated people can stand: the chair steps back and the body rises. */
   private stature(p: Person) {
     const st = p.pose.seated ? p.expr.stand : 1;

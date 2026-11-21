@@ -10,7 +10,9 @@ import { R } from './world.ts';
 const RING = 0.95;                                       // where people stand round a table, past its edge
 const KEEP = 0.42;                                       // how close a walker's path may pass a table's edge
 
-export type Presence = 'here' | 'coming' | 'busy';
+/** here: go ahead. coming: on their way. busy: talking elsewhere, or heading to another table. absent: the room is
+ *  full and they can't come in (speak from the table without a body) */
+export type Presence = 'here' | 'coming' | 'busy' | 'absent';
 
 export class Room {
   spots: TableSpot[] = [];
@@ -52,12 +54,13 @@ export class Room {
     if (!name || !spot) return 'busy';
     let i = this.who(name);
     if (i >= 0 && this.going.get(i) === spot) return 'coming';
+    if (i >= 0 && this.going.has(i)) return 'busy';         // on their way to another table: never yanked back and forth
     if (i >= 0 && this.tableOf(i) === spot) return 'here';
     if (i >= 0 && (this.busyUntil.get(i) ?? 0) > now) return 'busy';
     let from: THREE.Vector3;
     if (i < 0) {                                         // not in the room yet: out of the lift
       i = this.spawn(name, this.door.clone(), Math.atan2(-this.door.x, -this.door.z));
-      if (i < 0) return 'busy';
+      if (i < 0) return 'absent';
       from = this.door.clone();
     } else {
       from = this.crowd.people[i].pose.pos.clone();

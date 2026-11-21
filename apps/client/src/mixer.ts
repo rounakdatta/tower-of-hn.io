@@ -14,18 +14,21 @@ const HEAR = 9;                                          // metres: tables farth
 const MAX_ON = 4;                                        // tables talking at once (the nearest)
 const LEAD = 1.0;                                        // seconds of audio scheduled ahead
 
-interface Scheduled { start: number; end: number; who: number; env: number[]; shape: number[]; src: AudioScheduledSourceNode; emotion: string }
+interface Scheduled { start: number; end: number; who: number; env: number[]; shape: number[]; src: AudioScheduledSourceNode; emotion: string; turn: number }
 interface Ready { side: Sidecar; bufs: AudioBuffer[] }
 interface Player {
   spot: TableSpot;
-  idx: number;                                           // the next turn of the table's order
   cursor: number;                                        // audio time the next clip may start
   done: number;                                          // clips of the current turn already scheduled (still being voiced)
   sched: Scheduled[];
   ready: Map<number, Ready>;
   loading: Set<string>;                                  // sidecar paths in flight
   waitFrom: number;
-  breaking: Turn[];                                      // comments that arrived live: said next
+  /** comments that arrived live (ids, resolved against the table's current turns): said next */
+  breaking: number[];
+  /** what's been said here (ids): the table's order shifts as replies land, so a position would replay things */
+  played: Set<number>;
+  resting: boolean;
 }
 
 export class Mixer {
@@ -41,7 +44,7 @@ export class Mixer {
   start(floor: Floor, spots: TableSpot[]) {
     this.stop();
     this.story = floor.story.id;
-    this.players = spots.filter((s) => !s.bar).map((spot) => ({ spot, idx: 0, cursor: 0, done: 0, sched: [], ready: new Map(), loading: new Set(), waitFrom: 0, breaking: [] }));
+    this.players = spots.filter((s) => !s.bar).map((spot) => ({ spot, cursor: 0, done: 0, sched: [], ready: new Map(), loading: new Set(), waitFrom: 0, breaking: [], played: new Set(), resting: true }));
   }
 
   stop() {
@@ -49,26 +52,28 @@ export class Mixer {
     this.players = [];
   }
 
-  /** Where a table had got to: the director hands back the table we just stood up from. */
-  handBack(spot: TableSpot, idx: number) {
+  /** Where a table had got to: the director hands back the table we stood up from (what it had said there). */
+  handBack(spot: TableSpot, said: number[]) {
     const p = this.players.find((x) => x.spot === spot);
-    if (p) { p.idx = idx; p.done = 0; p.cursor = this.audio.now() + 0.8; }
+    if (p) { for (const id of said) p.played.add(id); p.done = 0; p.waitFrom = 0; p.cursor = this.audio.now() + 0.8; p.resting = false; }
   }
   /** We sit down at this table: it stops mid-word here and the director takes it from the comment in progress. */
   take(spot: TableSpot) {
     const p = this.players.find((x) => x.spot === spot);
     if (!p) return 0;
-    const now = this.audio.now(), playing = p.sched.some((s) => s.end > now);
+    const now = this.audio.now();
+    const cut = p.sched.find((s) => s.end > now)?.turn;   // the comment we cut off: the director says it again, whole
     this.hush(p);
-    const at = playing && !p.breaking.length ? Math.max(0, p.idx - 1) : p.idx;
+    if (cut !== undefined) p.played.delete(cut);
     p.done = 0;
-    return at;
+    const turns = p.spot.table.turns, at = turns.findIndex((u) => !p.played.has(u.id));
+    return at < 0 ? turns.length : at;
   }
 
   /** A comment just landed on Hacker News at this table: its author comes over (or in) and says it next. */
   breaking(spot: TableSpot, turn: Turn) {
     const p = this.players.find((x) => x.spot === spot);
-    if (p && !p.breaking.some((t) => t.id === turn.id)) p.breaking.push(turn);
+    if (p && !p.breaking.includes(turn.id) && !p.played.has(turn.id)) p.breaking.push(turn.id);
   }
 
   update(listener: THREE.Vector3) {
@@ -79,9 +84,11 @@ export class Mixer {
       .sort((a, b) => a.d - b.d);
     const on = new Map(ranked.filter((x) => x.d < HEAR).slice(0, MAX_ON).map((x, k) => [x.p, k]));
     for (const p of this.players) {
+      if (p.spot === this.exclude) continue;              // the director's table: its people are the director's
       p.sched = p.sched.filter((s) => s.end > now - 0.2);
       const k = on.get(p);
-      if (k === undefined || p.spot === this.exclude) { if (!p.sched.length) this.rest(p); continue; }
+      if (k === undefined) { if (!p.sched.length && !p.resting) { this.rest(p); p.resting = true; } continue; }
+      p.resting = false;
       this.feed(p, now, k);
       this.act(p, now);
     }
@@ -105,60 +112,68 @@ export class Mixer {
   private feed(p: Player, now: number, rank: number) {
     if (p.cursor - now > LEAD) return;
     const turns = p.spot.table.turns;
-    const turn = p.breaking[0] ?? turns[p.idx];
-    if (!turn) {                                         // the end of the thread: a pause, then round again
-      if (turns.length && p.idx >= turns.length) { p.idx = 0; p.done = 0; p.cursor = Math.max(p.cursor, now) + 6; }
+    p.breaking = p.breaking.filter((id) => !p.played.has(id) && turns.some((u) => u.id === id));
+    const live = p.breaking.length ? turns.find((u) => u.id === p.breaking[0]) : undefined;
+    const turn = live ?? turns.find((u) => !p.played.has(u.id));
+    if (!turn) {                                         // the whole thread said: a pause, then round again
+      if (turns.length) { p.played.clear(); p.done = 0; p.cursor = Math.max(p.cursor, now) + 6; }
       return;
     }
+    const at = turns.indexOf(turn);
     if (!turn.v) {
-      this.want(p, p.breaking.length ? 0 : rank, p.breaking.length ? turns.indexOf(turn) : p.idx);
+      this.want(p, live ? 0 : rank, at);
       if (!p.waitFrom) p.waitFrom = now;
-      if (now - p.waitFrom > (p.breaking.length ? 40 : 4)) this.next(p);   // not voiced yet: the table moves on
+      if (now - p.waitFrom > (live ? 40 : 4)) this.next(p, turn);   // not voiced yet: the table moves on
       return;
     }
     const r = this.load(p, turn);
-    if (!r) return;
-    // nobody speaks from across the room: the speaker comes to the table first
-    const here = this.room.callOver(turn.by, p.spot, now);
-    if (here !== 'here') {
+    if (!r) {                                            // fetching: or failing to, which must not stall the table
       if (!p.waitFrom) p.waitFrom = now;
-      if (now - p.waitFrom > 30) this.next(p);
+      if (now - p.waitFrom > 15) this.next(p, turn);
+      return;
+    }
+    // nobody speaks from across the room: the speaker comes to the table first (or, if the room is full, speaks
+    // from the table without a body)
+    const here = this.room.callOver(turn.by, p.spot, now);
+    if (here === 'coming' || here === 'busy') {
+      if (!p.waitFrom) p.waitFrom = now;
+      if (now - p.waitFrom > 30) this.next(p, turn);
       return;
     }
     if (r.side.clips.length <= p.done) {                // nothing new yet (still being voiced), or nothing at all
-      if (!r.side.partial) { this.next(p); return; }
-      this.want(p, rank, p.idx);
+      if (!r.side.partial) { this.next(p, turn); return; }
+      this.want(p, rank, at);
       if (!p.waitFrom) p.waitFrom = now;
-      if (now - p.waitFrom > 30) this.next(p);
+      if (now - p.waitFrom > 30) this.next(p, turn);
       return;
     }
     p.waitFrom = 0;
-    const i = this.room.who(turn.by);
+    const i = here === 'here' ? this.room.who(turn.by) : -1;
     let t = Math.max(p.cursor, now + 0.05) + (p.done ? 0 : (turn.gapMs ?? 500) / 1000);
     r.side.clips.forEach((c, k) => {
       if (k < p.done) return;
       // a quote of someone at this table is said by them; anyone else's words, by the speaker
       const q = c.who !== turn.by ? this.room.who(c.who) : -1;
       const who = q >= 0 && this.room.tableOf(q) === p.spot ? q : i;
-      const pos = this.crowd.headPos(who, this.tmp);
+      const pos = who >= 0 ? this.crowd.headPos(who, this.tmp) : this.tmp.set(p.spot.pos.x, this.crowd.group.position.y + 1.2, p.spot.pos.z);
       const src = this.audio.voice(r.bufs[k], t, pos, this.sync.url(c.u), 1, { hrtf: rank < 2, ref: 1.1, rolloff: 1.35 });
-      p.sched.push({ start: t, end: t + c.d, who, env: c.env, shape: c.shape, src, emotion: r.side.emotion });
+      p.sched.push({ start: t, end: t + c.d, who, env: c.env, shape: c.shape, src, emotion: r.side.emotion, turn: turn.id });
       t += c.d + 0.06;
     });
-    this.room.speaking(i, t);
+    if (i >= 0) this.room.speaking(i, t);
     p.cursor = t;
     if (r.side.partial) { p.done = r.side.clips.length; return; }   // the rest is on its way: stay on this turn
-    this.next(p);
+    this.next(p, turn);
     // fetch the next turn while this one plays
-    const nt = p.breaking[0] ?? turns[p.idx];
+    const nt = turns.find((u) => !p.played.has(u.id));
     if (nt?.v) this.load(p, nt);
   }
 
-  private next(p: Player) {
-    const turns = p.spot.table.turns;
-    const played = p.breaking.length ? p.breaking.shift()! : turns[p.idx++];
+  private next(p: Player, turn: Turn) {
+    p.played.add(turn.id);
+    p.breaking = p.breaking.filter((id) => id !== turn.id);
     p.done = 0; p.waitFrom = 0;
-    if (played) p.ready.delete(played.id);               // decoded audio goes once it's been said
+    p.ready.delete(turn.id);                             // decoded audio goes once it's been said
   }
 
   /** The turn's sidecar and decoded clips, once both are in (null until then). */
@@ -180,7 +195,7 @@ export class Mixer {
   /** Ask for a table's voicing from a turn on: the table you're nearest, every 30 s while you're there. */
   private want(p: Player, rank: number, from: number) {
     if (rank > 0 || from < 0) return;
-    const key = `${p.spot.index}:${from}`, t = performance.now() / 1000;
+    const key = `${this.story}:${p.spot.table.root}:${from}`, t = performance.now() / 1000;
     if (t - (this.asked.get(key) ?? -1e9) < 30) return;
     this.asked.set(key, t);
     this.sync.want(this.story, p.spot.index, from).then((ok) => { if (!ok) this.asked.set(key, t - 25); });

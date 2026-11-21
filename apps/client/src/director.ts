@@ -125,8 +125,10 @@ export class Director {
   room: Room | null = null;
   /** the mixer plays the other tables for real: no random murmur on top */
   ambient = false;
-  /** the turn the table has got to (handed back to the room when we stand up) */
+  /** the turn the table has got to */
   get turnAt() { return this.turnIdx; }
+  /** what's been said at this table (ids): handed back to the room when we stand up */
+  get said() { return this.spot ? this.spot.table.turns.slice(0, this.turnIdx).map((u) => u.id) : []; }
   /** comments that arrived live at this table, said next (ids, in the order they came) */
   private breaking: number[] = [];
   onEnd: () => void = () => {};
@@ -234,6 +236,7 @@ export class Director {
   private events: { at: number; fn: () => void }[] = [];
   private later(at: number, fn: () => void) { this.events.push({ at, fn }); }
   private waitSince = 0;
+  private callingSince = 0;
   /** person index for a name, if they're at this table (one person per commenter; people come and go) */
   private ix(name: string) {
     if (!this.spot?.seats.some((s) => s.name === name)) return -1;
@@ -302,11 +305,13 @@ export class Director {
         // table waits for them, the camera holding the room
         if (this.room && !this.spot.bar) {
           const here = this.room.callOver(turn.by, this.spot, at);
-          if (here !== 'here') {
-            if (!this.waitSince) this.waitSince = now;
-            if (now - this.waitSince > 30) { this.turnIdx++; this.waitSince = 0; continue; }   // they never came
+          if (here === 'coming' || here === 'busy') {
+            // (its own timer: waitSince is reset every frame the audio is ready, which kept this escape from firing)
+            if (!this.callingSince) this.callingSince = now;
+            if (now - this.callingSince > 30) { this.turnIdx++; this.callingSince = 0; continue; }   // they never came
             return;
           }
+          this.callingSince = 0;
         }
       }
       let t = fresh ? Math.max(this.cursor + (this.sched.length ? this.gapFor(turn, r.side) : 0), at + 0.08) : Math.max(this.cursor + 0.06, at + 0.08);
@@ -319,6 +324,7 @@ export class Director {
         t += clip.d + (k < r.side.clips.length - 1 ? 0.06 : 0);
       });
       this.cursor = t;
+      if (this.room) { const sp = this.ix(turn.by); if (sp >= 0) this.room.speaking(sp, t); }   // nobody calls them away mid-sentence
       if (r.side.partial) { this.clipsDone = r.side.clips.length; this.partialId = turn.id; continue; }   // the rest is on its way
       this.clipsDone = 0;
       this.turnIdx++;

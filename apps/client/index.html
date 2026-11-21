@@ -141,7 +141,7 @@
              background:var(--ink); color:#15110d; border:0; font-weight:700; padding:11px 20px; box-shadow:0 10px 30px rgba(0,0,0,.4); transition:opacity .25s, transform .25s }
   #sitdown.show { opacity:1; transform:translate(-50%, 0); pointer-events:auto }
   #sitdown:hover { background:#fff }
-  body:not([data-mode="floor"]) #sitdown { opacity:0; pointer-events:none }
+  body:not([data-mode="floor"]) #sitdown, body.card-open #sitdown { opacity:0; pointer-events:none }
   #profile { position:fixed; left:12px; right:12px; bottom:calc(12px + env(safe-area-inset-bottom)); z-index:6; padding:18px 18px 14px; border-radius:18px; background:rgba(14,16,24,.86);
              border:1px solid var(--line); backdrop-filter:blur(18px) saturate(1.2); -webkit-backdrop-filter:blur(18px) saturate(1.2); box-shadow:0 18px 60px rgba(0,0,0,.5);
              opacity:0; transform:translateY(16px); pointer-events:none; transition:opacity .3s, transform .3s; max-height:min(70vh, 560px); overflow:auto }
@@ -185,6 +185,7 @@
   }
   @media (max-width: 700px), (hover: none) {
     body[data-mode="table"] #hint { display:none }
+    #hint { white-space:normal; width:min(92vw, 520px); text-align:center; line-height:1.4 }
     body:not([data-mode="tower"]) #brand, body:not([data-mode="tower"]) #scrim { opacity:0 }   /* the floor's own title bar takes the top */
     #controls { right:50%; transform:translateX(50%) }
     #floorbar { padding-left:12px; gap:8px } #back { padding:6px 10px }

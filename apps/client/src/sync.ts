@@ -37,30 +37,37 @@ export class LiveSync {
     setInterval(() => this.poll().catch(() => {}), 2000);
   }
 
+  private polling = false;
   private async poll() {
+    if (this.polling) return;                              // a slow network: never two polls racing over one head
+    this.polling = true;
+    try { await this.step(); } finally { this.polling = false; }
+  }
+  private async step() {
     const h: Head = await (await fetch(this.base + 'head.json', { cache: 'no-cache' })).json();
     const prev = this.head;
     if (prev && h.epoch === prev.epoch) return;
-    this.head = h;
     // what changed, in order. A floor is ~17 KB even compressed and revises every few seconds while its comments
     // are being voiced; most of those revisions are audio only, and arrive here as a few bytes of patch
     const gap = prev ? h.epoch - prev.epoch : 0;
-    const deltas: (Delta | null)[] = prev && gap <= 20
-      ? await Promise.all(Array.from({ length: gap }, (_, k) => fetch(this.base + `e/${prev.epoch + 1 + k}.json`).then((r) => (r.ok ? r.json() : null), () => null)))
+    const deltas: (Delta | null)[] = prev && gap > 0 && gap <= 20
+      ? await Promise.all(Array.from({ length: gap }, (_, k) => fetch(this.base + `e/${prev.epoch + 1 + k}.json`)
+        .then((r) => (r.ok ? r.json().catch(() => null) : null), () => null)))
       : [];
+    this.head = h;
     for (const d of deltas) if (d) this.onDelta(d);
     this.onHead(h, prev);
     for (const [sid, cb] of this.watchers) {
       const rev = h.floors[sid];
       if (!rev || (prev && prev.floors[sid] === rev)) continue;
-      const patched = prev && gap <= 20 ? this.patched(sid, prev.floors[sid], rev, deltas) : null;
+      const patched = prev && gap > 0 && gap <= 20 ? this.patched(sid, prev.floors[sid], rev, deltas, h) : null;
       if (patched) cb(patched);
       else this.floor(sid).then((f) => f && cb(f));
     }
   }
 
   /** Floor `sid` at revision `to`, made from the one we hold if every change since was audio only (else null). */
-  private patched(sid: number, from: number | undefined, to: number, deltas: (Delta | null)[]): Floor | null {
+  private patched(sid: number, from: number | undefined, to: number, deltas: (Delta | null)[], h: Head): Floor | null {
     let f = from ? this.floorCache.get(`${sid}/${from}`) : undefined;
     if (!f) return null;
     for (const d of deltas) {
@@ -72,9 +79,13 @@ export class LiveSync {
       f = { ...f, rev: p.to, tables: f.tables.map((t) => (t.turns.some((u) => v.has(u.id))
         ? { ...t, turns: t.turns.map((u) => { if (!v.has(u.id)) return u; const x = v.get(u.id); const w = { ...u }; if (x) w.v = x; else delete w.v; return w; }) }
         : t)) };
-      this.floorCache.set(`${sid}/${p.to}`, f);
+      this.keep(`${sid}/${p.to}`, f);
     }
-    return f.rev === to ? f : null;
+    if (f.rev !== to) return null;
+    // the title, points and count move without the tables changing: take them from the head
+    const s = h.stories[sid];
+    if (s) { f = { ...f, story: { ...f.story, title: s[0] || f.story.title, score: s[1], comments: s[2] } }; this.keep(`${sid}/${to}`, f); }
+    return f;
   }
 
   async floor(sid: number): Promise<Floor | null> {
@@ -85,10 +96,13 @@ export class LiveSync {
     if (hit) return hit;
     const r = await fetch(this.base + `f/${key}.json`);
     if (!r.ok) return null;
-    const f: Floor = await r.json();
+    const f: Floor | null = await r.json().catch(() => null);
+    if (f) this.keep(key, f);
+    return f;
+  }
+  private keep(key: string, f: Floor) {
     this.floorCache.set(key, f);
     if (this.floorCache.size > 40) this.floorCache.delete(this.floorCache.keys().next().value!);   // old revisions
-    return f;
   }
 
   watch(sid: number, cb: (f: Floor) => void) { this.watchers.set(sid, cb); }
@@ -100,6 +114,7 @@ export class LiveSync {
       p = fetch(this.base + path).then((r) => { if (!r.ok) throw new Error(path); return r.json(); });
       p.catch(() => this.sideCache.delete(path));
       this.sideCache.set(path, p);
+      if (this.sideCache.size > 800) this.sideCache.delete(this.sideCache.keys().next().value!);   // an evening's listening stays small
     }
     return p;
   }

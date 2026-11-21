@@ -128,6 +128,7 @@ export class UI {
    */
   profile(p: { name: string; said: number; tables: number; data: null | { karma?: number; created?: number; about?: string; brief?: string; interests?: string[]; role?: string } } | null, refresh = false) {
     const el = $('profile');
+    document.body.classList.toggle('card-open', !!p);
     if (!p) { el.classList.remove('show'); el.dataset.name = ''; return; }
     if (refresh && el.dataset.name !== p.name) return;          // they closed it, or opened someone else's
     el.dataset.name = p.name;

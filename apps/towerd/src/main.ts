@@ -42,18 +42,18 @@ async function get<T>(path: string): Promise<T> {
 /** Items in parallel batches. lenient: an item that can't be fetched is skipped (bootstrap; it comes back with
  *  the next update or tower refresh) instead of failing the batch (the live loop retries the whole step). */
 let skipped = 0;                                     // items the bootstrap couldn't fetch (the tower refresh repairs them)
-async function many(ids: number[], lenient = false, conc = 24): Promise<Item[]> {
+async function many(ids: number[], lenient = false, conc = 24, beat = true): Promise<Item[]> {
   const res: Item[] = [];
   for (let i = 0; i < ids.length; i += conc) {
     const one = (id: number) => (lenient ? get<Item>(`item/${id}`).catch(() => { skipped++; return null as unknown as Item; }) : get<Item>(`item/${id}`));
     res.push(...(await Promise.all(ids.slice(i, i + conc).map(one))).filter(Boolean));
-    heartbeat = Date.now();                            // progress, even in a long bootstrap
+    if (beat) heartbeat = Date.now();                  // progress, even in a long bootstrap (a card's fetch isn't ingest)
   }
   return res;
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-function write(rel: string, data: unknown) {
-  const p = join(LIVE, rel);
+function write(rel: string, data: unknown) { writeAt(join(LIVE, rel), data); }
+function writeAt(p: string, data: unknown) {
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p + '.tmp', JSON.stringify(data));
   renameSync(p + '.tmp', p);
@@ -343,15 +343,20 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
   }
   if (url.pathname.startsWith('/profile/')) {
     // a commenter's card: only for someone on the tower now, never for someone who opted out
-    const name = decodeURIComponent(url.pathname.slice(9));
-    if (!/^[A-Za-z0-9_-]{2,15}$/.test(name) || !onTower.has(name) || live.optOut.has(name)) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
-    if (!allow(req)) { res.writeHead(429, { 'retry-after': '5' }); res.end(); return; }
-    profileOf(name).then((d) => {
+    let name = '';
+    try { name = decodeURIComponent(url.pathname.slice(9)); } catch { /* malformed: 404 below */ }
+    if (!/^[A-Za-z0-9_-]{2,15}$/.test(name) || live.optOut.has(name) || !onTowerNow(name)) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+    const send = (d: unknown) => {
       if (res.writableEnded) return;
       if (!d) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
-      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'public, max-age=3600' });   // ~1 KB: not worth compressing
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'public, max-age=600' });   // ~1 KB: not worth compressing
       res.end(JSON.stringify(d));
-    }, () => { if (!res.writableEnded) { res.writeHead(503, { 'cache-control': 'no-store' }); res.end(); } });
+    };
+    const hit = cachedProfile(name);
+    if (hit) { send(hit); return; }                        // a card already written costs nothing: no limiter
+    if (!allow(req)) { res.writeHead(429, { 'retry-after': '5' }); res.end(); return; }
+    if (!building.has(name) && building.size >= 2) { res.writeHead(503, { 'retry-after': '3', 'cache-control': 'no-store' }); res.end(); return; }
+    profileOf(name).then(send, () => { if (!res.writableEnded) { res.writeHead(503, { 'retry-after': '10', 'cache-control': 'no-store' }); res.end(); } });
     return;
   }
   if (url.pathname === '/status') {
@@ -475,6 +480,7 @@ function readOptOut() {
   // their own comments, and replies voiced with a quote of them in their voice
   for (const [id, k] of [...known]) { const by = k.by ?? live.items.get(id)?.by; if ((by && names.has(by)) || [...k.voices].some((w) => names.has(w))) unvoice(id); }
   for (const id of [...live.voiced.keys()]) { const by = live.items.get(id)?.by; if (by && names.has(by)) unvoice(id); }
+  for (const n of names) { try { unlinkSync(join(PROFILES, `${n}.json`)); } catch { /* none */ } }   // and their card
   console.log(JSON.stringify({ optout: names.size }));
 }
 
@@ -542,10 +548,12 @@ const PROFILES = join(VAR, 'profiles');
 mkdirSync(PROFILES, { recursive: true });
 const profileBudget: Bucket = { n: 20, at: Date.now() };          // model calls: about twenty a minute at most
 const building = new Map<string, Promise<unknown>>();
-let claude: Anthropic | null | undefined;
-/** The Anthropic API with its own key, else the in-cluster auth2api gateway (as the voice worker does). */
+let claude: Anthropic | null = null, lookedAt = 0;
+/** The Anthropic API with its own key, else the in-cluster auth2api gateway (as the voice worker does). No key
+ *  yet: looked for again every five minutes (a secret can arrive after the pod starts). */
 function anthropic() {
-  if (claude !== undefined) return claude;
+  if (claude || Date.now() - lookedAt < 300_000) return claude;
+  lookedAt = Date.now();
   const own = process.env.ANTHROPIC_API_KEY;
   let gateway = process.env.AUTH2API_KEY;
   if (!own && !gateway) { try { gateway = readFileSync(join(homedir(), '.cache/tohn-auth2api.key'), 'utf8').trim(); } catch { /* none here */ } }
@@ -560,20 +568,35 @@ function plain(html: string) {
     .replace(/&#x27;|&#39;/g, "'").replace(/&quot;/g, '"').replace(/&#x2F;/g, '/').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&')
     .replace(/\n{3,}/g, '\n\n').trim();
 }
-function profileOf(name: string): Promise<unknown> {
-  const file = join(PROFILES, `${name}.json`);
+function cachedProfile(name: string): unknown {
   try {
-    const c = JSON.parse(readFileSync(file, 'utf8'));
-    if (Date.now() - c.at < c.ttl) return Promise.resolve(c.data);
+    const c = JSON.parse(readFileSync(join(PROFILES, `${name}.json`), 'utf8'));
+    if (Date.now() - c.at < c.ttl) return c.data;
   } catch { /* none yet */ }
+  return null;
+}
+function profileOf(name: string): Promise<unknown> {
+  const hit = cachedProfile(name);
+  if (hit) return Promise.resolve(hit);
   let p = building.get(name);
-  if (!p) { p = buildProfile(name, file).finally(() => building.delete(name)); building.set(name, p); }
+  if (!p) { p = buildProfile(name).finally(() => building.delete(name)); building.set(name, p); }
   return p;
 }
-async function buildProfile(name: string, file: string) {
+let onTowerAt = 0;
+function refreshOnTower() {
+  onTowerAt = Date.now();
+  onTower.clear();
+  for (const it of live.items.values()) if (it.by && !it.dead && !it.deleted) onTower.add(it.by);
+}
+/** someone who commented a moment ago is on the tower too: a miss looks again (at most every five seconds) */
+function onTowerNow(name: string) {
+  if (!onTower.has(name) && Date.now() - onTowerAt > 5000) refreshOnTower();
+  return onTower.has(name);
+}
+async function buildProfile(name: string) {
   const u = await get<{ id: string; created: number; karma: number; about?: string; submitted?: number[] } | null>(`user/${name}`);
   if (!u) return null;
-  const recent = await many((u.submitted ?? []).slice(0, 30), true);
+  const recent = await many((u.submitted ?? []).slice(0, 30), true, 24, false);
   const comments = recent.filter((it) => it.type === 'comment' && it.text && !it.dead && !it.deleted).slice(0, 20).map((it) => plain(it.text!).slice(0, 360));
   const titles = recent.filter((it) => it.type === 'story' && it.title).slice(0, 8).map((it) => it.title!);
   const about = plain(u.about ?? '').slice(0, 600);
@@ -605,8 +628,8 @@ async function buildProfile(name: string, file: string) {
   }
   const data = { name, karma: u.karma, created: u.created, about: about.slice(0, 420), ...ai };
   // a summary keeps three days; without one (no budget, model down), try again within the hour
-  write(`../profiles/${name}.json`, { at: Date.now(), ttl: ok || (!comments.length && !about) ? 3 * 86400_000 : 3600_000, data });
-  void file;
+  if (live.optOut.has(name)) return null;                // they opted out while it was being written
+  writeAt(join(PROFILES, `${name}.json`), { at: Date.now(), ttl: ok || (!comments.length && !about) ? 3 * 86400_000 : 3600_000, data });
   return data;
 }
 
@@ -674,8 +697,7 @@ for (;;) {
     readVoiced();
     if (Date.now() - lastChores > 60_000 || !onTower.size) {
       lastChores = Date.now(); readOptOut();
-      onTower.clear();
-      for (const it of live.items.values()) if (it.by && !it.dead && !it.deleted) onTower.add(it.by);
+      refreshOnTower();
     }
     if (Date.now() - lastPrune > 600_000 && !pruning) {
       lastPrune = Date.now(); pruning = true;
