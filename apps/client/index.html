@@ -22,7 +22,8 @@
   button { font:inherit; color:inherit }
 
   #brand { position:fixed; left:max(22px, env(safe-area-inset-left)); top:max(18px, env(safe-area-inset-top)); pointer-events:none; text-shadow:0 1px 12px rgba(0,0,0,.6); z-index:3 }
-  #scrim { position:fixed; left:0; right:0; top:0; height:110px; background:linear-gradient(rgba(5,7,14,.55), rgba(5,7,14,0)); pointer-events:none; z-index:2; transition:opacity .6s }
+  #scrim { position:fixed; left:0; right:0; top:0; height:calc(124px + env(safe-area-inset-top)); background:linear-gradient(rgba(5,7,14,.82), rgba(5,7,14,.5) 55%, rgba(5,7,14,0));
+           pointer-events:none; z-index:2; transition:opacity .6s }
   body[data-mode="table"] #scrim { opacity:0 }
   #brand .w { font-size:17px; font-weight:650; letter-spacing:.2px; color:#fff3ea; text-shadow:0 0 6px rgba(255,154,107,.55), 0 0 18px rgba(255,120,60,.25), 0 1px 12px rgba(0,0,0,.6);
               animation:ignite 1.5s steps(1) .4s both }
