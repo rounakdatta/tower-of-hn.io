@@ -120,13 +120,15 @@ export class AudioEngine {
   }
 
   /** A voice placed in the room at `pos`; returns the source so callers can stop it. */
-  voice(buf: AudioBuffer, when: number, pos: V3, url = '', gain = 1): AudioScheduledSourceNode {
+  voice(buf: AudioBuffer, when: number, pos: V3, url = '', gain = 1, o: { hrtf?: boolean; ref?: number; rolloff?: number } = {}): AudioScheduledSourceNode {
     if (this.virtual || !this.ctx) { this.log.push({ url, when }); return { stop() {} } as unknown as AudioScheduledSourceNode; }
     const ctx = this.ctx;
     const src = ctx.createBufferSource(); src.buffer = buf;
     const g = ctx.createGain(); g.gain.value = gain;
     const pan = ctx.createPanner();
-    pan.panningModel = 'HRTF'; pan.distanceModel = 'inverse'; pan.refDistance = 1.6; pan.rolloffFactor = 0.9;
+    // HRTF for the voices you're close to; plain panning (much cheaper) for tables across the room
+    pan.panningModel = o.hrtf === false ? 'equalpower' : 'HRTF'; pan.distanceModel = 'inverse';
+    pan.refDistance = o.ref ?? 1.6; pan.rolloffFactor = o.rolloff ?? 0.9;
     pan.positionX.value = pos.x; pan.positionY.value = pos.y; pan.positionZ.value = pos.z;
     src.connect(g).connect(pan).connect(this.voiceBus);
     src.start(Math.max(ctx.currentTime, when));

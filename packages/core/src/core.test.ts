@@ -145,3 +145,28 @@ test("a floor's crowd is its different people, not its comments: the dead and th
   const { head } = live.tick(Date.now());
   assert.deepEqual(head.people, { 1: 2, 6: 0 });
 });
+
+test('a revision where only audio changed comes with a patch that rebuilds it from the one before', async () => {
+  const { Live } = await import('./live.ts');
+  const live = new Live({ snapshotEvery: 1 });
+  live.upsert({ id: 1, type: 'story', title: 'S', kids: [2] });
+  live.upsert({ id: 2, type: 'comment', by: 'a', text: 'root', parent: 1, kids: [3] });
+  live.upsert({ id: 3, type: 'comment', by: 'b', text: 'reply', parent: 2 });
+  live.setTower([1]);
+  const first = live.tick(Date.now()).snapshots[0];
+  live.markVoiced(3, 'c/3.r.json', 4.2);
+  const r = live.tick(Date.now() + 2000);
+  const next = r.snapshots[0], patch = r.delta?.patches?.find((p) => p.s === 1);
+  assert.ok(patch, 'a patch');
+  assert.equal(patch.from, first.rev); assert.equal(patch.to, next.rev);
+  // applying the patch to the first revision gives exactly the second
+  const rebuilt = structuredClone(first);
+  const v = new Map(patch.v);
+  for (const t of rebuilt.tables) for (const u of t.turns) if (v.has(u.id)) { const x = v.get(u.id); if (x) u.v = x; else delete u.v; }
+  assert.deepEqual(rebuilt.tables, next.tables);
+  // a new turn changes the shape: no patch, a listener fetches the floor
+  live.upsert({ id: 4, type: 'comment', by: 'c', text: 'late', parent: 2 });
+  live.upsert({ id: 2, type: 'comment', by: 'a', text: 'root', parent: 1, kids: [3, 4] });
+  const r2 = live.tick(Date.now() + 4000);
+  assert.equal(r2.delta?.patches?.some((p) => p.s === 1) ?? false, false);
+});

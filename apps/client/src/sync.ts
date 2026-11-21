@@ -13,7 +13,12 @@ export interface Head {
   /** different people talking on each floor (older servers: absent) */
   people?: Record<number, number>;
 }
-export interface Delta { epoch: number; tower?: number[]; turns?: { story: number; table: number; at: number; turn: Turn }[]; voiced?: { id: number; v: [string, number] }[]; gone?: number[] }
+export interface Delta {
+  epoch: number; tower?: number[]; turns?: { story: number; table: number; at: number; turn: Turn }[]; voiced?: { id: number; v: [string, number] }[]; gone?: number[];
+  floors?: Record<number, number>;
+  /** audio-only revisions of a floor: apply to revision `from` to get `to` (no refetch) */
+  patches?: { s: number; from: number; to: number; v: [number, [string, number] | null][] }[];
+}
 export interface Clip { u: string; d: number; t: string; who: string; env: number[]; shape: number[] }
 export interface Sidecar { id: number; by: string; emotion: string; stance: string; intensity?: number; cues?: string[]; dur: number; clips: Clip[]; links: { url: string; domain: string; text: string }[]; code: string[]; /** still being voiced: more clips will follow at a new path */ partial?: boolean; of?: number }
 
@@ -37,16 +42,39 @@ export class LiveSync {
     const prev = this.head;
     if (prev && h.epoch === prev.epoch) return;
     this.head = h;
-    if (prev) {
-      for (let n = prev.epoch + 1; n <= h.epoch && n > h.epoch - 20; n++) {
-        fetch(this.base + `e/${n}.json`).then((r) => (r.ok ? r.json() : null)).then((d) => d && this.onDelta(d)).catch(() => {});
-      }
-    }
+    // what changed, in order. A floor is ~17 KB even compressed and revises every few seconds while its comments
+    // are being voiced; most of those revisions are audio only, and arrive here as a few bytes of patch
+    const gap = prev ? h.epoch - prev.epoch : 0;
+    const deltas: (Delta | null)[] = prev && gap <= 20
+      ? await Promise.all(Array.from({ length: gap }, (_, k) => fetch(this.base + `e/${prev.epoch + 1 + k}.json`).then((r) => (r.ok ? r.json() : null), () => null)))
+      : [];
+    for (const d of deltas) if (d) this.onDelta(d);
     this.onHead(h, prev);
     for (const [sid, cb] of this.watchers) {
       const rev = h.floors[sid];
-      if (rev && (!prev || prev.floors[sid] !== rev)) this.floor(sid).then((f) => f && cb(f));
+      if (!rev || (prev && prev.floors[sid] === rev)) continue;
+      const patched = prev && gap <= 20 ? this.patched(sid, prev.floors[sid], rev, deltas) : null;
+      if (patched) cb(patched);
+      else this.floor(sid).then((f) => f && cb(f));
     }
+  }
+
+  /** Floor `sid` at revision `to`, made from the one we hold if every change since was audio only (else null). */
+  private patched(sid: number, from: number | undefined, to: number, deltas: (Delta | null)[]): Floor | null {
+    let f = from ? this.floorCache.get(`${sid}/${from}`) : undefined;
+    if (!f) return null;
+    for (const d of deltas) {
+      if (!d) return null;                                 // a gap: we can't know what changed
+      if (d.floors?.[sid] === undefined) continue;
+      const p = d.patches?.find((x) => x.s === sid && x.from === f!.rev);
+      if (!p) return null;                                 // turns came, went or moved: fetch it whole
+      const v = new Map(p.v);
+      f = { ...f, rev: p.to, tables: f.tables.map((t) => (t.turns.some((u) => v.has(u.id))
+        ? { ...t, turns: t.turns.map((u) => { if (!v.has(u.id)) return u; const x = v.get(u.id); const w = { ...u }; if (x) w.v = x; else delete w.v; return w; }) }
+        : t)) };
+      this.floorCache.set(`${sid}/${p.to}`, f);
+    }
+    return f.rev === to ? f : null;
   }
 
   async floor(sid: number): Promise<Floor | null> {

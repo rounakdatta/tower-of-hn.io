@@ -137,6 +137,33 @@
   body[data-mode="table"] #controls { display:flex }
   #controls .pill { background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.14) }
 
+  #sitdown { position:fixed; left:50%; bottom:calc(64px + env(safe-area-inset-bottom)); transform:translate(-50%, 8px); z-index:4; opacity:0; pointer-events:none;
+             background:var(--ink); color:#15110d; border:0; font-weight:700; padding:11px 20px; box-shadow:0 10px 30px rgba(0,0,0,.4); transition:opacity .25s, transform .25s }
+  #sitdown.show { opacity:1; transform:translate(-50%, 0); pointer-events:auto }
+  #sitdown:hover { background:#fff }
+  body:not([data-mode="floor"]) #sitdown { opacity:0; pointer-events:none }
+  #profile { position:fixed; left:12px; right:12px; bottom:calc(12px + env(safe-area-inset-bottom)); z-index:6; padding:18px 18px 14px; border-radius:18px; background:rgba(14,16,24,.86);
+             border:1px solid var(--line); backdrop-filter:blur(18px) saturate(1.2); -webkit-backdrop-filter:blur(18px) saturate(1.2); box-shadow:0 18px 60px rgba(0,0,0,.5);
+             opacity:0; transform:translateY(16px); pointer-events:none; transition:opacity .3s, transform .3s; max-height:min(70vh, 560px); overflow:auto }
+  #profile.show { opacity:1; transform:none; pointer-events:auto }
+  #profile .x { position:absolute; right:10px; top:8px; width:36px; height:36px; border:0; border-radius:50%; background:rgba(255,255,255,.07); color:var(--mute); font-size:20px; cursor:pointer }
+  #profile .who { display:flex; gap:14px; align-items:center; padding-right:36px }
+  #profile .ava { width:64px; height:64px; flex:none }
+  #profile h2 { margin:0; font-size:20px; letter-spacing:-.2px }
+  #profile .role { color:#ffd2a8; font-size:13px; margin-top:2px }
+  #profile .meta { color:var(--mute); font-size:12.5px; margin-top:3px; font-variant-numeric:tabular-nums }
+  #profile .brief { margin:14px 0 0; font-size:15px; line-height:1.45 }
+  #profile .brief.wait { color:var(--mute); animation:breathe 1.6s ease-in-out infinite }
+  @keyframes breathe { 50% { opacity:.45 } }
+  #profile .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px }
+  #profile .chips span { padding:4px 10px; border-radius:999px; background:rgba(255,140,70,.12); border:1px solid rgba(255,140,70,.28); color:#ffd2a8; font-size:12.5px }
+  #profile .ai { margin:8px 0 0; color:#6f7789; font-size:11.5px }
+  #profile blockquote { margin:12px 0 0; padding:8px 12px; border-left:2px solid rgba(255,255,255,.15); color:#c8c1b6; font-size:13px; line-height:1.45; white-space:pre-line; max-height:7.5em; overflow:hidden }
+  #profile .foot { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:14px; font-size:13px }
+  #profile .here { color:var(--mute) }
+  #profile .foot a { color:var(--ink); text-decoration:none; font-weight:650; white-space:nowrap } #profile .foot a:hover { text-decoration:underline }
+  @media (min-width: 900px) { #profile { left:auto; right:24px; bottom:24px; width:380px } }
+  @media (prefers-reduced-motion: reduce) { #profile .brief.wait { animation:none } }
   #fade { position:fixed; inset:0; background:#000; opacity:0; pointer-events:none; z-index:5 }
   #fade.go { animation:fade .9s ease }
   @keyframes fade { 0% { opacity:0 } 35% { opacity:1 } 100% { opacity:0 } }
@@ -197,6 +224,8 @@
 <div id="fade"></div>
 <div id="card"></div>
 <div id="toast"></div>
+<button id="sitdown" class="pill" type="button"></button>
+<div id="profile" role="dialog" aria-label="Commenter"></div>
 <div id="controls"><button class="pill" id="pause">Pause</button><button class="pill" id="next">Next table</button><button class="pill" id="leave">Stand up</button></div>
 <div id="splash" class="show"><div class="inner">
   <h1>Tower<i>Of</i>Han</h1>

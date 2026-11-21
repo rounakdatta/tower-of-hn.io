@@ -1,7 +1,7 @@
 // A floor's interior: a warm room in the tower, tables for conversations,
 // a bar for one-off remarks, and the people placed at them.
 import * as THREE from 'three/webgpu';
-import { positionWorld, vec3, fract, smoothstep, abs, hash, floor as tfloor, mix, float, uv, sin } from 'three/tsl';
+import { positionWorld, vec3, fract, smoothstep, abs, hash, floor as tfloor, mix, float, uv, sin, uniform } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { R, FLOOR_H, uTime } from './world.ts';
 import type { Floor, Table } from './sync.ts';
@@ -10,6 +10,10 @@ import type { Pose } from './people.ts';
 export interface TableSpot { index: number; table: Table; pos: THREE.Vector3; radius: number; seats: { name: string; pos: THREE.Vector3; facing: number; seated: boolean; chair?: number }[]; bar: boolean; /** bar only: comment -> its table */ tableOf?: Map<number, number> }
 
 const MAX_TABLES = 10, MAX_BAR = 12, BAR_ANGLE = -Math.PI / 2, BAR_SPAN = 1.25;
+/** the lift, in the wall to your left as you come in: newcomers step out of it */
+const DOOR_ANGLE = Math.PI;
+/** 0..1: the lift's doorway lights up when someone arrives (decays) */
+export const uLift = uniform(0);
 
 export class Interior {
   group = new THREE.Group();
@@ -17,6 +21,9 @@ export class Interior {
   private chairMesh: THREE.InstancedMesh;
   private lampMesh: THREE.InstancedMesh;
   private lights: THREE.PointLight[] = [];
+  private fill!: THREE.HemisphereLight;
+  /** where the lift's doorway is, on the floor, in world space (after the room is turned to face us) */
+  door = new THREE.Vector3();
   private chairAt: { pos: THREE.Vector3; facing: number }[] = [];      // where each chair stands (room space) when tucked in
   spots: TableSpot[] = [];
 
@@ -90,8 +97,25 @@ export class Interior {
       this.group.add(l);
     }
     const fill = new THREE.HemisphereLight(0xffd7b0, 0x2a1c14, 0.55);
-    this.group.add(floor, rug, ceil, posts, bar, barTop, shelf, this.tableMesh, this.chairMesh, this.lampMesh, fill);
+    this.fill = fill;
+    // the lift: a dark frame in the wall with a warm doorway that brightens as someone steps out
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.25, 2.12, 0.1), new THREE.MeshStandardNodeMaterial({ color: 0x23201d, metalness: 0.7, roughness: 0.35 }));
+    const glowMat = new THREE.MeshBasicNodeMaterial();
+    glowMat.colorNode = vec3(1.0, 0.74, 0.46).mul(uLift.mul(2.4).add(0.18));
+    const glow = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 1.95), glowMat);
+    glow.position.z = 0.06;
+    const lift = new THREE.Group();
+    lift.add(frame, glow);
+    lift.position.set(Math.cos(DOOR_ANGLE) * (R - 0.14), 1.06, Math.sin(DOOR_ANGLE) * (R - 0.14));
+    lift.lookAt(0, 1.06, 0);
+    this.group.add(floor, rug, ceil, posts, bar, barTop, shelf, this.tableMesh, this.chairMesh, this.lampMesh, fill, lift);
     this.group.visible = false;
+  }
+
+  /** How much of the room's light reaches the scene (0..1): faded in as we fly up to its glass, out as we leave. */
+  presence(k: number) {
+    this.fill.intensity = 0.55 * k;
+    for (const l of this.lights) l.intensity = 9 * k;
   }
 
   /** Someone stands up: their chair scrapes back and twists a little (k = 0 tucked in, 1 pushed back). */
@@ -137,19 +161,28 @@ export class Interior {
       if (fits.length >= MAX_TABLES) break;
     }
     const convo = fits;
+    // one person per commenter: someone in several threads starts at the table of their earliest comment (HN item
+    // ids rise with time) and walks to the others when it's their turn there (room.ts)
+    const home = new Map<string, number>(), earliest = new Map<string, number>();
+    convo.forEach(({ t }, k) => {
+      for (const u of t.turns) if (u.id < (earliest.get(u.by) ?? Infinity)) { earliest.set(u.by, u.id); home.set(u.by, k); }
+    });
+    const placed = new Set<string>();
+    const mine = (name: string, k: number) => home.get(name) === k && !placed.has(name) && (placed.add(name), true);
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
     const people: { name: string; pose: Pose }[] = [];
     const spots: TableSpot[] = [];
     let chair = 0;
     convo.forEach(({ t, i }, k) => {
       const pos = places[k];
-      const seated = t.seated.slice(0, 8), standing = t.standing.slice(0, 8);
-      const radius = 0.42 + seated.length * 0.055;
+      const seated = t.seated.filter((n) => mine(n, k)).slice(0, 8), standing = t.standing.filter((n) => mine(n, k)).slice(0, 8);
+      const radius = 0.42 + Math.min(8, t.seated.length) * 0.055;
       this.tableMesh.setMatrixAt(k, m.compose(pos, q.identity(), s.set(radius, 1, radius)));
       if (k < MAX_TABLES) this.lampMesh.setMatrixAt(k, m.compose(pos, q.identity(), s.set(1, 1, 1)));
       const seats: TableSpot['seats'] = [];
+      const chairs = Math.max(seated.length, Math.min(8, t.seated.length));   // the table keeps its chairs for those who'll come
       seated.forEach((name, j) => {
-        const a = (j / seated.length) * Math.PI * 2 + k * 0.7;
+        const a = (j / chairs) * Math.PI * 2 + k * 0.7;
         const p = pos.clone().add(new THREE.Vector3(Math.cos(a) * (radius + 0.3), 0, Math.sin(a) * (radius + 0.3)));
         const facing = Math.atan2(pos.x - p.x, pos.z - p.z);
         seats.push({ name, pos: p, facing, seated: true, chair: chair < 160 ? chair : undefined });
@@ -172,8 +205,9 @@ export class Interior {
       const p = new THREE.Vector3(Math.cos(a) * (R - 1.6), 0, Math.sin(a) * (R - 1.6));
       const name = t.turns[0].by;
       const facing = Math.atan2(-p.x, -p.z) + (k % 2 ? 0.25 : -0.25);
-      people.push({ name, pose: { pos: p, facing, seated: false } });
-      spots.push({ index: i, table: t, pos: p, radius: 0.3, seats: [{ name, pos: p, facing, seated: false }], bar: true });
+      const here = !placed.has(name) && (placed.add(name), true);
+      if (here) people.push({ name, pose: { pos: p, facing, seated: false } });
+      spots.push({ index: i, table: t, pos: p, radius: 0.3, seats: here ? [{ name, pos: p, facing, seated: false }] : [], bar: true });
     });
     this.tableMesh.count = convo.length;
     this.lampMesh.count = Math.min(convo.length, MAX_TABLES);
@@ -186,6 +220,7 @@ export class Interior {
     });
     // turn the room to face the way we came in: rotate everything placed in world space
     this.group.rotation.y = yaw;
+    this.door.set(Math.cos(DOOR_ANGLE) * (R - 0.6), 0, Math.sin(DOOR_ANGLE) * (R - 0.6)).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
     const Y = new THREE.Vector3(0, 1, 0), seen = new Set<THREE.Vector3>();
     const rot = (v: THREE.Vector3) => { if (!seen.has(v)) { seen.add(v); v.applyAxisAngle(Y, yaw); } };
     for (const sp of spots) { rot(sp.pos); for (const st of sp.seats) { rot(st.pos); st.facing += yaw; } }

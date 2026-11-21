@@ -24,6 +24,9 @@ export interface Delta {
   turns?: { story: number; table: number; at: number; turn: TurnOut }[];  // new or re-voiced turns, with their index
   gone?: number[];                                     // comments to drop (deleted, dead, flagged)
   floors?: Record<number, number>;                     // story -> latest snapshot rev
+  /** a revision where only audio changed (the same turns, in the same order, the same people): the voicing that
+   *  moved, so a listener holding revision `from` can make `to` without fetching the whole floor again */
+  patches?: { s: number; from: number; to: number; v: [number, [string, number] | null][] }[];
   voiced?: { id: number; v: [string, number] }[];      // turns whose audio just became ready
 }
 export interface Head {
@@ -123,6 +126,11 @@ export class Live {
       if (!prev || signature(prev) !== signature(next)) {
         const rev = ++this.revSeq;
         this.revs.set(sid, rev);
+        if (prev && shape(prev) === shape(next)) {
+          const before = new Map(prev.tables.flatMap((t) => t.turns.map((u) => [u.id, u.v?.[0]] as const)));
+          const v = next.tables.flatMap((t) => t.turns.filter((u) => before.get(u.id) !== u.v?.[0]).map((u) => [u.id, u.v ?? null] as [number, [string, number] | null]));
+          (this.pending.patches ??= []).push({ s: sid, from: prev.rev, to: rev, v });
+        }
         next.rev = rev;
         next.epoch = this.epoch + 1;
         this.floors.set(sid, next);
@@ -135,7 +143,7 @@ export class Live {
     }
     this.dirtyStories.clear();
     const p = this.pending;
-    const changed = p.tower || p.stories?.length || p.turns?.length || p.gone?.length || p.floors || p.voiced?.length;
+    const changed = p.tower || p.stories?.length || p.turns?.length || p.gone?.length || p.floors || p.voiced?.length || p.patches?.length;
     let delta: Delta | undefined;
     if (changed) {
       delta = { ...p, epoch: ++this.epoch };
@@ -206,6 +214,11 @@ export class Live {
 
 function meta(it: Item): StoryMeta {
   return { id: it.id, title: it.title ?? '', url: it.url, by: it.by, score: it.score ?? 0, comments: it.descendants ?? 0 };
+}
+
+/** a floor's structure without its audio: the same shape means a revision changed only voicing */
+function shape(f: FloorSnapshot): string {
+  return f.tables.map((t) => `${t.root}:${t.turns.map((u) => u.id).join(',')}|${t.seated.join(',')}|${t.standing.join(',')}`).join(';');
 }
 
 function signature(f: FloorSnapshot): string {

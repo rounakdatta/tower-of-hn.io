@@ -75,6 +75,15 @@ export class TowerCam {
     return { pos, look };
   }
 
+  /** The tower pose for floor `rank` seen from bearing `theta` (the way out of a floor lands here). */
+  poseAt(rank: number, theta: number) {
+    const keep = this.theta;
+    this.theta = theta;
+    const r = this.pose(rank);
+    this.theta = keep;
+    return r;
+  }
+
   /** Take over from wherever the camera is now (back from a floor): settle on `rank` from the same angle. */
   resume(rank: number) {
     this.theta = Math.atan2(this.camera.position.x, this.camera.position.z);

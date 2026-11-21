@@ -13,6 +13,8 @@ FROM node:24-slim
 WORKDIR /app
 ENV NODE_ENV=production VAR=/data STATIC=/app/apps/client/dist PORT=8787
 COPY packages/core/src packages/core/src
+COPY apps/towerd/package.json apps/towerd/package-lock.json apps/towerd/
+RUN cd apps/towerd && npm ci --omit=dev --no-audit --no-fund
 COPY apps/towerd/src apps/towerd/src
 COPY --from=client /src/apps/client/dist apps/client/dist
 ARG VERSION=dev

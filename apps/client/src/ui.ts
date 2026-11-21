@@ -1,6 +1,7 @@
 // The overlay: a thin DOM layer over the scene. Quiet by default; cinematic at a table.
 import * as THREE from 'three/webgpu';
 import { esc, domainOf } from './util.ts';
+import { lookOf } from './people.ts';
 import type { TableSpot } from './interior.ts';
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -109,6 +110,42 @@ export class UI {
     el.classList.add('show');
   }
   private pick: (rank: number) => void = () => {};
+
+  /** On foot beside a table: the one thing to do there. */
+  sitDown(s: { name: string; go: () => void } | null) {
+    const el = $('sitdown');
+    if (!s) { el.classList.remove('show'); return; }
+    const label = `Sit down with ${s.name}`;
+    if (el.dataset.label !== label) { el.dataset.label = label; el.textContent = label; }
+    el.onclick = (e) => { e.stopPropagation(); s.go(); };
+    el.classList.add('show');
+  }
+
+  /**
+   * A commenter's card: their face (the same one they wear in the room), how long they've been on Hacker News, a
+   * one-line summary of what they talk about with a few interests (written by AI from their public comments, and
+   * labelled so), their own bio, and what they've said on this floor. `refresh`: the summary arrived for an open card.
+   */
+  profile(p: { name: string; said: number; tables: number; data: null | { karma?: number; created?: number; about?: string; brief?: string; interests?: string[]; role?: string } } | null, refresh = false) {
+    const el = $('profile');
+    if (!p) { el.classList.remove('show'); el.dataset.name = ''; return; }
+    if (refresh && el.dataset.name !== p.name) return;          // they closed it, or opened someone else's
+    el.dataset.name = p.name;
+    const d = p.data;
+    const since = d?.created ? new Date(d.created * 1000).getFullYear() : 0;
+    const meta = d ? [d.karma !== undefined ? `${d.karma.toLocaleString()} karma` : '', since ? `on Hacker News since ${since}` : ''].filter(Boolean).join(' · ') : '';
+    const here = p.said ? `${p.said} comment${p.said === 1 ? '' : 's'} on this floor${p.tables > 1 ? `, at ${p.tables} tables` : ''}` : '';
+    const brief = d?.brief
+      ? `<p class="brief">${esc(d.brief)}</p>${d.interests?.length ? `<div class="chips">${d.interests.slice(0, 6).map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}<p class="ai">Summarised by AI from their public comments</p>`
+      : d ? '' : '<p class="brief wait">Reading their comments…</p>';
+    const about = d?.about ? `<blockquote>${esc(d.about)}</blockquote>` : '';
+    el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>
+      <div class="who">${avatar(p.name)}<div><h2>${esc(p.name)}</h2>${d?.role ? `<div class="role">${esc(d.role)}</div>` : ''}<div class="meta">${esc(meta)}</div></div></div>
+      ${brief}${about}
+      <div class="foot"><span class="here">${esc(here)}</span><a href="https://news.ycombinator.com/user?id=${encodeURIComponent(p.name)}" target="_blank" rel="noopener">On Hacker News ↗</a></div>`;
+    (el.querySelector('.x') as HTMLElement).onclick = () => this.profile(null);
+    el.classList.add('show');
+  }
 
   floorHeader(f: { rank: number; title: string; id: number; url?: string } | null) {
     const el = $('floorbar');
@@ -230,4 +267,31 @@ export class UI {
       q.el.style.transform = `translate(-50%, -50%) translate(${Math.max(w, Math.min(innerWidth - w, q.x))}px, ${q.y}px)`;
     }
   }
+}
+
+/** A commenter's face as a small drawing: the same skin, hair, glasses and beard as their character in the room. */
+function avatar(name: string) {
+  const l = lookOf(name), hex = (c: { getHexString(): string }) => '#' + c.getHexString();
+  const skin = hex(l.skin), hair = hex(l.hair), out = hex(l.outfit);
+  const e = 3.2 * l.eye, gx = 9 * l.gap;
+  const hairPath = [
+    '',                                                                                        // bald
+    '<path d="M14 40c0-17 12-26 26-26s26 9 26 26c-6-7-15-11-26-11s-20 4-26 11z" fill="HAIR"/>',   // short
+    '<path d="M13 42c0-19 12-28 27-28s27 9 27 28v20c-3-12-6-24-27-30-21 6-24 18-27 30z" fill="HAIR"/>', // long
+    '<circle cx="40" cy="13" r="7" fill="HAIR"/><path d="M14 40c0-17 12-26 26-26s26 9 26 26c-6-7-15-11-26-11s-20 4-26 11z" fill="HAIR"/>', // bun
+    '<path d="M12 38c0-18 12-27 28-27s28 9 28 27z" fill="OUT"/><rect x="11" y="33" width="58" height="7" rx="3.5" fill="OUT"/>',   // beanie
+    '<circle cx="40" cy="30" r="27" fill="HAIR"/>',                                             // curly
+  ][l.style] ?? '';
+  return `<svg class="ava" viewBox="0 0 80 80" aria-hidden="true">
+    <rect width="80" height="80" rx="40" fill="#141821"/>
+    <path d="M14 80c2-12 12-18 26-18s24 6 26 18z" fill="${out}"/>
+    ${l.style === 5 ? hairPath.replace('HAIR', hair) : ''}
+    <circle cx="40" cy="42" r="24" fill="${skin}"/>
+    ${l.beard ? `<path d="M18 46c2 14 10 20 22 20s20-6 22-20c-6 6-12 8-22 8s-16-2-22-8z" fill="${hair}"/>` : ''}
+    ${l.style !== 5 ? hairPath.replace(/HAIR/g, hair).replace(/OUT/g, out) : ''}
+    <ellipse cx="${40 - gx}" cy="41" rx="${e + 1.3}" ry="${e + 1.6}" fill="#f2ede4"/><ellipse cx="${40 + gx}" cy="41" rx="${e + 1.3}" ry="${e + 1.6}" fill="#f2ede4"/>
+    <circle cx="${40 - gx}" cy="41.5" r="${e}" fill="#141012"/><circle cx="${40 + gx}" cy="41.5" r="${e}" fill="#141012"/>
+    ${l.glasses ? `<circle cx="${40 - gx}" cy="41" r="${e + 4.6}" fill="none" stroke="#17181d" stroke-width="2.2"/><circle cx="${40 + gx}" cy="41" r="${e + 4.6}" fill="none" stroke="#17181d" stroke-width="2.2"/><path d="M${40 - gx + e + 4.6} 41h${2 * gx - 2 * (e + 4.6)}" stroke="#17181d" stroke-width="2"/>` : ''}
+    <path d="M33 53q7 5 14 0" fill="none" stroke="#5a1f1f" stroke-width="2.2" stroke-linecap="round"/>
+  </svg>`;
 }

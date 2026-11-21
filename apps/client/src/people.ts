@@ -57,7 +57,9 @@ export const NEUTRAL: Expr = {
 };
 const STAND_TALL = 2.5;           // a standing body vs a seated one (the chair hides the legs)
 
-interface Person { name: string; look: Look; pose: Pose; parts: { hair: number; glasses: number; beard: number; hood: number }; expr: Expr; target: Expr }
+/** Someone on their way across the room: the points ahead of them, how fast, and what to do on arrival. */
+interface Walk { path: THREE.Vector3[]; speed: number; stride: number; face: number; onArrive?: () => void }
+interface Person { name: string; look: Look; pose: Pose; parts: { hair: number; glasses: number; beard: number; hood: number }; expr: Expr; target: Expr; walk?: Walk; fade?: number }
 
 function headGeo() { return new THREE.SphereGeometry(0.2, 32, 22); }
 
@@ -300,6 +302,7 @@ export class Crowd {
       this.writeExpr(i);
       this.place(i);
     }
+    this.byName = new Map(this.people.map((p, k) => [p.name, k]));
     this.bodies.count = this.heads.count = n;
     this.arms.count = n * 2;
     this.hair.forEach((im, s) => (im.count = hairCount[s]));
@@ -324,7 +327,8 @@ export class Crowd {
     this.active.clear();
   }
 
-  index(name: string) { return this.people.findIndex((p) => p.name === name); }
+  private byName = new Map<string, number>();
+  index(name: string) { return this.byName.get(name) ?? -1; }
   /**
    * Someone new takes person i's place (a newcomer to a long conversation): every look is rebuilt (hair, glasses
    * and hoods are shared instanced meshes), everyone else keeps their pose and expression.
@@ -341,6 +345,31 @@ export class Crowd {
     for (const a of [this.aSkinL, this.aHairP, this.aFace]) a.needsUpdate = true;
     this.exprTex.needsUpdate = true;
     this.flush();
+  }
+
+  /** One more person on the floor (someone who just came in): everyone else keeps their place, pose, face and walk. */
+  add(name: string, pose: Pose): number {
+    if (this.people.length >= MAX_PEOPLE) return -1;
+    const keep = this.people.map((p) => ({ expr: { ...p.expr }, target: { ...p.target }, walk: p.walk }));
+    const active = new Set(this.active);
+    this.set([...this.people.map((p) => ({ name: p.name, pose: p.pose })), { name, pose }]);
+    this.people.forEach((p, k) => {
+      if (k >= keep.length) return;
+      Object.assign(p.expr, keep[k].expr); Object.assign(p.target, keep[k].target); p.walk = keep[k].walk;
+      this.writeExpr(k); this.place(k);
+    });
+    this.active = active;
+    const i = this.people.length - 1;
+    this.active.add(i);
+    this.exprTex.needsUpdate = true;
+    this.flush();
+    return i;
+  }
+
+  /** the person under a ray (their head or body), or -1 */
+  pick(ray: THREE.Raycaster) {
+    const hit = ray.intersectObjects([this.heads, this.bodies], false)[0];
+    return hit?.instanceId ?? -1;
   }
 
   /** stop updating someone every frame (they've eased back to rest) */
@@ -385,7 +414,8 @@ export class Crowd {
     const { lift, tall, back, st } = this.stature(p);
     const t = uTimeValue();
     const yb = pose.facing + expr.turn;
-    const bob = expr.bounce * Math.abs(Math.sin(t * 13 + look.phase * 5)) * 0.035;      // laughter
+    const stride = p.walk ? p.walk.stride : 0;
+    const bob = expr.bounce * Math.abs(Math.sin(t * 13 + look.phase * 5)) * 0.035 + (p.walk ? Math.abs(Math.sin(stride)) * 0.028 : 0);   // laughter; footsteps
     const bx = pose.pos.x - Math.sin(pose.facing) * back, bz = pose.pos.z - Math.cos(pose.facing) * back;
     const bodyH = 0.54 * look.height * tall, pitch = expr.lean * 0.25;
     this.e.set(pitch, yb, 0, 'YXZ'); this.q.setFromEuler(this.e);
@@ -427,8 +457,57 @@ export class Crowd {
   }
 
   /** Ease active people toward their targets and upload what changed. */
+  /**
+   * Walk person i along `path` (room space, on the floor). Someone seated gets up first; on arrival they stand,
+   * facing `face`. Walkers stay active (updated every frame) until they arrive.
+   */
+  walkTo(i: number, path: THREE.Vector3[], face: number, onArrive?: () => void, speed = 1.25) {
+    const p = this.people[i];
+    if (!p || !path.length) return;
+    p.walk = { path: path.map((v) => v.clone()), speed, stride: 0, face, onArrive };
+    this.active.add(i);
+  }
+  isWalking(i: number) { return !!this.people[i]?.walk; }
+
+  /** Advance everyone on the move: rise out of the chair, then step along the path, turning toward it. */
+  private stepWalkers(dt: number) {
+    for (const i of this.active) {
+      const p = this.people[i], w = p?.walk;
+      if (!p || !w) continue;
+      if (p.pose.seated) {                                // up out of the chair first
+        p.target.stand = 1;
+        if (p.expr.stand < 0.92) continue;
+        p.pose.seated = false; p.expr.stand = p.target.stand = 0;
+      }
+      const next = w.path[0];
+      const dx = next.x - p.pose.pos.x, dz = next.z - p.pose.pos.z, d = Math.hypot(dx, dz);
+      const step = Math.min(d, w.speed * dt);
+      if (d > 1e-3) {
+        p.pose.pos.x += (dx / d) * step; p.pose.pos.z += (dz / d) * step;
+        const want = Math.atan2(dx, dz), da = Math.atan2(Math.sin(want - p.pose.facing), Math.cos(want - p.pose.facing));
+        p.pose.facing += da * Math.min(1, dt * 7);
+      }
+      w.stride += step * 4.6;                             // about two steps a metre
+      p.target.armL = Math.max(0, Math.sin(w.stride)) * 0.22; p.target.armR = Math.max(0, -Math.sin(w.stride)) * 0.22;
+      p.target.lean = 0.12; p.target.turn = 0; p.target.yaw = 0;
+      if (d - step < 0.02) {
+        w.path.shift();
+        if (!w.path.length) {
+          p.walk = undefined;
+          p.target.armL = p.target.armR = 0; p.target.lean = 0.05;
+          // turn to the table smoothly: the body keeps its heading and eases round (turn decays to the new facing)
+          const prev = p.pose.facing;
+          p.pose.facing = w.face;
+          p.expr.turn = Math.atan2(Math.sin(prev - w.face), Math.cos(prev - w.face)); p.target.turn = 0;
+          w.onArrive?.();
+        }
+      }
+    }
+  }
+
   update(dt: number) {
     if (!this.active.size) return;
+    this.stepWalkers(dt);
     for (const i of this.active) {
       const p = this.people[i];
       if (!p) continue;

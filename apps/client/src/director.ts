@@ -8,9 +8,10 @@ import type { TableSpot } from './interior.ts';
 import type { Rig } from './rig.ts';
 import { R, FLOOR_H } from './world.ts';
 import type { UI } from './ui.ts';
+import type { Room } from './room.ts';
 
 /** How a speaker's face sits for each delivery (the voice moves it from there, syllable by syllable). */
-const FACE: Record<string, Partial<Expr>> = {
+export const FACE: Record<string, Partial<Expr>> = {
   angry: { brow: -0.25, browIn: -1, smile: -0.45, lid: 0.92, lidTilt: 0.8, flush: 0.55, teeth: 0.35, lean: 0.6 },
   stern: { brow: -0.15, browIn: -0.55, smile: -0.15, lid: 0.9, lidTilt: 0.3, lean: 0.35 },
   contemplative: { brow: 0.1, browAsym: 0.55, smile: 0.05, smileAsym: 0.2, lid: 0.84 },
@@ -120,22 +121,25 @@ export class Director {
   others: { pos: THREE.Vector3; turns: Turn[] }[] = [];      // other tables on this floor, for the murmur
   private murmurAt = 0;
   onNewReply: (by: string) => void = () => {};
+  /** the room's choreography: speakers walk over to this table before they speak (one person per commenter) */
+  room: Room | null = null;
+  /** the mixer plays the other tables for real: no random murmur on top */
+  ambient = false;
+  /** the turn the table has got to (handed back to the room when we stand up) */
+  get turnAt() { return this.turnIdx; }
+  /** comments that arrived live at this table, said next (ids, in the order they came) */
+  private breaking: number[] = [];
   onEnd: () => void = () => {};
 
   constructor(private sync: LiveSync, private audio: AudioEngine, private crowd: Crowd, private rig: Rig, private ui: UI) {}
 
-  start(floor: Floor, spot: TableSpot, roomY: number, now: number) {
+  /** Play a table from turn `from` (where the room had got to while we stood there). */
+  start(floor: Floor, spot: TableSpot, roomY: number, now: number, from = 0) {
     this.stop();
     this.floor = floor; this.spot = spot; this.roomY = roomY;
-    this.turnIdx = 0; this.playing = true; this.paused = false; this.clipsDone = 0; this.waitSince = 0;
+    this.turnIdx = Math.max(0, Math.min(from, spot.table.turns.length)); this.playing = true; this.paused = false; this.clipsDone = 0; this.waitSince = 0; this.breaking = [];
     this.plans.clear(); this.heroAt = 0; this.staged.clear();
     this.cursor = this.audio.now() + 1.6;           // let the establishing shot breathe
-    // the same HN user can sit at several tables (one per thread they joined): always mean the one at this table
-    this.seatOf.clear();
-    for (const s of spot.seats) {
-      const i = this.crowd.people.findIndex((p) => p.pose.pos === s.pos);
-      this.seatOf.set(s.name, i >= 0 ? i : this.crowd.index(s.name));
-    }
     for (const s of spot.seats) { const i = this.ix(s.name); if (i >= 0) this.crowd.active.add(i); }
     this.wide(now, true);
     this.shotUntil = now + 2.6;
@@ -167,18 +171,23 @@ export class Director {
     }
     const t = floor.tables.find((x) => x.root === this.spot!.table.root);
     if (!t) return;
-    const played = new Set(this.spot.table.turns.slice(0, this.turnIdx).map((u) => u.id));
-    const known = new Set(this.spot.table.turns.map((u) => u.id));
-    this.spot.table = t;
+    // our order: what we've played (as we played it), the comment in progress, comments that arrived live (said
+    // next, as in a real room, in the order they came), then the rest in the thread's order. Taking the server's
+    // order instead replayed comments when a late reply landed above them.
+    const prev = this.spot.table.turns, playedList = prev.slice(0, this.turnIdx);
+    const playedIds = new Set(playedList.map((u) => u.id)), known = new Set(prev.map((u) => u.id));
+    const byId = new Map(t.turns.map((u) => [u.id, u]));
+    for (const u of t.turns) if (!known.has(u.id)) { this.onNewReply(u.by); this.breaking.push(u.id); }
+    const current = this.clipsDone ? byId.get(this.partialId) : undefined;
+    if (this.clipsDone && !current) this.clipsDone = 0;
+    const head = playedList.map((u) => byId.get(u.id) ?? u);
+    const live = this.breaking.map((id) => byId.get(id)).filter((u): u is Turn => !!u && !playedIds.has(u.id) && u !== current);
+    const liveIds = new Set(live.map((u) => u.id));
+    const rest = t.turns.filter((u) => !playedIds.has(u.id) && !liveIds.has(u.id) && u !== current);
+    this.spot.table = { ...t, turns: [...head, ...(current ? [current] : []), ...live, ...rest] };
     this.spot.index = floor.tables.indexOf(t);         // HN reorders threads: asks for voicing must name this one
-    // keep our place: the first turn we haven't scheduled yet (late replies slot in here)
-    for (const u of t.turns) if (!known.has(u.id)) this.onNewReply(u.by);
-    this.turnIdx = t.turns.findIndex((u) => !played.has(u.id));
-    if (this.turnIdx < 0) this.turnIdx = t.turns.length;
-    if (this.clipsDone) {                         // mid-way through a comment that is still arriving: stay on it
-      const k = t.turns.findIndex((u) => u.id === this.partialId);
-      if (k >= 0) this.turnIdx = k; else this.clipsDone = 0;
-    }
+    this.turnIdx = head.length;
+    this.breaking = this.breaking.filter((id) => byId.has(id) && !playedIds.has(id));
     this.prefetch();
   }
 
@@ -209,7 +218,8 @@ export class Director {
       if (t.v) this.load(t);
       // not voiced yet, or still arriving clip by clip: ask, and keep asking (demand lapses server-side unless renewed)
       if (!t.v || /\.p\d+\.json$/.test(t.v[0])) {
-        const ti = this.spot.tableOf?.get(t.id) ?? this.spot.index, from = this.spot.tableOf ? 0 : k;
+        const server = this.floor.tables[this.spot.index]?.turns.findIndex((u) => u.id === t.id) ?? -1;
+        const ti = this.spot.tableOf?.get(t.id) ?? this.spot.index, from = this.spot.tableOf ? 0 : Math.max(0, server);
         const key = `${this.floor.story.id}:${ti}:${from}`, last = this.asked.get(key) ?? -1e9, nowS = performance.now() / 1000;
         if (nowS - last > 30) {
           this.asked.set(key, nowS);
@@ -220,40 +230,14 @@ export class Director {
     }
   }
 
-  private seatOf = new Map<string, number>();
   private glances: { i: number; from: number; until: number; at: THREE.Vector3 }[] = [];
   private events: { at: number; fn: () => void }[] = [];
   private later(at: number, fn: () => void) { this.events.push({ at, fn }); }
   private waitSince = 0;
-  /** person index for a name, at this table */
-  private ix(name: string) { return this.seatOf.get(name) ?? -1; }
-
-  /**
-   * Long threads have more people than places. Someone about to speak who isn't here takes the place of someone
-   * who isn't due to speak: a seat first (talkers belong at the table, and only the seated can stand up in anger),
-   * whoever spoke longest ago, preferably out of shot.
-   */
-  private ensure(name: string, keep: Set<string>) {
-    if (!this.spot || this.spot.bar || this.seatOf.has(name)) return;
-    const turns = this.spot.table.turns, played = turns.slice(0, this.turnIdx).map((u) => u.by);
-    const soon = new Set(turns.slice(this.turnIdx, this.turnIdx + 8).map((u) => u.by));
-    const cam = this.rig.camera;
-    cam.updateMatrixWorld();
-    const view = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
-    let best = -1, bestScore = -Infinity;
-    this.spot.seats.forEach((s, k) => {
-      const i = this.seatOf.get(s.name);
-      if (i === undefined || i < 0 || soon.has(s.name) || keep.has(s.name) || this.crowd.people[i].expr.stand > 0.05) return;
-      const last = played.lastIndexOf(s.name);
-      const sc = (s.seated ? 10 : 0) + (last < 0 ? 4 : (this.turnIdx - last) * 0.05) - (view.containsPoint(this.crowd.headPos(i)) ? 6 : 0);
-      if (sc > bestScore) { bestScore = sc; best = k; }
-    });
-    if (best < 0) return;
-    const seat = this.spot.seats[best], i = this.seatOf.get(seat.name)!;
-    this.seatOf.delete(seat.name);
-    seat.name = name;
-    this.seatOf.set(name, i);
-    this.crowd.recast(i, name);
+  /** person index for a name, if they're at this table (one person per commenter; people come and go) */
+  private ix(name: string) {
+    if (!this.spot?.seats.some((s) => s.name === name)) return -1;
+    return this.crowd.index(name);
   }
 
   private personFor(name: string, fallback: string) {
@@ -314,12 +298,16 @@ export class Director {
           this.turnIdx++;
           continue;
         }
-        // whoever is about to talk, whoever they answer and whoever they quote must be at the table
-        const prevBy = turns[this.turnIdx - 1]?.by, keep = new Set([turn.by, ...(prevBy ? [prevBy] : [])]);
-        this.ensure(turn.by, keep);
-        const to = turn.replyTo ? turns.find((u) => u.id === turn.replyTo)?.by : undefined;
-        if (to) { keep.add(to); this.ensure(to, keep); }
-        for (const c of r.side.clips) if (c.who !== turn.by) { keep.add(c.who); this.ensure(c.who, keep); }
+        // whoever is about to talk comes to the table first (from another table, or out of the lift): the
+        // table waits for them, the camera holding the room
+        if (this.room && !this.spot.bar) {
+          const here = this.room.callOver(turn.by, this.spot, at);
+          if (here !== 'here') {
+            if (!this.waitSince) this.waitSince = now;
+            if (now - this.waitSince > 30) { this.turnIdx++; this.waitSince = 0; continue; }   // they never came
+            return;
+          }
+        }
       }
       let t = fresh ? Math.max(this.cursor + (this.sched.length ? this.gapFor(turn, r.side) : 0), at + 0.08) : Math.max(this.cursor + 0.06, at + 0.08);
       r.side.clips.forEach((clip, k) => {
@@ -367,7 +355,7 @@ export class Director {
     if (!this.spot || !this.playing) return;
     this.clockNow = now;
     this.scheduleAhead(now);
-    if (!this.paused) this.murmur(this.audio.now());
+    if (!this.paused && !this.ambient) this.murmur(this.audio.now());
     const at = this.audio.now();
     this.sched = this.sched.filter((s) => s.end > at - 0.5);
     this.stage(at, now);
@@ -379,7 +367,7 @@ export class Director {
     }
     this.animate(cur, at, now, dt);
     this.chairs();
-    this.room(now);
+    this.glancing(now);
     if (this.heroAt && now > this.heroAt) {
       this.heroAt = 0;
       this.hero(this.heroWho, this.heroA);
@@ -437,7 +425,7 @@ export class Director {
     }
     // and the room turns to look: nearest tables first, a ripple outwards
     const riser = this.crowd.headPos(plan.S).add(new THREE.Vector3(0, 0.3, 0));
-    const here = new Set(this.seatOf.values());
+    const here = new Set(this.spot!.seats.map((st) => this.ix(st.name)));
     for (let j = 0; j < this.crowd.people.length; j++) {
       if (here.has(j) || this.crowd.seed(j, 11) > 0.72 || this.glances.some((g) => g.i === j)) continue;
       const d = this.crowd.headPos(j).distanceTo(riser);
@@ -705,7 +693,7 @@ export class Director {
   }
 
   /** Everyone else in the room: heads turn toward a commotion, then drift back to their own table. */
-  private room(now: number) {
+  private glancing(now: number) {
     for (let k = this.events.length - 1; k >= 0; k--) if (this.events[k].at <= now) this.events.splice(k, 1)[0].fn();
     this.glances = this.glances.filter((g) => {
       const t = this.crowd.target(g.i);

@@ -33,10 +33,28 @@ export class Rig {
     this.drift.copy(t).sub(p).normalize().multiplyScalar(drift); this.driftT = -dur;
   }
 
-  busy(now: number) { return this.dur > 0 && now - this.t0 < this.dur; }
+  busy(now: number) { return (this.dur > 0 && now - this.t0 < this.dur) || !!this.route; }
+
+  /**
+   * One continuous flight through several points (a centripetal Catmull-Rom spline: no stop and no kink at any
+   * of them), the gaze moving through its own points alongside. Speed eases in and out over the whole flight.
+   */
+  private route: { pos: THREE.CatmullRomCurve3; look: THREE.CatmullRomCurve3; t0: number; dur: number; done?: () => void } | null = null;
+  fly(points: THREE.Vector3[], looks: THREE.Vector3[], dur: number, now: number, done?: () => void) {
+    this.dur = 0;
+    this.route = { pos: new THREE.CatmullRomCurve3(points, false, 'centripetal'), look: new THREE.CatmullRomCurve3(looks, false, 'centripetal'), t0: now, dur, done };
+    this.drift.set(0, 0, 0); this.driftT = 0;
+  }
+  /** 0..1 along the current flight (1 when there is none) */
+  progress(now: number) { return this.route ? Math.min(1, (now - this.route.t0) / this.route.dur) : 1; }
 
   update(now: number, dt: number) {
-    if (this.dur > 0) {
+    if (this.route) {
+      const r = this.route, k = Math.min(1, (now - r.t0) / r.dur), e = easeInOut(k);
+      r.pos.getPointAt(e, this.pos);
+      r.look.getPointAt(e, this.target);
+      if (k >= 1) { this.route = null; r.done?.(); }
+    } else if (this.dur > 0) {
       const k = Math.min(1, (now - this.t0) / this.dur), e = easeInOut(k);
       this.pos.lerpVectors(this.from.p, this.to.p, e);
       this.target.lerpVectors(this.from.t, this.to.t, e);

@@ -4,6 +4,7 @@ import * as THREE from 'three/webgpu';
 import {
   uniform, instancedBufferAttribute, hash, step, fract, positionWorld, positionLocal, normalLocal, instanceIndex, mix,
   smoothstep, vec2, vec3, float, sin, uv, dot, floor as tfloor, abs, texture, max, min, normalize, pow, length, cos, clamp, cameraPosition,
+  screenCoordinate,
 } from 'three/tsl';
 import { clamp as clampN, easeInOut } from './util.ts';
 
@@ -111,6 +112,47 @@ export function buildSnow(scene: THREE.Scene, count = 2600) {
 }
 
 // ---------------------------------------------------------------- the tower
+type N = ReturnType<typeof float>;
+/**
+ * A floor's skin: glass panes between mullions, lit (or not) from inside, the crowd inside as silhouettes against
+ * the light, the title band's strip kept dark. With `open`, the panes clear (a dithered dissolve, so the slab stays
+ * opaque and depth-sorted) and you see into the room: used only by the one floor we're flying into.
+ */
+function floorMaterial(i: { glow: N; crowd: N; sel: N; pulse: N; seed: N; open?: N }) {
+  const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.22, metalness: 0.85 });
+  const { glow, crowd, sel, pulse, seed } = i;
+  const u = uv().x, v = uv().y;
+  const cols = 132.0;
+  const wu = fract(u.mul(cols)), wv = v;
+  const pane = step(0.2, wu).mul(step(wu, 0.8)).mul(step(0.14, wv)).mul(step(wv, 0.72));   // mullions; the top band is the title's
+  const id = tfloor(u.mul(cols)).add(seed.mul(173.0));
+  const r = hash(id);
+  const lit = step(float(1).sub(max(glow, crowd.mul(0.85))), r);
+  const flick = sin(uTime.mul(0.4).add(r.mul(60))).mul(0.05).add(0.95);
+  const walls = step(abs(normalLocal.y), 0.5);
+  const interiorTint = mix(mix(vec3(1.0, 0.55, 0.24), vec3(1.0, 0.82, 0.56), hash(id.add(7))), vec3(0.62, 0.78, 1.0), step(0.93, hash(id.add(13))));
+  const dimRoom = vec3(0.08, 0.1, 0.16).mul(pane).mul(walls);           // unlit glass still reads as glass
+  mat.colorNode = mix(vec3(0.03, 0.035, 0.05), vec3(0.05, 0.06, 0.08), pane);
+  // the crowd: people inside, dark against the light, a place every 1.1 m round the floor, filled as more
+  // different people join the story's conversation; some seated, some standing, swaying a little
+  const um = u.mul(2 * Math.PI * R), place = tfloor(um.div(1.1)), at = fract(um.div(1.1));
+  const who = hash(place.add(seed.mul(57.0)));
+  const here = step(float(1).sub(crowd), who);
+  const cx = float(0.5).add(hash(place.add(3.1)).sub(0.5).mul(0.42)).add(sin(uTime.mul(0.45).add(who.mul(40))).mul(0.07));
+  const xm = at.sub(cx).mul(1.1), ym = v.mul(FLOOR_H * 0.94);
+  const top = mix(float(1.14), float(1.6), step(0.62, hash(place.add(7.7))));
+  const headD = length(vec2(xm, ym.sub(top))).sub(0.105);
+  const bodyD = length(vec2(xm.div(0.23), ym.sub(top.sub(0.37)).div(0.3))).sub(1).mul(0.23);
+  const person = smoothstep(0.012, -0.012, min(headD, bodyD)).mul(here);
+  // up close, through clearing glass, the real room shows: its silhouettes and glow give way as it does
+  const clear = i.open ? step(hash(screenCoordinate.x.add(screenCoordinate.y.mul(1931.7))).mul(0.999), i.open).mul(pane).mul(walls) : float(0);
+  mat.emissiveNode = interiorTint.mul(pane).mul(lit).mul(flick).mul(walls).mul(float(0.78).add(pulse.mul(1.4))).mul(float(1).sub(person.mul(0.9)))
+    .add(dimRoom.mul(0.25))
+    .add(vec3(1.0, 0.42, 0.1).mul(sel).mul(walls).mul(step(0.72, v)).mul(0.6));
+  if (i.open) { mat.opacityNode = float(1).sub(clear); mat.alphaTest = 0.5; }
+  return mat;
+}
+
 interface Slot { sid: number | null; y: number; yTarget: number; r: number; dir: THREE.Vector2; anim: { t0: number; from: number; to: number; dur: number; out: number } | null; scale: number; scaleTarget: number }
 
 export class Tower {
@@ -128,6 +170,19 @@ export class Tower {
   private m = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   hidden = -1;                          // slot whose slab is opened (we're inside it)
+  /** the slot whose glass is clearing (flying in or out), and how far (0 solid .. 1 clear) */
+  doorSlot = -1;
+  private door!: THREE.Mesh;
+  private u = { glow: uniform(0), crowd: uniform(0), sel: uniform(0), pulse: uniform(0), seed: uniform(0), open: uniform(0) };
+  /** Clear a floor's glass as far as `open` (0..1); -1 puts the door away. */
+  setDoor(slot: number, open = 0) {
+    this.doorSlot = slot;
+    this.u.open.value = open;
+    if (slot < 0) { this.door.visible = false; return; }
+    const light = this.aLight.array as Float32Array, st = this.aState.array as Float32Array;
+    this.u.glow.value = light[slot * 2]; this.u.crowd.value = light[slot * 2 + 1];
+    this.u.sel.value = st[slot * 3]; this.u.pulse.value = st[slot * 3 + 1]; this.u.seed.value = slot;
+  }
   /** which way the title signs face (the camera's bearing): a copy of each title is always square to the viewer */
   faceYaw = 0.64;
   private sign!: THREE.Group;
@@ -158,40 +213,17 @@ export class Tower {
     // floors: one instanced draw for all thirty
     const geo = new THREE.CylinderGeometry(R, R, FLOOR_H * 0.94, 96, 1);
     this.aLight = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS * 2), 2);
-    this.aState = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS * 2), 2);
-    const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.22, metalness: 0.85 });
-    {
-      const light = instancedBufferAttribute(this.aLight), state = instancedBufferAttribute(this.aState);
-      const glow = light.x, crowd = light.y, sel = state.x, pulse = state.y;
-      const u = uv().x, v = uv().y;
-      const cols = 132.0;
-      const wu = fract(u.mul(cols)), wv = v;
-      const pane = step(0.2, wu).mul(step(wu, 0.8)).mul(step(0.14, wv)).mul(step(wv, 0.72));   // mullions; the top band is the title's
-      const id = tfloor(u.mul(cols)).add(float(instanceIndex).mul(173.0));
-      const r = hash(id);
-      const lit = step(float(1).sub(max(glow, crowd.mul(0.85))), r);
-      const flick = sin(uTime.mul(0.4).add(r.mul(60))).mul(0.05).add(0.95);
-      const walls = step(abs(normalLocal.y), 0.5);
-      const interiorTint = mix(mix(vec3(1.0, 0.55, 0.24), vec3(1.0, 0.82, 0.56), hash(id.add(7))), vec3(0.62, 0.78, 1.0), step(0.93, hash(id.add(13))));
-      const dimRoom = vec3(0.08, 0.1, 0.16).mul(pane).mul(walls);           // unlit glass still reads as glass
-      mat.colorNode = mix(vec3(0.03, 0.035, 0.05), vec3(0.05, 0.06, 0.08), pane);
-      // the crowd: people inside, dark against the light, a place every 1.1 m round the floor, filled as more
-      // different people join the story's conversation; some seated, some standing, swaying a little
-      const um = u.mul(2 * Math.PI * R), place = tfloor(um.div(1.1)), at = fract(um.div(1.1));
-      const who = hash(place.add(float(instanceIndex).mul(57.0)));
-      const here = step(float(1).sub(crowd), who);
-      const cx = float(0.5).add(hash(place.add(3.1)).sub(0.5).mul(0.42)).add(sin(uTime.mul(0.45).add(who.mul(40))).mul(0.07));
-      const xm = at.sub(cx).mul(1.1), ym = v.mul(FLOOR_H * 0.94);
-      const top = mix(float(1.14), float(1.6), step(0.62, hash(place.add(7.7))));
-      const headD = length(vec2(xm, ym.sub(top))).sub(0.105);
-      const bodyD = length(vec2(xm.div(0.23), ym.sub(top.sub(0.37)).div(0.3))).sub(1).mul(0.23);
-      const person = smoothstep(0.012, -0.012, min(headD, bodyD)).mul(here);
-      mat.emissiveNode = interiorTint.mul(pane).mul(lit).mul(flick).mul(walls).mul(float(0.78).add(pulse.mul(1.4))).mul(float(1).sub(person.mul(0.9)))
-        .add(dimRoom.mul(0.25))
-        .add(vec3(1.0, 0.42, 0.1).mul(sel).mul(walls).mul(step(0.72, v)).mul(0.6));
-    }
+    this.aState = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS * 3), 3);
+    const light = instancedBufferAttribute(this.aLight), state = instancedBufferAttribute(this.aState);
+    const mat = floorMaterial({ glow: light.x, crowd: light.y, sel: state.x, pulse: state.y, seed: float(instanceIndex) });
     this.floors = new THREE.InstancedMesh(geo, mat, FLOORS);
     this.floors.frustumCulled = false;
+    // the door: one floor's slab on its own, its glass panes clearing (screen-door dissolve) as we fly in or out
+    const u = this.u;
+    this.door = new THREE.Mesh(geo, floorMaterial({ glow: float(u.glow), crowd: float(u.crowd), sel: float(u.sel), pulse: float(u.pulse), seed: float(u.seed), open: float(u.open) }));
+    this.door.visible = false;
+    this.door.frustumCulled = false;
+    scene.add(this.door);
 
     // title bands: a lit sign along the top of every floor, its story's title three times round (one copy reads
     // whole from wherever you stand), bright on the floor in focus so it can be read from outside
@@ -248,14 +280,14 @@ export class Tower {
         s.sid = sid; s.y = target; s.yTarget = target; s.r = 11; s.scale = 1; s.scaleTarget = 1;
         s.dir.set(-camDir.y, camDir.x);                  // sideways to the viewer, so the move reads
         s.anim = { t0: now, from: target, to: target, dur: 1.6, out: 11 };
-        (this.aState.array as Float32Array)[si * 2 + 1] = 1;
+        (this.aState.array as Float32Array)[si * 3 + 1] = 1;
         this.slotOf.set(sid, si);
       } else {
         const s = this.slots[si];
         const prevRank = this.rankOf.get(sid) ?? rank;
         if (Math.abs(prevRank - rank) >= 2) {
           s.anim = { t0: now, from: s.y, to: target, dur: 2.2, out: 4.4 }; s.dir.set(-camDir.y, camDir.x); moved = true;
-          (this.aState.array as Float32Array)[si * 2 + 1] = 1;
+          (this.aState.array as Float32Array)[si * 3 + 1] = 1;
         }
         s.yTarget = target; s.scaleTarget = 1;
       }
@@ -303,13 +335,13 @@ export class Tower {
   pulse(sid: number) {
     const si = this.slotOf.get(sid);
     if (si === undefined) return;
-    (this.aState.array as Float32Array)[si * 2 + 1] = 1;
+    (this.aState.array as Float32Array)[si * 3 + 1] = 1;
     this.aState.needsUpdate = true;
   }
 
   setSelected(slot: number) {
     const a = this.aState.array as Float32Array;
-    for (let i = 0; i < FLOORS; i++) a[i * 2] = i === slot ? 1 : 0;
+    for (let i = 0; i < FLOORS; i++) a[i * 3] = i === slot ? 1 : 0;
     this.aState.needsUpdate = true;
   }
 
@@ -337,7 +369,8 @@ export class Tower {
       const hide = i === this.hidden || s.sid === null;
       const sc = hide ? 0 : s.scale;
       v.set(s.dir.x * s.r, s.y, s.dir.y * s.r);
-      this.floors.setMatrixAt(i, this.m.compose(v, this.q, s3.set(sc, sc, sc)));
+      this.floors.setMatrixAt(i, this.m.compose(v, this.q, s3.set(i === this.doorSlot ? 0 : sc, i === this.doorSlot ? 0 : sc, i === this.doorSlot ? 0 : sc)));
+      if (i === this.doorSlot) { this.door.visible = !hide; this.door.position.copy(v); this.door.scale.setScalar(sc); }
       v.y = s.y + BAND_Y;
       this.bands.setMatrixAt(i, this.m.compose(v, this.qFace, s3.set(sc, sc, sc)));
     }
@@ -345,7 +378,7 @@ export class Tower {
     this.bands.instanceMatrix.needsUpdate = true;
     const st = this.aState.array as Float32Array;
     let any = false;
-    for (let i = 0; i < FLOORS; i++) if (st[i * 2 + 1] > 0) { st[i * 2 + 1] = Math.max(0, st[i * 2 + 1] - dt * 0.7); any = true; }
+    for (let i = 0; i < FLOORS; i++) if (st[i * 3 + 1] > 0) { st[i * 3 + 1] = Math.max(0, st[i * 3 + 1] - dt * 0.7); any = true; }
     if (any) this.aState.needsUpdate = true;
     this.searchlights.rotation.y = now * 0.12;
   }

@@ -7,7 +7,10 @@ import { LiveSync, type Floor, type Head } from './sync.ts';
 import { AudioEngine } from './audio.ts';
 import { buildSky, buildCity, buildSnow, Tower, uTime, uBeacon, uNeon, uNeonOf, floorY, FLOOR_H, R, TOWER_TOP } from './world.ts';
 import { TowerCam } from './towercam.ts';
-import { Interior, type TableSpot } from './interior.ts';
+import { Interior, uLift, type TableSpot } from './interior.ts';
+import { Room } from './room.ts';
+import { Mixer } from './mixer.ts';
+import { WalkCam, EYE } from './walk.ts';
 import { Crowd, setTimeValue } from './people.ts';
 import { Director } from './director.ts';
 import { esc } from './util.ts';
@@ -18,7 +21,7 @@ const params = new URLSearchParams(location.search);
 // development: towerd on its own port next to Vite; production: towerd serves this page, so the same origin
 const DATA = params.get('data') ?? (import.meta.env.DEV ? `http://${location.hostname || 'localhost'}:8787/live/` : '/live/');
 const recording = params.has('record');
-const autopilot = params.has('auto') || recording;
+const autopilot = (params.has('auto') || recording) && !params.has('manual');   // ?record&manual: recordings on foot
 let leanBack = autopilot;            // hands-free: floor to floor, table to table
 
 // ---------------------------------------------------------------- renderer + post
@@ -88,8 +91,24 @@ const sync = new LiveSync(DATA);
 const rig = new Rig(camera);
 const director = new Director(sync, audio, crowd, rig, ui);
 director.pushChair = (c, k) => interior.pushChair(c, k);
+// the room: one person per commenter, who walks between tables and in from the lift; every table near you talks
+const room = new Room(crowd);
+const mixer = new Mixer(sync, audio, crowd, room);
+director.room = room; director.ambient = true;
+room.spawn = (name, at, facing) => {
+  const i = crowd.add(name, { pos: at, facing, seated: false });
+  if (i >= 0) { uLift.value = 1; audio.sfx('ding'); }
+  return i;
+};
 
 const cam = new TowerCam(camera, renderer.domElement);
+const walk = new WalkCam(camera, renderer.domElement, scene);
+walk.lens = (f) => rig.lens(f);
+walk.obstacles = () => [
+  ...spots.filter((s) => !s.bar).map((s) => ({ x: s.pos.x, z: s.pos.z, r: s.radius + 0.42 })),
+  ...crowd.people.map((p) => ({ x: p.pose.pos.x, z: p.pose.pos.z, r: 0.34 })),
+];
+walk.onMove = () => { if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); ui.hint(''); } };
 const HOME = { pos: new THREE.Vector3(96, 58, 128), target: new THREE.Vector3(0, TOWER_TOP * 0.5, 0) };
 camera.position.copy(HOME.pos); camera.lookAt(HOME.target);
 
@@ -211,70 +230,93 @@ addEventListener('popstate', () => {
   else if (!q.get('table') && mode === 'table') standUp();
 });
 
-/** listen: they asked to hear it (Listen in, a tap on the floor), so unless they pick a table, we sit them at the best */
+/** the floor whose glass is clearing as we fly in or out (-1: none) */
+let doorSlot = -1;
+/** they picked a table themselves (hands-free and deep links otherwise sit at the best one) */
 let chose = false;
+let walkHint = !localStorage.getItem('tohn-walk');
+/**
+ * Into a floor. The room is built before we leave (behind its glass), so nothing pops in: one unbroken flight
+ * to the window, through glass that clears as we come close (people already talking inside), to where you'll
+ * stand. Then you're on foot. `listen` is what they asked for (Listen in): the room is already talking.
+ */
 async function enterFloor(sid: number, push = false, listen = false) {
+  void listen;
   if (!sync.head) return;
   const rank = sync.head.tower.indexOf(sid);
   const floor = await sync.floor(sid);
   if (!floor || rank < 0) return;
+  if (activeStory >= 0 && activeStory !== sid) sync.unwatch(activeStory);
   activeStory = sid; activeFloor = floor; focusSid = sid;
   roomY = floorY(rank) - FLOOR_H * 0.47;
   const slot = tower.slotOf.get(sid) ?? -1;
   prewarm(sid, 2);
   nav(`?story=${sid}`, push && mode === 'tower');
-  // the ride: from wherever we are to just outside this floor, then in through the glass
-  mode = 'floor'; ui.mode('floor'); cam.enabled = false; awake();
-  ui.tip(null); ui.hint('');
+  mode = 'floor'; ui.mode('floor'); cam.enabled = false; walk.enabled = false; awake();
+  ui.tip(null); ui.hint(''); ui.sitDown(null);
   const out = new THREE.Vector2(camera.position.x, camera.position.z).normalize();
-  const outside = new THREE.Vector3(out.x * (R + 8), roomY + 1.6, out.y * (R + 8));
+  roomYaw = Math.atan2(out.x, out.y);           // the room's front (its tables) faces the way we came in
+  interior.group.position.y = roomY; crowd.group.position.y = roomY; walk.roomY = roomY;
+  interior.group.visible = true; interior.presence(0);
+  const lay = interior.layout(floor, roomYaw, deepTable);
+  spots = lay.spots;
+  crowd.set(lay.people);
+  room.reset(spots, interior.door);
+  mixer.exclude = null;
+  mixer.start(floor, spots);
+  doorSlot = slot; tower.setDoor(slot, 0);
+  ui.floorHeader({ rank: rank + 1, title: floor.story.title, id: floor.story.id, url: floor.story.url });
+  const at = (r: number, h: number) => new THREE.Vector3(out.x * r, roomY + h, out.y * r);
+  const centre = new THREE.Vector3(0, roomY + 1.05, 0);
+  // where you'll stand: just in from the glass, clear of anyone (a head right in front of the lens is no welcome)
+  const free = (q: THREE.Vector3) => crowd.people.every((pp) => Math.hypot(pp.pose.pos.x - q.x, pp.pose.pos.z - q.z) > 0.75)
+    && spots.every((sp) => sp.bar || Math.hypot(sp.pos.x - q.x, sp.pos.z - q.z) > sp.radius + 0.6);
+  // (search near where we come in: a little either side along the glass, a little further in)
+  let stand = at(R - 1.7, EYE);
+  for (let k = 1; k < 30 && !free(stand); k++) {
+    const a = roomYaw + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 0.12, r = R - 1.5 - (k % 3) * 0.45;
+    stand = new THREE.Vector3(Math.sin(a) * r, roomY + EYE, Math.cos(a) * r);
+  }
   rig.pos.copy(camera.position); rig.target.copy(cam.look);
-  rig.matchLens(); rig.fovTarget = 45;                     // the ride starts with the lens as it is: no pop
-  rig.glide(outside, new THREE.Vector3(0, roomY + 0.8, 0), 2.4, clock, 0, 0.6);
+  rig.matchLens(); rig.fovTarget = 56;                     // the flight starts with the lens as it is: no pop
+  const far = camera.position.distanceTo(at(R + 14, 3.2));
+  // evenly spaced and level on the way in: a long first leg made the spline dip a floor before the glass
+  // through the middle of the windows (they run from 0.3 to 1.6 m), never the title sign above them
+  rig.fly([camera.position.clone(), at(R + 14, 2.4), at(R + 5.5, 1.35), at(R + 1.6, 1.15), at(R - 0.4, 1.2), stand],
+    [cam.look.clone(), new THREE.Vector3(0, roomY + 1.1, 0), new THREE.Vector3(0, roomY + 1.0, 0), centre, centre.clone(), centre.clone()],
+    Math.max(2.6, Math.min(4.0, 2.0 + far / 26)), clock, () => {
+      if (activeStory !== sid || mode !== 'floor') return;
+      walk.begin(stand, Math.atan2(-stand.x, -stand.z));     // facing into the room
+      ui.card(`Floor ${rank + 1} · ${floor.story.comments} comments`, floor.story.title);
+      ui.tableLabels(spots, roomY, (s) => sit(s, true), bestSpot(false));
+      ui.showLabels(true);
+      chose = false;
+      ui.hint(walkHint ? (touch ? 'Drag to look around · tap the floor to walk · tap someone to meet them' : 'Drag to look around · arrow keys or a click to walk · click someone to meet them') : '');
+      if (leanBack || deepLinked) after(deepLinked ? 1.2 : 2.4, () => { if (mode === 'floor' && !chose) sit(bestSpot()); deepLinked = false; });
+    });
   audio.sfx('whoosh');
   audio.setMode('floor');
-  after(1.5, () => {
-    if (activeStory !== sid) return;
-    tower.hidden = slot;
-    interior.group.position.y = roomY; crowd.group.position.y = roomY;
-    interior.group.visible = true;
-    roomYaw = Math.atan2(out.x, out.y);           // the room's front (its tables) faces the way we came in
-    const lay = interior.layout(floor, roomYaw, deepTable);
-    spots = lay.spots;
-    crowd.set(lay.people);
-    overview(clock, 2.0);
-    audio.sfx('ding');
-    ui.card(`Floor ${rank + 1} · ${floor.story.comments} comments`, floor.story.title);
-    ui.floorHeader({ rank: rank + 1, title: floor.story.title, id: floor.story.id, url: floor.story.url });
-    ui.tableLabels(spots, roomY, (s) => sit(s, true), bestSpot(false));
-    after(2.0, () => { if (mode === 'floor') ui.showLabels(true); });
-    chose = false;
-    ui.hint(listen && !leanBack ? 'Sitting down at the liveliest table · tap to choose another' : 'Pick a table to sit down and listen');
-    if (leanBack || deepLinked || listen) after(deepLinked ? 1.8 : listen ? 2.8 : 3.2, () => {
-      if (mode === 'floor' && !chose) sit(bestSpot(), listen && !leanBack);
-      deepLinked = false;
-    });
-  });
   sync.watch(sid, (f) => {
     activeFloor = f;
     // the room keeps up with the floor (new turns, audio that just landed): a table you sit at next starts current
     for (const sp of spots) {
       if (sp.bar && sp.index < 0) continue;
       const k = f.tables.findIndex((t) => t.root === sp.table.root);
-      if (k >= 0 && !(mode === 'table' && director.spot === sp)) { sp.table = f.tables[k]; sp.index = k; }
+      if (k < 0) continue;
+      const seated = mode === 'table' && director.spot === sp;
+      if (seated) continue;
+      if (!sp.bar) {
+        // a comment that just landed on Hacker News: its author comes in by the lift (or over from their table)
+        // and says it next, as they would in a real room
+        const known = new Set(sp.table.turns.map((u) => u.id));
+        for (const u of f.tables[k].turns) if (!known.has(u.id)) { mixer.breaking(sp, u); ui.toast(`<b>${esc(u.by)}</b> just commented on Hacker News`); }
+      }
+      sp.table = f.tables[k]; sp.index = k;
     }
     if (mode === 'table' && !params.has('freeze')) director.refresh(f);     // ?freeze: a take that live HN can't rewrite mid-shot
     else if (mode === 'floor') ui.tableLabels(spots, roomY, (s) => sit(s, true), bestSpot(false));
     if (mode === 'floor') prewarm(sid, 2);              // still standing here a minute on: keep the first words coming
   });
-}
-
-function overview(now: number, dur: number) {
-  const Y = new THREE.Vector3(0, 1, 0);
-  const p = new THREE.Vector3(0.6, 0, R - 0.75).applyAxisAngle(Y, roomYaw).setY(roomY + 1.95);
-  const t = new THREE.Vector3(0, 0, -0.4).applyAxisAngle(Y, roomYaw).setY(roomY + 0.45);
-  rig.fovTarget = 58;
-  rig.glide(p, t, dur, now, 0.4, 0);          // indoors: no crane arc, or we'd rise through the ceiling
 }
 
 let deepTable = Number(params.get('table') ?? 0);
@@ -286,9 +328,21 @@ function bestSpot(consume = true): TableSpot {
   return convo.find((s) => s.table.turns.filter((t) => t.v).length >= 2) ?? convo.find((s) => s.table.turns[0].v) ?? convo[0] ?? spots[0];
 }
 
+/** Where you stand at a table: at its edge, toward `from`, inside the glass. */
+function standAt(sp: TableSpot, from: THREE.Vector3) {
+  const away = new THREE.Vector3(from.x - sp.pos.x, 0, from.z - sp.pos.z);
+  if (away.lengthSq() < 1e-4) away.set(sp.pos.x || 1, 0, sp.pos.z);
+  away.normalize();
+  const p = new THREE.Vector3(sp.pos.x + away.x * (sp.radius + 1.05), 0, sp.pos.z + away.z * (sp.radius + 1.05));
+  const r = Math.hypot(p.x, p.z);
+  if (r > R - 0.65) p.multiplyScalar((R - 0.65) / r);
+  return p;
+}
+
 function sit(s: TableSpot | undefined, push = false) {
   if (!s || !activeFloor) return;
   const fromFloor = mode === 'floor';
+  chose = true;
   // always the table as the floor has it now (its turns and audio move on while we stand here)
   if (!s.bar) {
     const k = activeFloor.tables.findIndex((t) => t.root === s!.table.root);
@@ -302,6 +356,13 @@ function sit(s: TableSpot | undefined, push = false) {
       table: { root: -1, seated: [], standing: remarks.map((x) => x.table.turns[0].by), turns: remarks.map((x, k) => ({ ...x.table.turns[0], gapMs: k ? 750 : 0 })) },
       tableOf: new Map(remarks.map((x) => [x.table.turns[0].id, x.index])) };
   }
+  // the table we leave (next table) goes back to the room where we left it; this one comes to the director from
+  // where the room had got to: the conversation you were overhearing goes on
+  if (mode === 'table' && director.spot && !director.spot.bar && director.spot !== s) mixer.handBack(director.spot, director.turnAt);
+  const from = s.bar ? 0 : mixer.take(s);
+  mixer.exclude = s;
+  if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.enabled = false; }
+  ui.sitDown(null);
   mode = 'table'; ui.mode('table'); audio.setMode('table'); audio.sfx('sit'); ui.showLabels(false); awake();
   ui.flash(); setDof(true);
   nav(`?story=${activeFloor.story.id}&table=${s.table.root}`, fromFloor && depth === 1);
@@ -310,7 +371,7 @@ function sit(s: TableSpot | undefined, push = false) {
   director.others = spots.filter((x) => !x.bar && x !== s).map((x) => ({ pos: x.pos, turns: x.table.turns }));
   director.jumpTo = deepFrom; deepFrom = 0;
   director.skipIds = new Set((params.get('skip') ?? '').split(',').filter(Boolean).map(Number));
-  director.start(activeFloor, s, roomY, clock);
+  director.start(activeFloor, s, roomY, clock, from);
 }
 
 function nextTable() {
@@ -327,40 +388,60 @@ director.onEnd = () => {
     // done with this floor's best tables: ride to the next floor down the ranking
     const order = sync.head.tower, next = order[(order.indexOf(activeStory) + 1) % Math.min(order.length, 10)];
     leaveFloor();
-    after(2.6, () => enterFloor(next));
+    after(2.9, () => enterFloor(next));
   } else nextTable();
 };
 director.onNewReply = (by) => ui.toast(`<b>${esc(by)}</b> just replied on Hacker News`);
 
+/** Up from the table and on your feet beside it, facing it: the room plays on, this table where you left it. */
 function standUp() {
   leanBack = false;
+  const sp = director.spot, idx = director.turnAt;
   director.stop(); setDof(false);
+  if (sp && !sp.bar) mixer.handBack(sp, idx);
+  mixer.exclude = null;
   mode = 'floor'; ui.mode('floor'); audio.setMode('floor'); awake();
-  ui.hint('Pick a table to sit down and listen');
-  overview(clock, 1.6);
-  after(1.6, () => { if (mode === 'floor') ui.showLabels(true); });
+  ui.hint('');
+  const c = sp?.pos ?? new THREE.Vector3(0, 0, 0);
+  const p = standAt(sp ?? { pos: c, radius: 0.6 } as TableSpot, camera.position);
+  const stand = new THREE.Vector3(p.x, roomY + EYE, p.z), look = new THREE.Vector3(c.x, roomY + 1.0, c.z);
+  rig.pos.copy(camera.position);
+  rig.fly([camera.position.clone(), camera.position.clone().lerp(stand, 0.5).setY(roomY + EYE), stand], [rig.target.clone(), look, look.clone()], 1.3, clock, () => {
+    if (mode !== 'floor') return;
+    walk.begin(stand, Math.atan2(c.x - stand.x, c.z - stand.z));
+    ui.tableLabels(spots, roomY, (s) => sit(s, true), bestSpot(false));
+    ui.showLabels(true);
+  });
 }
 
+/** Back out through the glass in front of you, still facing the room: the tower comes into view as you pull away,
+ *  and the glass closes behind you before the room goes (frame() clears it once you're well out). */
 function leaveFloor() {
-  director.stop(); setDof(false);
+  const look0 = walk.enabled ? walk.look.clone() : rig.target.clone();
+  director.stop(); setDof(false); mixer.exclude = null;
   nav(location.pathname, false);
   const left = activeStory;
   if (activeStory >= 0) sync.unwatch(activeStory);
   activeStory = -1; activeFloor = null;
   mode = 'tower'; ui.mode('tower'); audio.setMode('tower'); awake();
-  ui.floorHeader(null); ui.clearLabels(); ui.hint('');
-  // back out through the glass to stand facing the floor you were on: it stays in focus
+  walk.enabled = false;
+  ui.floorHeader(null); ui.clearLabels(); ui.hint(''); ui.sitDown(null); ui.profile(null);
   const r = Math.max(0, sync.head?.tower.indexOf(left) ?? cam.rank);
   focusSid = sync.head?.tower[r] ?? focusSid;
-  const { pos, look } = cam.pose(r);
-  rig.glide(pos, look, 2.2, clock);
+  if (tower.slotOf.has(left)) doorSlot = tower.slotOf.get(left)!;
+  const p = camera.position.clone(), dir = new THREE.Vector3(p.x, 0, p.z);
+  if (dir.lengthSq() < 0.25) dir.set(-Math.sin(walk.yaw), 0, -Math.cos(walk.yaw));
+  dir.normalize();
+  const { pos, look } = cam.poseAt(r, Math.atan2(dir.x, dir.z));
+  const centre = new THREE.Vector3(0, roomY + 1.05, 0);
+  rig.pos.copy(p); rig.target.copy(look0); rig.matchLens(); rig.fovTarget = 45;
+  rig.fly([p, new THREE.Vector3(dir.x * (R - 0.3), roomY + 1.65, dir.z * (R - 0.3)), new THREE.Vector3(dir.x * (R + 6), roomY + 2.3, dir.z * (R + 6)), pos],
+    [look0, centre, new THREE.Vector3(0, roomY + 1.2, 0), look], 2.8, clock, () => {
+      if (mode !== 'tower') return;
+      cam.resume(r);
+      showFocus();
+    });
   audio.sfx('whoosh');
-  after(2.25, () => {
-    if (mode !== 'tower') return;                 // they already rode up somewhere else
-    tower.hidden = -1; interior.group.visible = false; crowd.set([]);
-    cam.resume(r);
-    showFocus();
-  });
 }
 
 document.getElementById('back')!.onclick = () => { leanBack = false; stepOut(mode === 'table' ? 2 : 1); };
@@ -409,14 +490,45 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   } else ui.tip(null);
   renderer.domElement.style.cursor = sid !== null ? 'pointer' : 'grab';
 });
-renderer.domElement.addEventListener('pointerdown', (e) => { downAt = performance.now(); downXY = [e.clientX, e.clientY]; if (mode === 'floor') { chose = true; ui.hint('Pick a table to sit down and listen'); } });
+renderer.domElement.addEventListener('pointerdown', (e) => { downAt = performance.now(); downXY = [e.clientX, e.clientY]; if (mode === 'floor') chose = true; });
+// at a table, a tap on someone opens their card
 renderer.domElement.addEventListener('pointerup', (e) => {
-  if (mode !== 'floor' || performance.now() - downAt > 400 || Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 8) return;
+  if (mode !== 'table' || performance.now() - downAt > 400 || Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 8) return;
   ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(ptr, camera);
-  const k = ray.intersectObject(interior.tableMesh)[0]?.instanceId;
-  if (k !== undefined) sit(spots.filter((x) => !x.bar)[k], true);
+  const i = crowd.pick(ray);
+  if (i >= 0) showProfile(crowd.people[i].name);
 });
+const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hitPoint = new THREE.Vector3();
+walk.onTap = (x, y) => {
+  ptr.set((x / innerWidth) * 2 - 1, -(y / innerHeight) * 2 + 1);
+  ray.setFromCamera(ptr, camera);
+  const i = crowd.pick(ray);
+  if (i >= 0) { showProfile(crowd.people[i].name); return; }
+  const k = ray.intersectObject(interior.tableMesh)[0]?.instanceId;
+  if (k !== undefined) {
+    const sp = spots.filter((x) => !x.bar)[k];
+    if (sp) { const p = standAt(sp, walk.pos); walk.goTo(p, Math.atan2(sp.pos.x - p.x, sp.pos.z - p.z)); }
+    return;
+  }
+  floorPlane.constant = -roomY;
+  if (ray.ray.intersectPlane(floorPlane, hitPoint)) walk.goTo(hitPoint);
+};
+
+// ---------------------------------------------------------------- commenters: who they are
+const profiles = new Map<string, Promise<unknown>>();
+function showProfile(name: string) {
+  const here = spots.filter((s) => s.table.turns.some((t) => t.by === name));
+  const said = here.reduce((n, s) => n + s.table.turns.filter((t) => t.by === name).length, 0);
+  let p = profiles.get(name);
+  if (!p) {
+    p = fetch(`/profile/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    profiles.set(name, p);
+    p.then((x) => { if (!x) profiles.delete(name); });
+  }
+  ui.profile({ name, said, tables: here.length, data: null });
+  p.then((data) => ui.profile({ name, said, tables: here.length, data: data as never }, true));
+}
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); showFocus(); });
 
 // ---------------------------------------------------------------- the lock screen and control centre: what's playing
@@ -482,7 +594,31 @@ function frame(dt: number, draw = true) {
   if (recording) audio.vclock = clock;
   tower.update(clock, dt);
   if (mode === 'tower' && (cam.enabled || !entered)) { cam.update(dt); tower.faceYaw = cam.theta; }
+  else if (mode === 'floor' && walk.enabled) walk.update(dt);
   else rig.update(clock, dt);
+  if (activeFloor || doorSlot >= 0) mixer.update(camera.position);
+  uLift.value = Math.max(0, uLift.value - dt * 0.45);
+  // the floor we fly into (or out of): its glass clears as we come close; inside, there is no slab at all; well
+  // out again, behind closed glass, the room goes
+  if (doorSlot >= 0) {
+    const p = camera.position, rad = Math.hypot(p.x, p.z) - R;
+    if (rad < -0.1 && Math.abs(p.y - (roomY + 1.2)) < FLOOR_H * 0.8) { tower.hidden = doorSlot; interior.presence(1); }
+    else {
+      tower.hidden = -1;
+      const k = Math.max(0, Math.min(1, (9 - rad) / 7.5));
+      tower.setDoor(doorSlot, k * k * (3 - 2 * k));
+      interior.presence(Math.max(0, Math.min(1, (12 - rad) / 9)));
+      if (mode === 'tower' && rad > 11) {
+        tower.setDoor(-1); doorSlot = -1;
+        interior.group.visible = false; crowd.set([]); mixer.stop(); spots = [];
+      }
+    }
+  }
+  // on foot beside a table: offer to sit down there
+  if (mode === 'floor' && walk.enabled && !walk.walking) {
+    const near = spots.filter((s) => !s.bar).map((s) => ({ s, d: Math.hypot(s.pos.x - walk.pos.x, s.pos.z - walk.pos.z) - s.radius })).sort((a, b) => a.d - b.d)[0];
+    ui.sitDown(near && near.d < 1.45 ? { name: near.s.table.turns[0]?.by ?? '', go: () => sit(near.s, true) } : null);
+  } else if (mode === 'floor') ui.sitDown(null);
   neonTick(clock);
   director.update(clock, dt);
   crowd.update(dt);
@@ -531,6 +667,17 @@ if (recording) {
     orbit: (a: number, r = 150, _h = 62, ty?: number) => { cam.theta = a; cam.d = cam.dTarget = r; cam.y = cam.yTarget = ty ?? TOWER_TOP * 0.5; },
     focus: (rank: number) => cam.focus(rank),
     leave: () => leaveFloor(),
+    walkTo: (x: number, z: number) => walk.goTo(new THREE.Vector3(x, 0, z)),
+    /** debug: call someone (or a stranger, who comes by lift) over to the k-th table */
+    callOver: (name: string, k: number) => room.callOver(name, spots.filter((sp) => !sp.bar)[k], audio.now()),
+    tables: () => spots.filter((sp) => !sp.bar).map((sp, k) => ({ k, x: +sp.pos.x.toFixed(2), z: +sp.pos.z.toFixed(2), people: sp.seats.map((st) => st.name) })),
+    lookAt: (x: number, z: number) => { walk.yaw = Math.atan2(x - walk.pos.x, z - walk.pos.z); },
+    towerDebug: () => ({ roomY, doorSlot, hidden: tower.hidden, cam: camera.position.toArray().map((v) => +v.toFixed(2)),
+      slots: tower.slots.map((sl, i) => ({ i, sid: sl.sid, rank: sync.head?.tower.indexOf(sl.sid ?? -1), y: +sl.y.toFixed(2), label: (tower as unknown as { drawn: string[] }).drawn[i] })).filter((x) => x.rank !== undefined && x.rank >= 0 && x.rank < 5) }),
+    standUp: () => standUp(),
+    sit: () => sit(bestSpot()),
+    profile: (name: string) => showProfile(name),
+    people: () => crowd.people.map((p, i) => ({ i, name: p.name, x: p.pose.pos.x, z: p.pose.pos.z, walking: crowd.isWalking(i) })),
     fov: () => camera.fov,
     /** debug: hold a face (any Expr fields) on someone, for the face sheet */
     face: (name: string, e: Record<string, number>) => { const i = crowd.index(name); if (i < 0) return false; crowd.active.add(i); Object.assign(crowd.target(i)!, e); return true; },

@@ -11,6 +11,8 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { gzipSync, brotliCompressSync, constants as zlibc } from 'node:zlib';
+import { homedir } from 'node:os';
+import Anthropic from '@anthropic-ai/sdk';
 import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, openSync, readSync, closeSync, rmdirSync } from 'node:fs';
 import { dirname, join, extname, resolve } from 'node:path';
 import { Live, type Item, type FloorSnapshot } from '../../../packages/core/src/live.ts';
@@ -339,6 +341,19 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     });
     return;
   }
+  if (url.pathname.startsWith('/profile/')) {
+    // a commenter's card: only for someone on the tower now, never for someone who opted out
+    const name = decodeURIComponent(url.pathname.slice(9));
+    if (!/^[A-Za-z0-9_-]{2,15}$/.test(name) || !onTower.has(name) || live.optOut.has(name)) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+    if (!allow(req)) { res.writeHead(429, { 'retry-after': '5' }); res.end(); return; }
+    profileOf(name).then((d) => {
+      if (res.writableEnded) return;
+      if (!d) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'public, max-age=3600' });   // ~1 KB: not worth compressing
+      res.end(JSON.stringify(d));
+    }, () => { if (!res.writableEnded) { res.writeHead(503, { 'cache-control': 'no-store' }); res.end(); } });
+    return;
+  }
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: queued.size, demand: demand.size, tower: live.tower.length, audience: audience() }));
@@ -518,6 +533,83 @@ async function prune() {
 const offSince = new Map<number, number>();
 const tries = new Map<number, number>();
 
+// ---------------------------------------------------------------- commenters: a card each
+// Their public Hacker News profile and a sample of their recent comments, summarised by Claude Haiku: what they
+// tend to talk about and how they take part, never anything personal they haven't written themselves. Cached for
+// three days, and only for people on the tower now (see /profile/ above).
+const onTower = new Set<string>();
+const PROFILES = join(VAR, 'profiles');
+mkdirSync(PROFILES, { recursive: true });
+const profileBudget: Bucket = { n: 20, at: Date.now() };          // model calls: about twenty a minute at most
+const building = new Map<string, Promise<unknown>>();
+let claude: Anthropic | null | undefined;
+/** The Anthropic API with its own key, else the in-cluster auth2api gateway (as the voice worker does). */
+function anthropic() {
+  if (claude !== undefined) return claude;
+  const own = process.env.ANTHROPIC_API_KEY;
+  let gateway = process.env.AUTH2API_KEY;
+  if (!own && !gateway) { try { gateway = readFileSync(join(homedir(), '.cache/tohn-auth2api.key'), 'utf8').trim(); } catch { /* none here */ } }
+  claude = own ? new Anthropic({ apiKey: own, timeout: 25_000, maxRetries: 1 })
+    : gateway ? new Anthropic({ apiKey: gateway, baseURL: process.env.AUTH2API_URL ?? 'http://auth2api.apps.svc.cluster.local:8317', timeout: 25_000, maxRetries: 1 })
+    : null;
+  return claude;
+}
+/** HN's HTML (paragraphs, links, entities) as plain text */
+function plain(html: string) {
+  return html.replace(/<p>/gi, '\n\n').replace(/<[^>]+>/g, '')
+    .replace(/&#x27;|&#39;/g, "'").replace(/&quot;/g, '"').replace(/&#x2F;/g, '/').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&')
+    .replace(/\n{3,}/g, '\n\n').trim();
+}
+function profileOf(name: string): Promise<unknown> {
+  const file = join(PROFILES, `${name}.json`);
+  try {
+    const c = JSON.parse(readFileSync(file, 'utf8'));
+    if (Date.now() - c.at < c.ttl) return Promise.resolve(c.data);
+  } catch { /* none yet */ }
+  let p = building.get(name);
+  if (!p) { p = buildProfile(name, file).finally(() => building.delete(name)); building.set(name, p); }
+  return p;
+}
+async function buildProfile(name: string, file: string) {
+  const u = await get<{ id: string; created: number; karma: number; about?: string; submitted?: number[] } | null>(`user/${name}`);
+  if (!u) return null;
+  const recent = await many((u.submitted ?? []).slice(0, 30), true);
+  const comments = recent.filter((it) => it.type === 'comment' && it.text && !it.dead && !it.deleted).slice(0, 20).map((it) => plain(it.text!).slice(0, 360));
+  const titles = recent.filter((it) => it.type === 'story' && it.title).slice(0, 8).map((it) => it.title!);
+  const about = plain(u.about ?? '').slice(0, 600);
+  let ai: { brief?: string; interests?: string[]; role?: string } = {};
+  let ok = false;
+  const c = anthropic();
+  if (c && (comments.length || about) && take(profileBudget, 20 / 60, 20)) {
+    const prompt = 'You write a short, fair, factual card about a Hacker News commenter for a site where their public comments are read aloud. '
+      + 'From their profile text and a sample of their recent comments, reply with JSON only: {"brief": "...", "interests": ["..."], "role": "..."}.\n'
+      + '- brief: one sentence of at most 22 words on what they tend to discuss and how they take part (explaining, asking, arguing, sharing experience). Present tense, third person, no name.\n'
+      + '- interests: 3 to 6 topics, 1 to 3 words each, lower case unless a proper noun.\n'
+      + '- role: their work or project only if their profile text states it plainly, else "".\n'
+      + 'Never guess or mention age, gender, nationality, location, ethnicity, religion, politics, health, or anything personal they have not written in their profile. No judgements of character, no quotes.\n\n'
+      + `Profile text: ${about || '(empty)'}\n\nRecent comments:\n${comments.map((t) => '- ' + t.replace(/\s+/g, ' ')).join('\n') || '(none)'}\n\nStories they submitted: ${titles.join(' | ') || '(none)'}`;
+    try {
+      const msg = await c.messages.create({ model: process.env.TAG_MODEL ?? 'claude-haiku-5-5', max_tokens: 400, thinking: { type: 'disabled' }, messages: [{ role: 'user', content: prompt }] });
+      if (msg.stop_reason !== 'refusal') {
+        let text = '';
+        for (const b of msg.content) if (b.type === 'text') text += b.text;
+        const j = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+        ai = {
+          brief: typeof j.brief === 'string' ? j.brief.slice(0, 200) : undefined,
+          interests: Array.isArray(j.interests) ? j.interests.filter((x: unknown) => typeof x === 'string').map((x: string) => x.slice(0, 32)).slice(0, 6) : undefined,
+          role: typeof j.role === 'string' ? j.role.slice(0, 80) : undefined,
+        };
+        ok = true;
+      }
+    } catch (e) { console.error('profile', name, String(e).slice(0, 160)); }
+  }
+  const data = { name, karma: u.karma, created: u.created, about: about.slice(0, 420), ...ai };
+  // a summary keeps three days; without one (no budget, model down), try again within the hour
+  write(`../profiles/${name}.json`, { at: Date.now(), ttl: ok || (!comments.length && !about) ? 3 * 86400_000 : 3600_000, data });
+  void file;
+  return data;
+}
+
 // ---------------------------------------------------------------- bootstrap, then follow the firehose
 const t0 = Date.now();
 async function forever<T>(what: string, f: () => Promise<T>): Promise<T> {
@@ -580,7 +672,11 @@ for (;;) {
   } catch (e) { console.error('ingest', String(e).slice(0, 200)); }
   try {
     readVoiced();
-    if (Date.now() - lastChores > 60_000) { lastChores = Date.now(); readOptOut(); }
+    if (Date.now() - lastChores > 60_000 || !onTower.size) {
+      lastChores = Date.now(); readOptOut();
+      onTower.clear();
+      for (const it of live.items.values()) if (it.by && !it.dead && !it.deleted) onTower.add(it.by);
+    }
     if (Date.now() - lastPrune > 600_000 && !pruning) {
       lastPrune = Date.now(); pruning = true;
       prune().catch((e) => console.error('prune', String(e).slice(0, 200))).finally(() => { pruning = false; });
