@@ -14,7 +14,7 @@ usage: worker.py <var dir>
 env:   TTS_ENGINE=kokoro (default, local CPU) | openai (gpt-4o-mini-tts, needs OPENAI_API_KEY;
        each person gets a persistent persona prompt; OPENAI_BUDGET_MIN caps spend, default 300 minutes)
 """
-import hashlib, json, os, re, signal, sys, time, urllib.request
+import hashlib, json, os, re, signal, sys, threading, time, urllib.request
 import numpy as np
 import soundfile as sf
 
@@ -317,6 +317,52 @@ def urgent(jobs_dir, own=None, mine=10 ** 6):
         return False
 
 
+class Interruptible:
+    """The ONNX session, cancellable from another thread: a clip being voiced for nobody in particular gives way at
+    once to someone waiting (it used to finish first, up to ~14 s on one thread). The job keeps its file and resumes
+    from its last finished clip."""
+
+    def __init__(self, sess, ort):
+        self.sess, self.ort, self.opts, self.cancelled = sess, ort, None, False
+
+    def run(self, names, feed, run_options=None):
+        self.opts, self.cancelled = self.ort.RunOptions(), False
+        try:
+            return self.sess.run(names, feed, run_options=self.opts)
+        finally:
+            self.opts = None
+
+    def cancel(self):
+        o = self.opts
+        if o is not None:
+            self.cancelled = True
+            o.terminate = True
+
+    def __getattr__(self, k):
+        return getattr(self.sess, k)
+
+
+def voice_watching(k, jobs_dir, j, fn):
+    """Run fn() (one clip of job j on Kokoro session k) while watching for someone more urgent; None if cancelled."""
+    stop = threading.Event()
+
+    def watch():
+        while not stop.wait(0.25):
+            if urgent(jobs_dir, own=j["id"], mine=j.get("prio", 10 ** 6)):
+                k.sess.cancel()
+                return
+    t = threading.Thread(target=watch, daemon=True)
+    t.start()
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001
+        if k.sess.cancelled:
+            return None
+        raise
+    finally:
+        stop.set()
+
+
 class Burst:
     """Listeners get the fast session (FAST_THREADS cores), background work the one-thread one. This VPS takes CPU
     back under sustained multi-core load (steal for every process on it), so bursts are budgeted: at most
@@ -357,7 +403,9 @@ def main(var):
             so.intra_op_num_threads = threads
             so.inter_op_num_threads = 1
             so.add_session_config_entry("session.intra_op.allow_spinning", "0")   # idle threads sleep, not spin
-            return Kokoro.from_session(ort.InferenceSession(f"{models}/{model}", so, providers=providers), f"{models}/voices-v1.0.bin")
+            k = Kokoro.from_session(ort.InferenceSession(f"{models}/{model}", so, providers=providers), f"{models}/voices-v1.0.bin")
+            k.sess = Interruptible(k.sess, ort)
+            return k
         kokoro = session(1)
         # listeners get three cores (1.81x real time here), so a table never waits on its next line
         fast_n = int(os.environ.get("FAST_THREADS", "3"))
@@ -456,9 +504,14 @@ def main(var):
                         speed = pace * SPEED.get(emotion, 1.0) * (0.97 if who != j["by"] else 1.0)
                         quick = fast is not None and klass(j.get("prio", 10 ** 6)) < 3 and burst.ok()
                         c0 = time.time()
-                        audio, sr = (fast if quick else kokoro).create(spoken, voice=style, speed=speed, lang=lang, sentence_pause=0.16, clause_pause=0.07)
+                        k_ = fast if quick else kokoro
+                        out = voice_watching(k_, jobs_dir, j, lambda: k_.create(spoken, voice=style, speed=speed, lang=lang, sentence_pause=0.16, clause_pause=0.07))
                         if quick:
                             burst.spent(c0, time.time())
+                        if out is None:                  # someone more urgent arrived mid-clip: they go first
+                            dropped = True
+                            break
+                        audio, sr = out
                 except Exception as e:  # noqa: BLE001
                     print("tts failed", j["id"], str(e)[:120], file=sys.stderr, flush=True)
                     continue
