@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070a14">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TowerOfHan">
 <title>TowerOfHan — Hacker News, as a living tower</title>
 <style>
   :root { --ink:#efe9e0; --mute:#9aa3b6; --line:rgba(255,255,255,.09); --glass:rgba(12,14,22,.62); --hn:#ff6a1a;
@@ -14,14 +21,20 @@
   a { color:inherit }
   button { font:inherit; color:inherit }
 
-  #brand { position:fixed; left:22px; top:18px; pointer-events:none; text-shadow:0 1px 12px rgba(0,0,0,.6) }
-  #brand .w { font-size:17px; font-weight:650; letter-spacing:.2px }
-  #brand .w i { font-style:normal; color:var(--hn) }
+  #brand { position:fixed; left:max(22px, env(safe-area-inset-left)); top:max(18px, env(safe-area-inset-top)); pointer-events:none; text-shadow:0 1px 12px rgba(0,0,0,.6); z-index:3 }
+  #scrim { position:fixed; left:0; right:0; top:0; height:110px; background:linear-gradient(rgba(5,7,14,.55), rgba(5,7,14,0)); pointer-events:none; z-index:2; transition:opacity .6s }
+  body[data-mode="table"] #scrim { opacity:0 }
+  #brand .w { font-size:17px; font-weight:650; letter-spacing:.2px; color:#fff3ea; text-shadow:0 0 6px rgba(255,154,107,.55), 0 0 18px rgba(255,120,60,.25), 0 1px 12px rgba(0,0,0,.6);
+              animation:ignite 1.5s steps(1) .4s both }
+  #brand .w i { font-style:normal; color:var(--hn); text-shadow:0 0 8px rgba(255,90,10,.8), 0 0 22px rgba(255,90,10,.35); animation:buzz 11s steps(1) 3s infinite }
+  @keyframes ignite { 0% { opacity:.12 } 8% { opacity:1 } 14% { opacity:.2 } 22% { opacity:.9 } 27% { opacity:.3 } 40%, 100% { opacity:1 } }
+  @keyframes buzz { 0%, 91% { opacity:1 } 92% { opacity:.25 } 93% { opacity:1 } 94.5% { opacity:.35 } 95.5%, 100% { opacity:1 } }
+  @media (prefers-reduced-motion: reduce) { #brand .w, #brand .w i { animation:none } }
   #live { margin-top:3px; font-size:12px; color:var(--mute); font-variant-numeric:tabular-nums }
   #live::before { content:''; display:inline-block; width:6px; height:6px; border-radius:50%; background:#3ddc84; margin-right:7px; vertical-align:1px; box-shadow:0 0 0 0 rgba(61,220,132,.6); animation:pulse 2s infinite }
   @keyframes pulse { 0% { box-shadow:0 0 0 0 rgba(61,220,132,.55) } 70% { box-shadow:0 0 0 7px rgba(61,220,132,0) } 100% { box-shadow:0 0 0 0 rgba(61,220,132,0) } }
 
-  #lean { position:fixed; right:20px; top:18px; background:var(--glass); border-color:var(--line); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); z-index:3 }
+  #lean { position:fixed; right:max(20px, env(safe-area-inset-right)); top:max(18px, env(safe-area-inset-top)); background:var(--glass); border-color:var(--line); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); z-index:3 }
   body:not([data-mode="tower"]) #lean { display:none }
   #tip { position:fixed; left:0; top:0; display:flex; gap:12px; max-width:360px; padding:12px 14px; border-radius:12px; background:var(--glass); border:1px solid var(--line);
          backdrop-filter:blur(14px) saturate(1.2); -webkit-backdrop-filter:blur(14px); opacity:0; transition:opacity .15s; pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.35) }
@@ -32,7 +45,43 @@
   #tip .m { color:var(--mute); font-size:12px; margin-top:3px }
   #tip .m b { color:#ffd2a8; font-weight:600 }
 
-  #floorbar { position:fixed; left:50%; top:16px; transform:translate(-50%,-8px); display:flex; align-items:center; gap:14px; max-width:min(860px, 92vw);
+  #focus { position:fixed; left:12px; right:12px; bottom:calc(12px + env(safe-area-inset-bottom)); display:flex; gap:14px; align-items:flex-start; padding:14px 14px 14px 12px;
+           border-radius:16px; background:var(--glass); border:1px solid var(--line); backdrop-filter:blur(16px) saturate(1.2); -webkit-backdrop-filter:blur(16px) saturate(1.2);
+           box-shadow:0 14px 44px rgba(0,0,0,.4); z-index:3; opacity:0; transform:translateY(12px); transition:opacity .35s, transform .35s; pointer-events:none; cursor:pointer; text-align:left; width:auto }
+  #focus.show { opacity:1; transform:none; pointer-events:auto }
+  body:not([data-mode="tower"]) #focus { opacity:0; pointer-events:none; transform:translateY(12px) }
+  #focus .rank { font-size:30px; line-height:1.02; font-weight:750; min-width:34px; text-align:right }
+  #focus .body { min-width:0; flex:1 }
+  #focus .t { font-size:17px; font-weight:650; line-height:1.28; letter-spacing:-.1px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden }
+  #focus .m { color:var(--mute); font-size:12.5px; margin-top:5px; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  #focus .m b { color:#ffd2a8; font-weight:600 }
+  #focus .crowd { color:var(--ink); font-weight:600 } #focus .crowd svg { width:13px; height:13px; fill:var(--hn); vertical-align:-2px; margin-right:4px }
+  #focus .go { display:inline-flex; flex:none; white-space:nowrap; align-items:center; gap:8px; margin-top:11px; border:0; border-radius:999px; padding:9px 16px 9px 15px; background:var(--ink); color:#15110d; font-weight:700; font-size:14px; cursor:pointer }
+  #focus .go svg { width:15px; height:15px }
+  #focus .act { display:flex; align-items:center; gap:12px; margin-top:11px }
+  #focus .act .go { margin-top:0 }
+  #focus .fhint { display:none; color:var(--mute); font-size:12px; line-height:1.3 }
+  #focus.first .fhint { display:block }
+  #focus:hover .go, #focus .go:focus-visible { background:#fff }
+  #elevator { position:fixed; right:max(6px, env(safe-area-inset-right)); top:max(96px, 15vh); bottom:calc(168px + env(safe-area-inset-bottom)); width:34px; display:flex; flex-direction:column; justify-content:space-between;
+              align-items:flex-end; padding:2px 8px 2px 0; z-index:3; touch-action:none; cursor:ns-resize; opacity:0; transition:opacity .4s; outline:none }
+  #elevator.show { opacity:1 }
+  body:not([data-mode="tower"]) #elevator { opacity:0; pointer-events:none }
+  #elevator i { display:block; width:8px; height:2px; border-radius:1px; background:rgba(255,255,255,.22); transition:width .2s, background .2s }
+  #elevator i.hot { background:rgba(255,214,180,.62) }
+  #elevator i.on { width:18px; background:var(--hn); box-shadow:0 0 8px rgba(255,106,26,.6) }
+  #elevator .num { position:absolute; right:30px; transform:translateY(-50%); padding:1px 6px; border-radius:6px; background:rgba(8,10,16,.72); font-size:12px; font-weight:700; color:var(--hn);
+                   font-variant-numeric:tabular-nums; pointer-events:none; transition:top .15s }
+  #elevator:focus-visible i.on { outline:2px solid #fff; outline-offset:3px }
+  @media (min-width: 900px) and (min-height: 560px) {
+    #focus { left:24px; right:auto; bottom:24px; width:min(520px, 42vw) }
+    #elevator { right:14px; top:18vh; bottom:18vh }
+  }
+  @media (max-height: 480px) {
+    #focus { padding:10px 12px; left:auto; right:56px; width:min(440px, 52vw); bottom:10px } #focus .t { -webkit-line-clamp:1; font-size:15px } #focus .act { margin-top:7px } #focus .go { padding:6px 13px }
+    #elevator { top:58px; bottom:10px }
+  }
+  #floorbar { position:fixed; z-index:3; left:50%; top:max(16px, env(safe-area-inset-top)); transform:translate(-50%,-8px); display:flex; align-items:center; gap:14px; max-width:min(860px, 92vw);
               padding:9px 10px 9px 16px; border-radius:999px; background:var(--glass); border:1px solid var(--line); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
               opacity:0; pointer-events:none; transition:opacity .4s, transform .4s }
   #floorbar.show { opacity:1; transform:translate(-50%,0); pointer-events:auto }
@@ -50,12 +99,14 @@
   #labels { opacity:0; transition:opacity .6s }
   #labels.show { opacity:1 }
   #labels .tlabel em { font-style:normal; color:#c9b6a3; font-weight:500 }
-  #labels .tlabel .play { font-style:normal; color:var(--hn); font-size:10px; margin-right:6px; vertical-align:1px }
+  #labels .tlabel.best { border-color:rgba(255,140,70,.7); background:rgba(40,20,10,.72); box-shadow:0 0 0 1px rgba(255,106,26,.25), 0 8px 26px rgba(0,0,0,.35) }
+  #labels .tlabel .kick { font-style:normal; font-size:11px; font-weight:750; color:var(--hn) }
   body:not([data-mode="floor"]) #labels { display:none }
 
   .lb { position:fixed; left:0; right:0; height:0; background:#000; transition:height .9s cubic-bezier(.2,.8,.2,1); pointer-events:none; z-index:2 }
   #lbt { top:0 } #lbb { bottom:0 }
   body[data-mode="table"] .lb { height:8.5vh }
+  @media (max-aspect-ratio: 4/5) { body[data-mode="table"] .lb { height:6.5vh } }
   #brand { transition:opacity .6s } body[data-mode="table"] #brand { opacity:0 }
   body[data-mode="table"] #floorbar { top:calc(8.5vh / 2 - 17px); padding:4px 5px 4px 14px; background:rgba(255,255,255,.05); font-size:13px }
   body[data-mode="table"] #floorbar .pill { padding:4px 11px; font-size:12px }
@@ -81,7 +132,7 @@
 
   #hint { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); color:var(--mute); font-size:12.5px; pointer-events:none; text-shadow:0 1px 8px #000; z-index:3; white-space:nowrap }
   body[data-mode="table"] #hint { bottom:calc(8.5vh / 2 - 9px) }
-  #controls { position:fixed; right:18px; bottom:calc(8.5vh / 2 - 16px); display:none; gap:8px; z-index:4 }
+  #controls { position:fixed; right:18px; bottom:calc(8.5vh / 2 - 16px + env(safe-area-inset-bottom) / 2); display:none; gap:8px; z-index:4 }
   body[data-mode="table"] #controls { display:flex }
   #controls .pill { background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.14) }
 
@@ -97,8 +148,16 @@
   #toast { position:fixed; right:20px; top:calc(8.5vh + 16px); padding:9px 14px; border-radius:10px; background:var(--glass); border:1px solid var(--line); z-index:4;
            backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); opacity:0; transform:translateY(-6px); transition:opacity .3s, transform .3s; pointer-events:none; font-size:13px }
   #toast.show { opacity:1; transform:none } #toast b { color:#ffd2a8 }
+  @media (hover: none) {
+    .pill { padding:10px 16px; font-size:14px; min-height:40px }
+    #controls { gap:10px } #controls .pill { padding:10px 15px }
+    body[data-mode="table"] #floorbar .pill { padding:8px 13px; font-size:13px }
+    #focus .go { padding:11px 18px 11px 17px; font-size:15px }
+    button, .pill, #focus { touch-action:manipulation; -webkit-tap-highlight-color:transparent }
+  }
   @media (max-width: 700px), (hover: none) {
     body[data-mode="table"] #hint { display:none }
+    body:not([data-mode="tower"]) #brand, body:not([data-mode="tower"]) #scrim { opacity:0 }   /* the floor's own title bar takes the top */
     #controls { right:50%; transform:translateX(50%) }
     #floorbar { padding-left:12px; gap:8px } #back { padding:6px 10px }
     #brand .w { font-size:15px }
@@ -114,13 +173,18 @@
   #stats { margin:-12px 0 24px; color:#ffb27a; font-size:13px; font-variant-numeric:tabular-nums; letter-spacing:.2px }
   #enter { border:0; border-radius:999px; padding:13px 26px; background:var(--ink); color:#111; font-weight:700; font-size:15px; cursor:pointer; box-shadow:0 10px 40px rgba(255,140,60,.25) }
   #enter:hover { background:#fff }
+  #enter:disabled { opacity:.55; cursor:progress; box-shadow:none }
   #splash small { display:block; margin-top:18px; color:var(--mute) }
 </style>
 </head>
 <body data-mode="tower">
+<div id="scrim"></div>
 <div id="brand"><div class="w">Tower<i>Of</i>Han</div><div id="live">connecting to Hacker News…</div></div>
-<button class="pill" id="lean" title="Hands-free: the liveliest floors and tables, one after another">▶ Lean back</button>
+<button class="pill" id="lean" title="Hands-free: the liveliest floors and tables, one after another"><svg viewBox="0 0 16 16" aria-hidden="true" style="width:10px;height:10px;margin-right:6px;vertical-align:-1px"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>Lean back</button>
 <div id="tip"></div>
+<div id="focus" role="group" aria-label="Floor in focus"><div class="rank" id="frank"></div><div class="body"><div class="t" id="fname"></div><div class="m" id="fmeta"></div>
+  <div class="act"><button class="go" id="fgo" type="button">Listen in <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></button><span class="fhint" id="fhint"></span></div></div></div>
+<div id="elevator" role="slider" tabindex="0" aria-label="Floor" aria-valuemin="1"></div>
 <div id="floorbar"><div id="ftitle"></div><button class="pill" id="back">Back</button></div>
 <div id="labels"></div>
 <div class="lb" id="lbt"></div><div class="lb" id="lbb"></div>
@@ -133,11 +197,11 @@
 <div id="card"></div>
 <div id="toast"></div>
 <div id="controls"><button class="pill" id="pause">Pause</button><button class="pill" id="next">Next table</button><button class="pill" id="leave">Stand up</button></div>
-<div id="splash"><div class="inner">
+<div id="splash" class="show"><div class="inner">
   <h1>Tower<i>Of</i>Han</h1>
   <p>Hacker News, as a living tower. Every floor is a front-page story. Every table is a thread, and the people at it are talking, in their own words, right now.</p>
   <div id="stats"></div>
-  <button id="enter">Enter the tower</button>
+  <button id="enter" disabled>Waking the tower…</button>
   <small>Headphones on. Sound is half of it.</small>
 </div></div>
 <script type="module" src="/src/main.ts"></script>

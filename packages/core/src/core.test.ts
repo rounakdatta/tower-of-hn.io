@@ -129,3 +129,19 @@ test('revisions keep rising for a story that is forgotten and comes back', async
   const again = live.tick(Date.now());
   assert.ok(again.snapshots[0].rev > first && again.head.epoch > 5000);
 });
+
+test("a floor's crowd is its different people, not its comments: the dead and the opted-out don't count", async () => {
+  const { Live } = await import('./live.ts');
+  const live = new Live({ snapshotEvery: 1 });
+  live.upsert({ id: 1, type: 'story', title: 'S', kids: [2, 5] });
+  live.upsert({ id: 2, type: 'comment', by: 'ann', text: 'one', parent: 1, kids: [3] });
+  live.upsert({ id: 3, type: 'comment', by: 'bo', text: 'two', parent: 2, kids: [4] });
+  live.upsert({ id: 4, type: 'comment', by: 'ann', text: 'three', parent: 3 });            // ann again: still one person
+  live.upsert({ id: 5, type: 'comment', by: 'cy', text: 'gone', parent: 1, dead: true });  // killed
+  live.upsert({ id: 6, type: 'story', title: 'T', kids: [7] });
+  live.upsert({ id: 7, type: 'comment', by: 'quiet', text: 'hi', parent: 6 });
+  live.setTower([1, 6]);
+  live.optOut.add('quiet');
+  const { head } = live.tick(Date.now());
+  assert.deepEqual(head.people, { 1: 2, 6: 0 });
+});

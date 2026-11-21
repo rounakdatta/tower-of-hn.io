@@ -14,11 +14,13 @@ export class UI {
 
   bind(camera: THREE.PerspectiveCamera) { this.camera = camera; }
 
+  /** The splash is in the page from the first paint (no black screen while loading); this makes it a door. */
   splash(onEnter: () => void) {
-    const s = $('splash');
+    const s = $('splash'), b = $('enter') as HTMLButtonElement;
     s.classList.add('show');
+    b.disabled = false; b.textContent = 'Enter the tower';
     const go = () => { s.classList.remove('show'); s.classList.add('gone'); onEnter(); };
-    $('enter').addEventListener('click', go, { once: true });
+    b.addEventListener('click', go, { once: true });
   }
 
   mode(m: 'tower' | 'floor' | 'table') {
@@ -52,6 +54,62 @@ export class UI {
     el.classList.add('show');
   }
 
+  /** The floor in focus on the tower: its title big enough to read on a phone, and the one thing to do next. */
+  focusCard(f: { rank: number; title: string; url: string; score: number; comments: number; act: number; people?: number } | null, onGo?: () => void) {
+    const el = $('focus');
+    if (!f) { el.classList.remove('show'); return; }
+    const dom = domainOf(f.url);
+    $('frank').textContent = String(f.rank);
+    $('fname').textContent = f.title;
+    $('fname').title = f.title;
+    // the crowd first (how many different people are in there), then the rest
+    const crowd = f.people ? `<span class="crowd"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5.5" cy="5" r="2.4"/><circle cx="11" cy="5.6" r="2"/><path d="M1 13.5c.3-2.9 2.2-4.4 4.5-4.4s4.2 1.5 4.5 4.4zM10.3 13.5c-.1-1.6-.7-2.9-1.6-3.7.6-.4 1.4-.6 2.3-.6 2 0 3.5 1.3 3.8 4.3z"/></svg>${f.people} ${f.people === 1 ? 'person' : 'people'}</span> · ` : '';
+    $('fmeta').innerHTML = `${crowd}${f.comments} comments${f.act ? ` · <b>${f.act} new</b>` : ''} · ${f.score} points${dom ? ' · ' + esc(dom) : ''}`;
+    $('fmeta').title = `${f.people ?? '?'} people · ${f.comments} comments (${f.act} in the last 15 minutes) · ${f.score} points${dom ? ' · ' + dom : ''}`;
+    $('fgo').setAttribute('aria-label', `Listen in on floor ${f.rank}: ${f.title}`);
+    if (onGo) el.onclick = (e) => { e.stopPropagation(); onGo(); };
+    el.classList.add('show');
+  }
+
+  /** The elevator: a tick per floor, the one in focus lit and numbered; drag or tap it to go up and down. */
+  private ticks: HTMLElement[] = [];
+  elevator(n: number, rank: number, heat: number[], pick: (rank: number) => void, crowd: number[] = []) {
+    const el = $('elevator');
+    if (this.ticks.length !== n) {
+      el.innerHTML = '';
+      this.ticks = Array.from({ length: n }, () => el.appendChild(document.createElement('i')));
+      const num = el.appendChild(document.createElement('span'));
+      num.className = 'num';
+      const at = (y: number) => { const r = el.getBoundingClientRect(); return Math.max(0, Math.min(n - 1, Math.round((y - r.top) / r.height * (n - 1)))); };
+      let held = false;
+      el.onpointerdown = (e) => { held = true; el.setPointerCapture(e.pointerId); this.pick(at(e.clientY)); e.stopPropagation(); };
+      el.onpointermove = (e) => { if (held) this.pick(at(e.clientY)); };
+      el.onpointerup = el.onpointercancel = () => { held = false; };
+      el.onkeydown = (e) => {
+        const cur = Number(el.getAttribute('aria-valuenow') ?? 1) - 1;
+        const step = e.key === 'ArrowDown' || e.key === 'PageDown' ? 1 : e.key === 'ArrowUp' || e.key === 'PageUp' ? -1 : 0;
+        if (step) { e.preventDefault(); this.pick(cur + step); }
+        else if (e.key === 'Home') { e.preventDefault(); this.pick(0); }
+        else if (e.key === 'End') { e.preventDefault(); this.pick(n - 1); }
+      };
+    }
+    this.pick = (r: number) => pick(Math.max(0, Math.min(n - 1, r)));
+    // each tick as long as its floor is crowded: the rail is a picture of where the people are
+    const most = Math.max(1, ...crowd);
+    this.ticks.forEach((t, k) => {
+      t.classList.toggle('on', k === rank); t.classList.toggle('hot', (heat[k] ?? 0) >= 5);
+      t.style.width = k === rank ? '' : `${Math.round(5 + 11 * Math.sqrt((crowd[k] ?? 0) / most))}px`;
+    });
+    el.setAttribute('aria-valuemax', String(n));
+    el.setAttribute('aria-valuenow', String(rank + 1));
+    const num = el.querySelector('.num') as HTMLElement;
+    num.textContent = String(rank + 1);
+    const t = this.ticks[rank];
+    if (t) num.style.top = `${t.offsetTop + 1}px`;
+    el.classList.add('show');
+  }
+  private pick: (rank: number) => void = () => {};
+
   floorHeader(f: { rank: number; title: string; id: number; url?: string } | null) {
     const el = $('floorbar');
     if (!f) { el.classList.remove('show'); return; }
@@ -59,34 +117,52 @@ export class UI {
     el.classList.add('show');
   }
 
-  tableLabels(spots: TableSpot[], roomY: number, onPick: (s: TableSpot) => void) {
+  /**
+   * A label over each of the liveliest tables (and the bar). Updated in place as the floor changes: rebuilding them
+   * every revision (every few seconds while voicing runs) swallowed taps that landed mid-rebuild.
+   */
+  private labelKey = '';
+  tableLabels(spots: TableSpot[], roomY: number, onPick: (s: TableSpot) => void, best?: TableSpot) {
     const box = $('labels');
-    box.innerHTML = '';
     box.classList.toggle('show', this.labelsOn);
+    const tables = spots.filter((x) => !x.bar).slice(0, 5), bar = spots.filter((x) => x.bar);
+    const key = tables.map((x) => x.table.root).join(',') + `|${bar.length}`;
+    const html = (s: TableSpot) => {
+      const people = new Set(s.table.turns.map((t) => t.by)).size;
+      const mins = s.table.turns.reduce((n, t) => n + (t.v ? t.v[1] : 18), 0) / 60;
+      const start = best && s.table.root === best.table.root;
+      return `${start ? '<i class="kick">Start here</i>' : ''}<b>${esc(s.table.turns[0].by)}${people > 1 ? ` <em>+${people - 1}</em>` : ''}</b><span>${s.table.turns.length} turns · ~${Math.max(1, Math.round(mins))} min</span>`;
+    };
+    if (key === this.labelKey && this.labels.length === tables.length + (bar.length ? 1 : 0)) {
+      tables.forEach((s, k) => {
+        const el = this.labels[k].el, h = html(s);
+        if (el.innerHTML !== h) el.innerHTML = h;
+        el.classList.toggle('best', !!best && s.table.root === best.table.root);
+      });
+      return;
+    }
+    this.labelKey = key;
+    box.innerHTML = '';
     this.labels = [];
-    for (const s of spots.filter((x) => !x.bar).slice(0, 5)) {
+    for (const s of tables) {
       const el = document.createElement('button');
       el.className = 'tlabel';
-      const people = new Set(s.table.turns.map((t) => t.by)).size;
-      const voiced = s.table.turns.some((t) => t.v);
-      const mins = s.table.turns.reduce((n, t) => n + (t.v ? t.v[1] : 18), 0) / 60;
-      el.innerHTML = `<b>${voiced ? '<i class="play">▶</i>' : ''}${esc(s.table.turns[0].by)}${people > 1 ? ` <em>+${people - 1}</em>` : ''}</b><span>${s.table.turns.length} turns · ~${Math.max(1, Math.round(mins))} min</span>`;
+      if (best && s.table.root === best.table.root) el.classList.add('best');
+      el.innerHTML = html(s);
       el.onclick = (e) => { e.stopPropagation(); onPick(s); };
       box.appendChild(el);
       this.labels.push({ el, at: new THREE.Vector3(s.pos.x, roomY + 1.55, s.pos.z) });
     }
-    const bar = spots.filter((s) => s.bar).length;
-    if (bar) {
+    if (bar.length) {
       const el = document.createElement('button');
       el.className = 'tlabel bar';
-      el.innerHTML = `<b>The bar</b><span>${bar} one-liner${bar === 1 ? '' : 's'}</span>`;
-      const b = spots.find((s) => s.bar)!;
-      el.onclick = (e) => { e.stopPropagation(); onPick(b); };
+      el.innerHTML = `<b>The bar</b><span>${bar.length} one-liner${bar.length === 1 ? '' : 's'}</span>`;
+      el.onclick = (e) => { e.stopPropagation(); onPick(bar[0]); };
       box.appendChild(el);
-      this.labels.push({ el, at: new THREE.Vector3(b.pos.x * 0.92, roomY + 1.7, b.pos.z * 0.92) });
+      this.labels.push({ el, at: new THREE.Vector3(bar[0].pos.x * 0.92, roomY + 1.7, bar[0].pos.z * 0.92) });
     }
   }
-  clearLabels() { $('labels').innerHTML = ''; this.labels = []; this.showLabels(false); }
+  clearLabels() { $('labels').innerHTML = ''; this.labels = []; this.labelKey = ''; this.showLabels(false); }
   private labelsOn = false;
   showLabels(on: boolean) { this.labelsOn = on; $('labels').classList.toggle('show', on); }
 
@@ -148,8 +224,10 @@ export class UI {
       if (Math.abs(a.x - b.x) < 175 && Math.abs(a.y - b.y) < 46) a.y = b.y + 46;
     }
     for (const q of placed) {
+      // never cut off at the screen's edge: a label half off a phone is a button nobody can press
+      const w = q.el.offsetWidth / 2 + 8;
       q.el.style.opacity = q.vis ? '' : '0';
-      q.el.style.transform = `translate(-50%, -50%) translate(${q.x}px, ${q.y}px)`;
+      q.el.style.transform = `translate(-50%, -50%) translate(${Math.max(w, Math.min(innerWidth - w, q.x))}px, ${q.y}px)`;
     }
   }
 }

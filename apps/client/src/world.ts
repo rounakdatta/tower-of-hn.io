@@ -3,16 +3,20 @@
 import * as THREE from 'three/webgpu';
 import {
   uniform, instancedBufferAttribute, hash, step, fract, positionWorld, positionLocal, normalLocal, instanceIndex, mix,
-  smoothstep, vec2, vec3, float, sin, uv, dot, floor as tfloor, abs, texture, max, min, normalize, pow, length, cos, clamp,
+  smoothstep, vec2, vec3, float, sin, uv, dot, floor as tfloor, abs, texture, max, min, normalize, pow, length, cos, clamp, cameraPosition,
 } from 'three/tsl';
 import { clamp as clampN, easeInOut } from './util.ts';
 
 export const FLOORS = 30, FLOOR_H = 2.4, R = 7, LOBBY_H = 4.2;
+/** the title sign along the top of each floor: its height, and its centre above the floor's centre */
+const BAND_H = 0.56, BAND_Y = 0.84;
 export const floorY = (rank: number) => LOBBY_H + (FLOORS - 1 - rank) * FLOOR_H + FLOOR_H / 2;
 export const TOWER_TOP = LOBBY_H + FLOORS * FLOOR_H;
 
 export const uTime = uniform(0);
 export const uBeacon = uniform(0);     // 0..1, decays: a comment just landed
+/** the neon sign on the crown: the name, and its orange "Of" (which buzzes on its own now and then) */
+export const uNeon = uniform(0), uNeonOf = uniform(0);
 
 export function buildSky(scene: THREE.Scene) {
   const mat = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide, depthWrite: false, fog: false });
@@ -98,7 +102,7 @@ export function buildSnow(scene: THREE.Scene, count = 2600) {
   mat.scaleNode = mix(float(0.05), float(0.13), hash(i.add(5)));
   const c = length(uv().sub(0.5));
   mat.colorNode = vec3(0.92, 0.95, 1.0);
-  mat.opacityNode = smoothstep(0.5, 0.15, c).mul(0.75);
+  mat.opacityNode = smoothstep(0.5, 0.15, c).mul(0.75).mul(smoothstep(3, 9, length(vec3(x, y, z).sub(cameraPosition))));
   const snow = new THREE.Sprite(mat);
   snow.count = count;
   snow.frustumCulled = false;
@@ -115,15 +119,20 @@ export class Tower {
   slots: Slot[] = [];
   slotOf = new Map<number, number>();
   rankOf = new Map<number, number>();
-  private aGlow: THREE.InstancedBufferAttribute;
-  private aSel: THREE.InstancedBufferAttribute;
-  private aPulse: THREE.InstancedBufferAttribute;
+  // packed in pairs (WebGPU allows eight vertex buffers): lit fraction + crowd, selected + pulse
+  private aLight: THREE.InstancedBufferAttribute;
+  private aState: THREE.InstancedBufferAttribute;
   private searchlights: THREE.Group;
   private atlas: HTMLCanvasElement;
   private atlasTex: THREE.CanvasTexture;
   private m = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   hidden = -1;                          // slot whose slab is opened (we're inside it)
+  /** which way the title signs face (the camera's bearing): a copy of each title is always square to the viewer */
+  faceYaw = 0.64;
+  private sign!: THREE.Group;
+  private qFace = new THREE.Quaternion();
+  private yAxis = new THREE.Vector3(0, 1, 0);
   onMove: () => void = () => {};
 
   constructor(scene: THREE.Scene) {
@@ -143,51 +152,64 @@ export class Tower {
     beaconMat.colorNode = vec3(1.0, 0.36, 0.05).mul(sin(uTime.mul(1.6)).mul(0.25).add(1.2).add(uBeacon.mul(5)));
     const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.42, 20, 14), beaconMat);
     beacon.position.y = TOWER_TOP + 1.2 + 9.2;
-    scene.add(lobby, entrance, crown, spire, beacon);
+    this.sign = neonSign();
+    scene.add(lobby, entrance, crown, spire, beacon, this.sign);
 
     // floors: one instanced draw for all thirty
     const geo = new THREE.CylinderGeometry(R, R, FLOOR_H * 0.94, 96, 1);
-    this.aGlow = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS), 1);
-    this.aSel = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS), 1);
-    this.aPulse = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS), 1);
+    this.aLight = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS * 2), 2);
+    this.aState = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS * 2), 2);
     const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.22, metalness: 0.85 });
     {
-      const glow = instancedBufferAttribute(this.aGlow), sel = instancedBufferAttribute(this.aSel), pulse = instancedBufferAttribute(this.aPulse);
+      const light = instancedBufferAttribute(this.aLight), state = instancedBufferAttribute(this.aState);
+      const glow = light.x, crowd = light.y, sel = state.x, pulse = state.y;
       const u = uv().x, v = uv().y;
       const cols = 132.0;
       const wu = fract(u.mul(cols)), wv = v;
-      const pane = step(0.12, wu).mul(step(wu, 0.88)).mul(step(0.12, wv)).mul(step(wv, 0.74));   // leave the top band for the title
+      const pane = step(0.2, wu).mul(step(wu, 0.8)).mul(step(0.14, wv)).mul(step(wv, 0.72));   // mullions; the top band is the title's
       const id = tfloor(u.mul(cols)).add(float(instanceIndex).mul(173.0));
       const r = hash(id);
-      const lit = step(float(1).sub(glow), r);
+      const lit = step(float(1).sub(max(glow, crowd.mul(0.85))), r);
       const flick = sin(uTime.mul(0.4).add(r.mul(60))).mul(0.05).add(0.95);
       const walls = step(abs(normalLocal.y), 0.5);
       const interiorTint = mix(mix(vec3(1.0, 0.55, 0.24), vec3(1.0, 0.82, 0.56), hash(id.add(7))), vec3(0.62, 0.78, 1.0), step(0.93, hash(id.add(13))));
       const dimRoom = vec3(0.08, 0.1, 0.16).mul(pane).mul(walls);           // unlit glass still reads as glass
       mat.colorNode = mix(vec3(0.03, 0.035, 0.05), vec3(0.05, 0.06, 0.08), pane);
-      mat.emissiveNode = interiorTint.mul(pane).mul(lit).mul(flick).mul(walls).mul(float(1.35).add(pulse.mul(1.6)))
+      // the crowd: people inside, dark against the light, a place every 1.1 m round the floor, filled as more
+      // different people join the story's conversation; some seated, some standing, swaying a little
+      const um = u.mul(2 * Math.PI * R), place = tfloor(um.div(1.1)), at = fract(um.div(1.1));
+      const who = hash(place.add(float(instanceIndex).mul(57.0)));
+      const here = step(float(1).sub(crowd), who);
+      const cx = float(0.5).add(hash(place.add(3.1)).sub(0.5).mul(0.42)).add(sin(uTime.mul(0.45).add(who.mul(40))).mul(0.07));
+      const xm = at.sub(cx).mul(1.1), ym = v.mul(FLOOR_H * 0.94);
+      const top = mix(float(1.14), float(1.6), step(0.62, hash(place.add(7.7))));
+      const headD = length(vec2(xm, ym.sub(top))).sub(0.105);
+      const bodyD = length(vec2(xm.div(0.23), ym.sub(top.sub(0.37)).div(0.3))).sub(1).mul(0.23);
+      const person = smoothstep(0.012, -0.012, min(headD, bodyD)).mul(here);
+      mat.emissiveNode = interiorTint.mul(pane).mul(lit).mul(flick).mul(walls).mul(float(0.78).add(pulse.mul(1.4))).mul(float(1).sub(person.mul(0.9)))
         .add(dimRoom.mul(0.25))
         .add(vec3(1.0, 0.42, 0.1).mul(sel).mul(walls).mul(step(0.72, v)).mul(0.6));
     }
     this.floors = new THREE.InstancedMesh(geo, mat, FLOORS);
     this.floors.frustumCulled = false;
 
-    // title bands: one instanced ring per floor, text from a shared atlas
+    // title bands: a lit sign along the top of every floor, its story's title three times round (one copy reads
+    // whole from wherever you stand), bright on the floor in focus so it can be read from outside
     this.atlas = document.createElement('canvas');
     this.atlas.width = 2048; this.atlas.height = 2048;
     this.atlasTex = new THREE.CanvasTexture(this.atlas);
     this.atlasTex.colorSpace = THREE.SRGBColorSpace;
     this.atlasTex.anisotropy = 8;
-    const bgeo = new THREE.CylinderGeometry(R + 0.02, R + 0.02, 0.34, 128, 1, true);
+    const bgeo = new THREE.CylinderGeometry(R + 0.02, R + 0.02, BAND_H, 160, 1, true);
     const aRow = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS).map((_, i) => i), 1);
     bgeo.setAttribute('aRow', aRow);
     const bmat = new THREE.MeshStandardNodeMaterial({ roughness: 0.5, metalness: 0.2 });
     {
-      const row = instancedBufferAttribute(aRow);
-      const tuv = vec2(fract(uv().x.mul(2)), float(1).sub(row.add(float(1).sub(uv().y)).div(32)));
+      const row = instancedBufferAttribute(aRow), sel = instancedBufferAttribute(this.aState).x;
+      const tuv = vec2(fract(uv().x.mul(3)), float(1).sub(row.add(float(1).sub(uv().y)).div(32)));
       const t = texture(this.atlasTex, tuv);
       bmat.colorNode = vec3(0.02, 0.022, 0.03);
-      bmat.emissiveNode = t.rgb.mul(1.35);
+      bmat.emissiveNode = t.rgb.mul(sel.mul(1.25).add(0.9));
     }
     this.bands = new THREE.InstancedMesh(bgeo, bmat, FLOORS);
     this.bands.frustumCulled = false;
@@ -212,7 +234,7 @@ export class Tower {
   }
 
   /** New front-page order: floors that jump slide out, travel, and slide back in. */
-  setOrder(order: number[], titles: Record<number, [string, number, number, string, string]>, act: Record<number, number>, now: number, camDir: THREE.Vector2) {
+  setOrder(order: number[], titles: Record<number, [string, number, number, string, string]>, act: Record<number, number>, now: number, camDir: THREE.Vector2, people: Record<number, number> = {}) {
     const keep = new Set(order);
     let moved = false;
     this.slots.forEach((s) => { if (s.sid !== null && !keep.has(s.sid)) { this.slotOf.delete(s.sid); s.sid = null; s.scaleTarget = 0; } });
@@ -226,42 +248,54 @@ export class Tower {
         s.sid = sid; s.y = target; s.yTarget = target; s.r = 11; s.scale = 1; s.scaleTarget = 1;
         s.dir.set(-camDir.y, camDir.x);                  // sideways to the viewer, so the move reads
         s.anim = { t0: now, from: target, to: target, dur: 1.6, out: 11 };
-        (this.aPulse.array as Float32Array)[si] = 1;
+        (this.aState.array as Float32Array)[si * 2 + 1] = 1;
         this.slotOf.set(sid, si);
       } else {
         const s = this.slots[si];
         const prevRank = this.rankOf.get(sid) ?? rank;
         if (Math.abs(prevRank - rank) >= 2) {
           s.anim = { t0: now, from: s.y, to: target, dur: 2.2, out: 4.4 }; s.dir.set(-camDir.y, camDir.x); moved = true;
-          (this.aPulse.array as Float32Array)[si] = 1;
+          (this.aState.array as Float32Array)[si * 2 + 1] = 1;
         }
         s.yTarget = target; s.scaleTarget = 1;
       }
       this.rankOf.set(sid, rank);
       const t = titles[sid];
       if (t) this.label(si, rank, t);
-      (this.aGlow.array as Float32Array)[si] = clampN(0.1 + Math.log1p(act[sid] ?? 0) / 3.2 + Math.log1p(t?.[2] ?? 0) / 14, 0.08, 1);
+      const light = this.aLight.array as Float32Array;
+      light[si * 2] = clampN(0.1 + Math.log1p(act[sid] ?? 0) / 3.2 + Math.log1p(t?.[2] ?? 0) / 14, 0.08, 0.72);
+      // front-page threads run from a handful of people to nearly a thousand: six hundred fill a floor
+      light[si * 2 + 1] = clampN(Math.log1p(people[sid] ?? 0) / Math.log1p(600), 0.04, 0.92);
     });
-    this.aGlow.needsUpdate = true;
+    this.aLight.needsUpdate = true; this.aState.needsUpdate = true;
     if (moved) this.onMove();
   }
 
+  /** what each slot's sign says now: a row is redrawn (and the 16 MB atlas re-uploaded) only when that changes */
+  private drawn: string[] = [];
   private label(slot: number, rank: number, t: [string, number, number, string, string]) {
+    const said = `${rank}|${t[0]}`;
+    if (this.drawn[slot] === said) return;
+    this.drawn[slot] = said;
     const g = this.atlas.getContext('2d')!, y = slot * 64;
+    g.save();
     g.clearRect(0, y, 2048, 64);
     g.fillStyle = '#05060a'; g.fillRect(0, y, 2048, 64);
+    // a copy of the sign is 2πR/3 ≈ 14.7 m by BAND_H (26:1), drawn from a 32:1 row: draw wide to stay true
+    const k = 32 / (2 * Math.PI * R / 3 / BAND_H);
+    g.scale(k, 1);
+    const W = 2048 / k;
     g.textBaseline = 'middle';
-    g.font = '600 34px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
-    g.fillStyle = '#ff7a2e'; g.fillText(`${rank + 1}`, 28, y + 33);
-    g.fillStyle = '#f3ede4';
+    const sans = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
+    g.font = `700 44px ${sans}`;
+    g.fillStyle = '#ff7a2e'; g.fillText(`${rank + 1}`, 26, y + 34);
+    g.font = `650 44px ${sans}`;
+    g.fillStyle = '#f6efe4';
     let title = t[0];
-    const maxW = 1560;
-    if (g.measureText(title).width > maxW) { while (title.length && g.measureText(title + '…').width > maxW) title = title.slice(0, -1); title += '…'; }
-    g.fillText(title, 96, y + 33);
-    g.font = '500 26px ui-sans-serif, system-ui, sans-serif';
-    g.fillStyle = '#9aa3b6';
-    const meta = `${t[1]} points · ${t[2]} comments`;
-    g.fillText(meta, 2020 - g.measureText(meta).width, y + 34);
+    const maxW = W - 108 - 30;
+    if (g.measureText(title).width > maxW) { while (title.length && g.measureText(title + '…').width > maxW) title = title.slice(0, -1); title = title.trimEnd() + '…'; }
+    g.fillText(title, 108, y + 34);
+    g.restore();
     this.atlasTex.needsUpdate = true;
   }
 
@@ -269,17 +303,21 @@ export class Tower {
   pulse(sid: number) {
     const si = this.slotOf.get(sid);
     if (si === undefined) return;
-    (this.aPulse.array as Float32Array)[si] = 1;
+    (this.aState.array as Float32Array)[si * 2 + 1] = 1;
+    this.aState.needsUpdate = true;
   }
 
   setSelected(slot: number) {
-    const a = this.aSel.array as Float32Array;
-    for (let i = 0; i < FLOORS; i++) a[i] = i === slot ? 1 : 0;
-    this.aSel.needsUpdate = true;
+    const a = this.aState.array as Float32Array;
+    for (let i = 0; i < FLOORS; i++) a[i * 2] = i === slot ? 1 : 0;
+    this.aState.needsUpdate = true;
   }
 
   update(now: number, dt: number) {
     const v = new THREE.Vector3(), s3 = new THREE.Vector3();
+    // three copies round each band: copy 0 is centred at 60°; the sign's two copies at 90°
+    this.qFace.setFromAxisAngle(this.yAxis, this.faceYaw - Math.PI / 3);
+    this.sign.rotation.y = this.faceYaw - Math.PI / 2;
     for (let i = 0; i < FLOORS; i++) {
       const s = this.slots[i];
       if (s.anim) {
@@ -300,15 +338,63 @@ export class Tower {
       const sc = hide ? 0 : s.scale;
       v.set(s.dir.x * s.r, s.y, s.dir.y * s.r);
       this.floors.setMatrixAt(i, this.m.compose(v, this.q, s3.set(sc, sc, sc)));
-      v.y = s.y + FLOOR_H * 0.36;
-      this.bands.setMatrixAt(i, this.m.compose(v, this.q, s3.set(sc, sc, sc)));
+      v.y = s.y + BAND_Y;
+      this.bands.setMatrixAt(i, this.m.compose(v, this.qFace, s3.set(sc, sc, sc)));
     }
     this.floors.instanceMatrix.needsUpdate = true;
     this.bands.instanceMatrix.needsUpdate = true;
-    const pu = this.aPulse.array as Float32Array;
+    const st = this.aState.array as Float32Array;
     let any = false;
-    for (let i = 0; i < FLOORS; i++) if (pu[i] > 0) { pu[i] = Math.max(0, pu[i] - dt * 0.7); any = true; }
-    if (any) this.aPulse.needsUpdate = true;
+    for (let i = 0; i < FLOORS; i++) if (st[i * 2 + 1] > 0) { st[i * 2 + 1] = Math.max(0, st[i * 2 + 1] - dt * 0.7); any = true; }
+    if (any) this.aState.needsUpdate = true;
     this.searchlights.rotation.y = now * 0.12;
   }
+}
+
+/**
+ * The name in neon, round the crown: two copies, so one always faces you. Tubes are drawn as glowing strokes on
+ * a dark backing ring; the orange "Of" is its own layer so it can buzz while the rest holds steady.
+ */
+function neonSign() {
+  const W = 2048, H = 256;
+  const layer = (draw: (g: CanvasRenderingContext2D) => void) => {
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d')!;
+    // one copy is πr ≈ 20.6 m by 1.7 m (12:1) from an 8:1 canvas: draw narrow so the letters keep their shape
+    g.scale(0.66, 1);
+    g.font = '600 168px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
+    g.textBaseline = 'middle'; g.lineJoin = 'round'; g.lineCap = 'round';
+    draw(g);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 8;
+    return t;
+  };
+  const parts = ['Tower', 'Of', 'Han'];
+  const widths = (g: CanvasRenderingContext2D) => parts.map((p) => g.measureText(p).width);
+  const tube = (g: CanvasRenderingContext2D, text: string, x: number, glow: string, core: string) => {
+    g.shadowColor = glow; g.shadowBlur = 26;
+    g.strokeStyle = glow; g.lineWidth = 15; g.strokeText(text, x, H / 2);
+    g.shadowBlur = 8;
+    g.strokeStyle = core; g.lineWidth = 6; g.strokeText(text, x, H / 2);
+  };
+  const layout = (g: CanvasRenderingContext2D) => {
+    const w = widths(g), gap = 6, total = w[0] + w[1] + w[2] + gap * 2;
+    const x0 = (W / 0.66 - total) / 2;
+    return [x0, x0 + w[0] + gap, x0 + w[0] + w[1] + gap * 2];
+  };
+  const base = layer((g) => { const x = layout(g); tube(g, 'Tower', x[0], '#ff9a6b', '#fff1e6'); tube(g, 'Han', x[2], '#ff9a6b', '#fff1e6'); });
+  const of = layer((g) => { const x = layout(g); tube(g, 'Of', x[1], '#ff5a0a', '#ffd2b0'); });
+  const mat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
+  const tuv = vec2(fract(uv().x.mul(2)), uv().y);
+  const a = texture(base, tuv), b = texture(of, tuv);
+  mat.colorNode = a.rgb.mul(a.a).mul(uNeon).add(b.rgb.mul(b.a).mul(uNeonOf)).mul(2.2);
+  const g = new THREE.Group();
+  const ring = new THREE.Mesh(new THREE.CylinderGeometry(R - 0.45, R - 0.45, 1.7, 128, 1, true), mat);
+  // the sign's dark backing: it reads as a sign with something behind it, and hides the far side's tubes
+  const backing = new THREE.Mesh(new THREE.CylinderGeometry(R - 0.6, R - 0.6, 1.55, 96, 1, true), new THREE.MeshStandardNodeMaterial({ color: 0x0b0c10, roughness: 0.8, metalness: 0.3 }));
+  g.add(backing, ring);
+  g.position.y = TOWER_TOP + 1.2 + 0.95;
+  return g;
 }

@@ -9,17 +9,18 @@ import type { Rig } from './rig.ts';
 import { R, FLOOR_H } from './world.ts';
 import type { UI } from './ui.ts';
 
+/** How a speaker's face sits for each delivery (the voice moves it from there, syllable by syllable). */
 const FACE: Record<string, Partial<Expr>> = {
-  angry: { brow: -0.85, smile: -0.45, lid: 0.82, lean: 0.6 },
-  stern: { brow: -0.5, smile: -0.15, lid: 0.9, lean: 0.35 },
-  contemplative: { brow: 0.18, smile: 0.05, lid: 0.82 },
-  excited: { brow: 0.55, smile: 0.65, lid: 1.15, lean: 0.4 },
-  joyful: { brow: 0.3, smile: 0.9, lid: 0.95 },
+  angry: { brow: -0.25, browIn: -1, smile: -0.45, lid: 0.92, lidTilt: 0.8, flush: 0.55, teeth: 0.35, lean: 0.6 },
+  stern: { brow: -0.15, browIn: -0.55, smile: -0.15, lid: 0.9, lidTilt: 0.3, lean: 0.35 },
+  contemplative: { brow: 0.1, browAsym: 0.55, smile: 0.05, smileAsym: 0.2, lid: 0.84 },
+  excited: { brow: 0.6, smile: 0.75, lid: 1.15, blush: 0.35, teeth: 0.55, lean: 0.4 },
+  joyful: { brow: 0.3, smile: 0.9, lid: 0.95, blush: 0.3, teeth: 0.45, happy: 0.35 },
   mundane: { brow: 0, smile: 0.15, lid: 1 },
-  nervous: { brow: 0.4, smile: -0.05, lid: 1.12 },
-  sad: { brow: 0.3, smile: -0.55, lid: 0.8 },
-  surprised: { brow: 0.95, smile: 0.1, lid: 1.32 },
-  tender: { brow: 0.2, smile: 0.5, lid: 0.9 },
+  nervous: { brow: 0.3, browIn: 0.6, smile: -0.05, smileAsym: 0.25, lid: 1.12, blinkRate: 2.2 },
+  sad: { brow: 0.05, browIn: 0.9, smile: -0.55, lid: 0.78 },
+  surprised: { brow: 1, browIn: 0.15, smile: 0.1, lid: 1.32 },
+  tender: { brow: 0.15, browIn: 0.35, smile: 0.5, lid: 0.88, blush: 0.25 },
 };
 
 interface Subject { i: number; head: THREE.Vector3; face?: THREE.Vector3; w: number }
@@ -91,6 +92,8 @@ export class Director {
   private shotUntil = 0;
   private reactionAt = 0;
   private gesture = new Map<number, number>();
+  /** brows that flash up on a stressed syllable, per person (decays) */
+  private flash = new Map<number, number>();
   private plans = new Map<number, Plan>();
   private heroAt = 0;
   private heroWho = -1;
@@ -167,6 +170,7 @@ export class Director {
     const played = new Set(this.spot.table.turns.slice(0, this.turnIdx).map((u) => u.id));
     const known = new Set(this.spot.table.turns.map((u) => u.id));
     this.spot.table = t;
+    this.spot.index = floor.tables.indexOf(t);         // HN reorders threads: asks for voicing must name this one
     // keep our place: the first turn we haven't scheduled yet (late replies slot in here)
     for (const u of t.turns) if (!known.has(u.id)) this.onNewReply(u.by);
     this.turnIdx = t.turns.findIndex((u) => !played.has(u.id));
@@ -183,6 +187,7 @@ export class Director {
     const path = turn.v[0];                       // a comment still being voiced gets a new path per clip
     let p = this.loading.get(path);
     if (!p) {
+      this.loadingId.set(path, turn.id);
       p = this.sync.sidecar(path).then(async (side) => {
         const bufs = await Promise.all(side.clips.map((c) => this.audio.load(this.sync.url(c.u))));
         const r = { side, bufs }, have = this.ready.get(turn.id);
@@ -256,8 +261,21 @@ export class Director {
     return i >= 0 ? i : this.ix(fallback);
   }
 
+  /** what a decoded comment is for: its turn (so the ones far behind or ahead can be let go) */
+  private loadingId = new Map<string, number>();
+  private prunedAt = -1;
+  /** Let go of decoded audio away from where we are: a few turns back (gaps, glances), a few ahead (prefetch). */
+  private prune() {
+    if (!this.spot || this.prunedAt === this.turnIdx) return;
+    this.prunedAt = this.turnIdx;
+    const keep = new Set(this.spot.table.turns.slice(Math.max(0, this.turnIdx - 3), this.turnIdx + 8).map((u) => u.id));
+    for (const id of this.ready.keys()) if (!keep.has(id)) this.ready.delete(id);
+    for (const [path, id] of this.loadingId) if (!keep.has(id)) { this.loading.delete(path); this.loadingId.delete(path); }
+  }
+
   private scheduleAhead(now: number) {
     if (!this.spot || this.paused) return;
+    this.prune();
     const turns = this.spot.table.turns;
     const at = this.audio.now();
     while (this.cursor - at < 2.5 && this.turnIdx < turns.length) {
@@ -533,6 +551,10 @@ export class Director {
       t.open = 0; t.shape = 0; t.turn = 0; t.stand = 0; t.bounce = 0;
       t.armL = 0; t.armR = 0; t.spreadL = 0; t.spreadR = 0; t.aimR = 0;
       t.lean = 0.05; t.brow = 0; t.smile = 0.15; t.lid = 1;
+      t.browIn = 0; t.browAsym = 0; t.smileAsym = 0; t.happy = 0; t.lidTilt = 0; t.blinkRate = 0; t.blush = 0; t.teeth = 0; t.flush = 0;
+      // idle life: now and then a small private smile, a brow that lifts at something, never in step with anyone
+      if (Math.sin(at * 0.13 + i * 1.7) > 0.93) { t.smile = 0.42; t.smileAsym = (i % 2 ? 0.25 : -0.25); }
+      if (Math.sin(at * 0.19 + i * 2.9) > 0.96) t.browAsym = i % 3 ? 0.35 : -0.35;
       t.tilt = Math.sin(at * 0.4 + i) * 0.08;
       t.nod = Math.sin(at * 0.9 + i * 1.7) * 0.03;
       t.yaw = focusHead && focus !== i ? this.crowd.yawTo(i, focusHead) : Math.sin(at * 0.3 + i) * 0.3;
@@ -574,7 +596,7 @@ export class Director {
           if (clipNo % 2) { t.armL = 0.85 * w; t.spreadL = 0.3 * w; } else { t.armR = 0.85 * w; t.spreadR = 0.3 * w; }
         }
         if (plan.E === 'sad') { t.lean -= 0.2; t.nod += 0.22; t.lid = Math.min(t.lid, 0.8); }          // slumped
-        if (plan.laughEnd && at > plan.end - 1.1) { t.bounce = 1; t.smile = 1; t.lid = 0.6; }
+        if (plan.laughEnd && at > plan.end - 1.1) { t.bounce = 1; t.smile = 1; t.lid = 0.6; t.happy = 1; t.teeth = 1; }
       }
       if (riser?.stand && i === riser.S && !performing && i !== speaking) {
         const aHead = riser.A >= 0 ? this.crowd.headPos(riser.A) : null;
@@ -586,16 +608,34 @@ export class Director {
         t.stand = smooth01(rise);
         const push = rise > 0 && rise < 1 ? Math.sin(Math.PI * Math.min(1, rise * 1.15)) : 0;
         t.lean = 0.3 + push * 0.55; t.armL = t.armR = push * 0.55; t.spreadL = t.spreadR = push * 0.12;
-        t.brow = -0.6; t.lid = 0.84; t.smile = -0.25;
+        t.brow = -0.2; t.browIn = -0.95; t.lidTilt = 0.75; t.lid = 0.9; t.smile = -0.3; t.flush = 0.45; t.teeth = 0.4;
         continue;
       }
       if (i === speaking) {
         t.open = Math.min(1, env * 1.15);
         t.shape = shape;
-        t.brow = (voice.brow ?? 0) + env * 0.15 + (t.brow > 0.3 ? t.brow * 0.5 : 0);
+        // stressed syllables flash the brows up (a beat, not a held look)
+        const f0 = this.flash.get(i) ?? 0;
+        const f = env > 0.74 && f0 < 0.2 ? 1 : Math.max(0, f0 - dt * 2.8);
+        this.flash.set(i, f);
+        t.brow = (voice.brow ?? 0) + env * 0.15 + f * 0.32 + (t.brow > 0.3 ? t.brow * 0.5 : 0);
+        t.browIn = voice.browIn ?? 0; t.browAsym = voice.browAsym ?? 0; t.smileAsym = voice.smileAsym ?? 0;
+        t.lidTilt = voice.lidTilt ?? 0; t.blush = voice.blush ?? 0; t.blinkRate = voice.blinkRate ?? 0;
+        t.flush = (voice.flush ?? 0) * (0.5 + (plan?.I ?? 0.5) * 0.7);
+        // teeth on loud syllables: a grin when pleased, a snarl when angry
+        t.teeth = (voice.teeth ?? 0) * Math.min(1, env * 1.8);
+        t.happy = (voice.happy ?? 0) * Math.min(1, env * 2);
         t.smile = plan?.laughEnd && plan && at > plan.end - 1.1 ? 1 : voice.smile ?? 0.15;
         t.lid = voice.lid ?? 1;
         t.nod += Math.sin(at * 7.3) * env * 0.18;
+        if (plan) {
+          const flip = this.crowd.seed(i, 5) > 0.5 ? 1 : -1, last = cur!.side.clips.indexOf(cur!.clip) === cur!.side.clips.length - 1;
+          // sarcasm: a smirk and one doubting brow; a question rises at its end; a joke breaks into a grin
+          if (plan.C.includes('sarcasm')) { t.smileAsym = 0.75 * flip; t.browAsym = 0.65 * flip; t.smile = Math.max(t.smile, 0.25); }
+          if ((plan.ST === 'question' || plan.C.includes('question')) && last && at > cur!.end - 1.3) { t.brow += 0.45; t.browAsym += 0.25 * flip; t.tilt += 0.22 * flip; }
+          if (plan.laughEnd && at > plan.end - 1.1) { t.happy = 1; t.teeth = 1; t.open = Math.max(t.open, 0.35); t.blush = 0.5; }
+          if (plan.E === 'angry' && env > 0.55) t.teeth = Math.max(t.teeth, 0.85);
+        }
         if (!performing && plan && plan.S >= 0) t.yaw = this.crowd.yawTo(i, this.crowd.headPos(plan.S));   // a quoted line, said to its quoter
         continue;
       }
@@ -604,33 +644,36 @@ export class Director {
       if (plan && inTurn) {
         const strong = plan.I >= 0.6, pushback = plan.ST === 'disagree' || plan.ST === 'correct' || plan.E === 'angry';
         if (i === plan.A) {
-          if (pushback && plan.E === 'angry' && strong) { t.brow = 0.55; t.lid = 1.22; t.lean = -0.3; t.smile = -0.1; }     // taken aback
-          else if (pushback) { t.brow = -0.5; t.smile = -0.15; t.lean = -0.12; if (plan.ST === 'correct' && !strong) pose('cross', t, 0.5, 0, false); }
-          else if (plan.ST === 'agree' || plan.ST === 'praise') { t.smile = 0.65; t.nod += Math.max(0, Math.sin(at * 2.4 + i)) * 0.14; }
+          if (pushback && plan.E === 'angry' && strong) { t.brow = 0.55; t.browIn = 0.35; t.lid = 1.22; t.lean = -0.3; t.smile = -0.1; t.flush = 0.2; }  // taken aback
+          else if (pushback) { t.brow = -0.15; t.browIn = -0.6; t.lidTilt = 0.3; t.smile = -0.15; t.smileAsym = -0.2; t.lean = -0.12; if (plan.ST === 'correct' && !strong) pose('cross', t, 0.5, 0, false); }
+          else if (plan.ST === 'agree' || plan.ST === 'praise') { t.smile = 0.65; t.happy = 0.3; t.blush = 0.25; t.nod += Math.max(0, Math.sin(at * 2.4 + i)) * 0.14; }
           else if (plan.ST === 'question' || plan.C.includes('question')) {
             t.tilt = 0.35; t.brow = 0.25;
             const w = smooth01((at - (plan.end - 1.6)) / 0.45);                        // the question lands: they start thinking
             if (w > 0) { t.armR = 2.2 * w; t.spreadR = -0.5 * w; t.nod += 0.1 * w; t.gazeY = 0; }
           }
-        } else if (plan.E === 'angry' && strong) { t.brow = 0.45; t.lid = 1.15; t.lean = -0.2; }                            // whoa
-        else if (plan.ST === 'joke' || plan.E === 'joyful') t.smile = 0.6;
-        else if (plan.ST === 'question') t.tilt = 0.18;
+        } else if (plan.E === 'angry' && strong) { t.brow = 0.45; t.browIn = 0.3; t.lid = 1.15; t.lean = -0.2; }                // whoa
+        else if (plan.ST === 'joke' || plan.E === 'joyful') { t.smile = 0.6; t.happy = this.crowd.seed(i, 9) < 0.5 ? 0.35 : 0; }
+        else if (plan.E === 'sad' || plan.E === 'tender') { t.browIn = 0.5; t.smile = plan.E === 'tender' ? 0.3 : -0.05; t.tilt += 0.12; }   // sympathy
+        else if (plan.ST === 'question') { t.tilt = 0.18; t.browAsym = this.crowd.seed(i, 4) > 0.5 ? 0.3 : -0.3; }
         else if (plan.ST === 'agree') t.nod += Math.max(0, Math.sin(at * 1.8 + i)) * 0.08;
         else if (plan.I >= 0.6 || plan.C.includes('story')) { t.lean = 0.24; t.brow = Math.max(t.brow, 0.12); }           // leaning in
         // an insult lands: the table gasps; its target goes stony
         const k = at - plan.start;
         if (plan.C.includes('insult') && k > 0.6 && k < 2.6) {
           const w = smooth01((k - 0.6) / 0.25) * (1 - smooth01((k - 2.2) / 0.4));
-          if (i === plan.A) { t.brow = -0.7 * w; t.smile = -0.35 * w; t.lid = 1 - 0.2 * w; }
+          if (i === plan.A) { t.brow = -0.2 * w; t.browIn = -0.9 * w; t.lidTilt = 0.6 * w; t.flush = 0.4 * w; t.smile = -0.35 * w; t.lid = 1 - 0.1 * w; }
           else { t.brow = Math.max(t.brow, 0.85 * w); t.open = 0.32 * w; t.shape = 0.9 * w; t.lean = -0.25 * w; t.lid = 1 + 0.25 * w; }
         }
         // praise: the one praised lights up, a hand to the chest
-        if ((plan.ST === 'praise' || plan.C.includes('praise')) && i === plan.A && k > 0.4) { t.smile = 0.85; t.armR = 1.25; t.spreadR = -0.62; t.nod += 0.12; }
-        if (plan.laughEnd && at > plan.end - 1.1 && this.crowd.seed(i, 7) < 0.65) { t.bounce = 1; t.smile = 1; t.lid = 0.55; }
+        if ((plan.ST === 'praise' || plan.C.includes('praise')) && i === plan.A && k > 0.4) { t.smile = 0.85; t.blush = 0.6; t.happy = 0.5; t.armR = 1.25; t.spreadR = -0.62; t.nod += 0.12; }
+        if (plan.laughEnd && at > plan.end - 1.1 && this.crowd.seed(i, 7) < 0.65) { t.bounce = 1; t.smile = 1; t.happy = 1; t.teeth = 0.8; t.open = Math.max(t.open, 0.3); t.blush = 0.4; }
       }
       const coming = upcoming.get(i);
       if ((coming === 'disagree' || coming === 'correct') && t.brow >= 0 && i !== plan?.A) {
-        t.brow = -0.35; t.lid = 0.85;                                                                 // foreshadowing
+        // foreshadowing: whoever is about to push back already doubts it, one brow up, the mouth pulled aside
+        const flip = this.crowd.seed(i, 5) > 0.5 ? 1 : -1;
+        t.browAsym = 0.55 * flip; t.browIn = -0.3; t.lid = 0.85; t.smileAsym = -0.2 * flip;
         if (Math.sin(at * 0.8 + i * 2.1) > 0.93) t.yaw += Math.sin(at * 11) * 0.14;                     // a small head shake
       }
     }
@@ -713,7 +756,7 @@ export class Director {
     const look = new THREE.Vector3();
     for (const s of subjects) look.add(s.head);
     look.divideScalar(subjects.length).sub(p).normalize();
-    const half = Math.atan(Math.tan((fov * Math.PI) / 360) * 1.78);       // half the horizontal field of view (16:9)
+    const half = this.rig.halfWidth(fov);                                 // half the horizontal field of view, as the rig will set it
     const h = this.tmp;
     for (const j of this.nearby) {
       this.crowd.headPos(j, h);
@@ -803,6 +846,8 @@ export class Director {
   }
 
   private subject(i: number, w = 1): Subject { return { i, head: this.crowd.headPos(i), face: this.faceDir(i), w }; }
+  /** portrait: no over-the-shoulder shots (the shoulder would fill a narrow frame), more singles */
+  private get tall() { return this.rig.camera.aspect < 0.8; }
 
   private wide(now: number, glide = false) {
     if (!this.spot) return;
@@ -845,7 +890,7 @@ export class Director {
       // best, when they're close: from just behind the one being told off, at their eye level, looking up at the one
       // standing over them (from across the table that would be a crowd shot: the POV below is better there)
       const lift = sa.head.y + 0.1 - target.y, near = new Set([i, a]);
-      if (dA < 1.5 && this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { dry: true }) > -1.6) {
+      if (dA < 1.5 && !this.tall && this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { dry: true }) > -1.6) {
         this.frame(target, toA, dA + 0.6, lift, 42, [s], near, { name: name + ' ots', exposure: 0.9 });
         return;
       }
@@ -893,7 +938,7 @@ export class Director {
     const target = sa.head.clone().add(new THREE.Vector3(0, -0.04, 0));
     const dir = back.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.22), near = new Set([over, at]);
     const h = ho.y - target.y + lift;
-    if (this.frame(target, dir, d + 0.7, h, 34, [sa], near, { dry: true }) < -1.2) { this.single(at); return; }
+    if (this.tall || this.frame(target, dir, d + 0.7, h, 34, [sa], near, { dry: true }) < -1.2) { this.single(at); return; }
     this.frame(target, dir, d + 0.7, h, 34, [sa], near, { name: `ots ${this.crowd.people[over].name}>${this.crowd.people[at].name}`, exposure });
   }
 

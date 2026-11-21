@@ -10,6 +10,8 @@ export interface Floor { story: { id: number; title: string; url?: string; by?: 
 export interface Head {
   epoch: number; at: number; tower: number[]; floors: Record<number, number>;
   stories: Record<number, [string, number, number, string, string]>; act: Record<number, number>;
+  /** different people talking on each floor (older servers: absent) */
+  people?: Record<number, number>;
 }
 export interface Delta { epoch: number; tower?: number[]; turns?: { story: number; table: number; at: number; turn: Turn }[]; voiced?: { id: number; v: [string, number] }[]; gone?: number[] }
 export interface Clip { u: string; d: number; t: string; who: string; env: number[]; shape: number[] }
@@ -57,6 +59,7 @@ export class LiveSync {
     if (!r.ok) return null;
     const f: Floor = await r.json();
     this.floorCache.set(key, f);
+    if (this.floorCache.size > 40) this.floorCache.delete(this.floorCache.keys().next().value!);   // old revisions
     return f;
   }
 
@@ -75,9 +78,13 @@ export class LiveSync {
 
   url(path: string) { return this.base + path; }
 
-  /** Local-only: ask the voice worker to voice a table, from a turn onwards ("first listen"). */
   /** Ask for a table's voicing from a turn on. False when refused (starting up, too many asks) or unreachable. */
   want(story: number, table: number, from = 0): Promise<boolean> {
     return fetch(this.base.replace(/live\/$/, 'want'), { method: 'POST', body: JSON.stringify({ story, table, from }) }).then((r) => r.ok, () => false);
+  }
+
+  /** Ahead of anyone sitting: the first words of a floor's best tables. 1 = it's in focus, 2 = we're on it. */
+  warm(story: number, level: 1 | 2) {
+    fetch(this.base.replace(/live\/$/, 'want'), { method: 'POST', body: JSON.stringify({ story, warm: level }) }).catch(() => {});
   }
 }

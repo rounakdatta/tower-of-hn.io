@@ -301,11 +301,37 @@ def job_id(name):
         return None
 
 
-def urgent(jobs_dir, own=None):
-    """Is a listener waiting on something else? Demand jobs (someone sat at a table) sort before the 001000
-    pre-warm range. The comment being voiced doesn't count: towerd renames its job when a listener sits down."""
+def klass(prio):
+    """How urgent a job is, by towerd's priority bands: 0 someone sat at the table, 1 someone walked onto the
+    floor, 2 a floor in focus on the tower, 3 background (openings first, then depth)."""
+    return 0 if prio < 100 else 1 if prio < 200 else 2 if prio < 1000 else 3
+
+
+def urgent(jobs_dir, own=None, mine=10 ** 6):
+    """Is someone waiting on something more urgent than this job? Between clips, a job gives way to a more urgent
+    band. The comment being voiced doesn't count: towerd renames its job when a listener sits down."""
     pending = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json") and job_id(n) != own)
-    return bool(pending) and pending[0] < "001000"
+    try:
+        return bool(pending) and klass(int(pending[0].split("-", 1)[0])) < klass(mine)
+    except ValueError:
+        return False
+
+
+class Burst:
+    """Listeners get the fast session (FAST_THREADS cores), background work the one-thread one. This VPS takes CPU
+    back under sustained multi-core load (steal for every process on it), so bursts are budgeted: at most
+    FAST_BUDGET seconds of fast work in any ten minutes."""
+
+    def __init__(self, budget):
+        self.budget, self.spans = budget, []
+
+    def ok(self):
+        now = time.time()
+        self.spans = [(a, b) for a, b in self.spans if b > now - 600]
+        return sum(b - max(a, now - 600) for a, b in self.spans) < self.budget
+
+    def spent(self, a, b):
+        self.spans.append((a, b))
 
 
 def main(var):
@@ -320,17 +346,25 @@ def main(var):
     kokoro = voices = None
     if engine == "kokoro":
         models = os.path.expanduser(os.environ.get("KOKORO_DIR", "~/.cache/tohn-models"))
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = 1
-        so.inter_op_num_threads = 1
-        # KOKORO_MODEL: kokoro-v1.0.onnx (default, best), .int8.onnx (~24% faster on CPU, 92 MB instead of 325 MB)
+        # KOKORO_MODEL: kokoro-v1.0.fp16.onnx (default). Measured here on one core: 0.94x real time vs 0.77x for
+        # the fp32 original, its weights rounded to half precision (as Kokoro runs on GPUs); int8 drifts further.
         # KOKORO_PROVIDER=cuda runs the same model, and so the same voices, on a GPU (onnxruntime-gpu)
-        model = os.environ.get("KOKORO_MODEL", "kokoro-v1.0.onnx")
+        model = os.environ.get("KOKORO_MODEL", "kokoro-v1.0.fp16.onnx")
         providers = (["CUDAExecutionProvider"] if os.environ.get("KOKORO_PROVIDER") == "cuda" else []) + ["CPUExecutionProvider"]
-        sess = ort.InferenceSession(f"{models}/{model}", so, providers=providers)
-        print("kokoro", model, sess.get_providers()[0], flush=True)
-        kokoro = Kokoro.from_session(sess, f"{models}/voices-v1.0.bin")
+
+        def session(threads):
+            so = ort.SessionOptions()
+            so.intra_op_num_threads = threads
+            so.inter_op_num_threads = 1
+            so.add_session_config_entry("session.intra_op.allow_spinning", "0")   # idle threads sleep, not spin
+            return Kokoro.from_session(ort.InferenceSession(f"{models}/{model}", so, providers=providers), f"{models}/voices-v1.0.bin")
+        kokoro = session(1)
+        # listeners get three cores (1.81x real time here), so a table never waits on its next line
+        fast_n = int(os.environ.get("FAST_THREADS", "3"))
+        fast = session(fast_n) if fast_n > 1 else None
+        print("kokoro", model, providers[0], "fast threads", fast_n, flush=True)
         voices = Voices(kokoro)
+    burst = Burst(float(os.environ.get("FAST_BUDGET", "300")))
     oai = OpenAITTS(os.environ["OPENAI_API_KEY"], float(os.environ.get("OPENAI_BUDGET_MIN", "300"))) if engine == "openai" else None
     key = os.environ.get("GEMINI_API_KEY", "")
     last_llm = 0.0
@@ -352,7 +386,7 @@ def main(var):
                 j = json.load(open(os.path.join(jobs_dir, n)))
             except Exception:  # noqa: BLE001
                 continue
-            if j["story"] == first["story"] and j["table"] == first["table"]:
+            if j["story"] == first["story"]:
                 j["_file"] = n
                 batch.append(j)
             if len(batch) >= 8:
@@ -391,7 +425,7 @@ def main(var):
                         pass
                     continue
             emotion, stance, intensity, cues = tags.get(j["id"]) or heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
-            clips_out, total, dropped, start = [], 0.0, False, 0
+            clips_out, total, dropped, opened, start = [], 0.0, False, False, 0
             plan = plan_clips(j)
             prev = resume(live, j, len(plan))
             if prev:
@@ -411,7 +445,7 @@ def main(var):
                 # background work (pre-warm, re-voicing) yields between clips to anyone actually listening: a long
                 # comment can take a minute, and a table waiting on one line shouldn't. Its job file stays; it
                 # resumes from its last snapshot later.
-                if k > start and j["_file"] >= "001000" and urgent(jobs_dir, own=j["id"]):
+                if k > start and urgent(jobs_dir, own=j["id"], mine=j.get("prio", 10 ** 6)):
                     dropped = True
                     break
                 try:
@@ -420,7 +454,11 @@ def main(var):
                     else:
                         style, lang, pace, _ = voices.of(who)
                         speed = pace * SPEED.get(emotion, 1.0) * (0.97 if who != j["by"] else 1.0)
-                        audio, sr = kokoro.create(spoken, voice=style, speed=speed, lang=lang, sentence_pause=0.16, clause_pause=0.07)
+                        quick = fast is not None and klass(j.get("prio", 10 ** 6)) < 3 and burst.ok()
+                        c0 = time.time()
+                        audio, sr = (fast if quick else kokoro).create(spoken, voice=style, speed=speed, lang=lang, sentence_pause=0.16, clause_pause=0.07)
+                        if quick:
+                            burst.spent(c0, time.time())
                 except Exception as e:  # noqa: BLE001
                     print("tts failed", j["id"], str(e)[:120], file=sys.stderr, flush=True)
                     continue
@@ -446,6 +484,17 @@ def main(var):
                     with open(log, "a") as f:
                         f.write(json.dumps({"id": j["id"], "by": j["by"], "path": prel, "dur": round(total, 2), "partial": True,
                                             "of": len(plan), "voices": sorted({c["who"] for c in clips_out})}) + "\n")
+                    if j.get("upto") and len(clips_out) >= j["upto"]:
+                        opened = True
+                        break
+            if opened:
+                # an opening: its first words are ready for whoever sits down; the rest is voiced on demand
+                try:
+                    os.remove(os.path.join(jobs_dir, j["_file"]))
+                except FileNotFoundError:
+                    pass
+                print(json.dumps({"id": j["id"], "opened": len(clips_out), "wall_s": round(time.time() - t0, 1)}), flush=True)
+                continue
             if dropped:
                 print(json.dumps({"id": j["id"], "yielded": True, "after_clips": len(clips_out)}), flush=True)
                 break

@@ -32,6 +32,8 @@ export interface Head {
   stories: Record<number, [string, number, number, string, string]>;
   /** id -> comments in the last 15 minutes (lights the windows) */
   act: Record<number, number>;
+  /** id -> how many different people are talking on that floor (its crowd, seen through the windows) */
+  people: Record<number, number>;
 }
 
 export const VOICE_POOL = 115;
@@ -80,7 +82,7 @@ export class Live {
     for (const stack = [sid]; stack.length;) {
       const id = stack.pop()!, it = this.items.get(id);
       if (!it) continue;
-      this.items.delete(id); this.voiced.delete(id); n++;
+      this.items.delete(id); this.voiced.delete(id); this.storyCache.delete(id); n++;
       for (const k of it.kids ?? []) stack.push(k);
     }
     this.floors.delete(sid); this.revs.delete(sid); this.sinceSnapshot.delete(sid); this.dirtyStories.delete(sid);
@@ -139,7 +141,7 @@ export class Live {
       delta = { ...p, epoch: ++this.epoch };
       this.pending = { epoch: 0 };
     }
-    const floors: Record<number, number> = {}, stories: Head['stories'] = {}, act: Record<number, number> = {};
+    const floors: Record<number, number> = {}, stories: Head['stories'] = {}, act: Record<number, number> = {}, people: Record<number, number> = {};
     const since = now / 1000 - 900;
     for (const id of this.tower) {
       if (this.revs.has(id)) floors[id] = this.revs.get(id)!;
@@ -147,22 +149,32 @@ export class Live {
       if (st) stories[id] = [st.title ?? '', st.score ?? 0, st.descendants ?? 0, st.by ?? '', st.url ?? ''];
       act[id] = 0;
     }
+    const who = new Map<number, Set<string>>();
     for (const it of this.items.values()) {
-      if (it.type !== 'comment' || (it.time ?? 0) < since || it.dead || it.deleted) continue;
+      if (it.type !== 'comment' || it.dead || it.deleted || !it.by || this.optOut.has(it.by)) continue;
       const sid = this.storyOf(it.id);
-      if (sid !== undefined && sid in act) act[sid]++;
+      if (sid === undefined || !(sid in act)) continue;
+      if ((it.time ?? 0) >= since) act[sid]++;
+      let set = who.get(sid);
+      if (!set) who.set(sid, (set = new Set()));
+      set.add(it.by);
     }
-    return { delta, head: { epoch: this.epoch, at: now, tower: this.tower.slice(), floors, snapshotEvery: this.opts.snapshotEvery, stories, act }, snapshots };
+    for (const id of this.tower) people[id] = who.get(id)?.size ?? 0;
+    return { delta, head: { epoch: this.epoch, at: now, tower: this.tower.slice(), floors, snapshotEvery: this.opts.snapshotEvery, stories, act, people }, snapshots };
   }
 
-  /** The story a comment belongs to: walk parents until a story. */
+  /** The story a comment belongs to: walk parents until a story (remembered: it never changes, and the head
+   *  asks for every comment's story every tick). */
   storyOf(id: number): number | undefined {
+    const hit = this.storyCache.get(id);
+    if (hit !== undefined) return hit;
     for (let cur = this.items.get(id), hops = 0; cur && hops < 200; hops++) {
-      if (cur.type === 'story' || cur.parent === undefined) return cur.id;
+      if (cur.type === 'story' || cur.parent === undefined) { this.storyCache.set(id, cur.id); return cur.id; }
       cur = this.items.get(cur.parent);
     }
     return undefined;
   }
+  private storyCache = new Map<number, number>();
 
   voiceOf(user: string): number {
     let v = this.voices.get(user);

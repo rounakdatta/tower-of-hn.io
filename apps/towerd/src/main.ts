@@ -10,6 +10,7 @@
 //      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_VERSION
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { gzipSync, brotliCompressSync, constants as zlibc } from 'node:zlib';
 import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, openSync, readSync, closeSync, rmdirSync } from 'node:fs';
 import { dirname, join, extname, resolve } from 'node:path';
 import { Live, type Item, type FloorSnapshot } from '../../../packages/core/src/live.ts';
@@ -61,12 +62,25 @@ const live = new Live({ snapshotEvery: 1, base: Date.now() });
 let heartbeat = Date.now();                          // /livez: the ingest loop (or the bootstrap) is making progress
 process.on('SIGTERM', () => process.exit(0));        // PID 1 in a container: exit at once on a rollout
 const floors = new Map<number, FloorSnapshot>();
-const demand = new Map<number, number>();            // comment id -> priority (lower = sooner)
-const demandAt = new Map<number, number>();          // when a listener last asked: demand lapses unless renewed
+/** What listeners asked for: comment id -> priority (lower = sooner), how much of it (upto: first clips only,
+ *  0 = all of it) and when (demand lapses unless renewed). Priority bands, which the worker also reads:
+ *    0-99 someone sat at the table · 100-199 someone walked onto the floor · 200-999 a floor in focus on the tower
+ *    1000+ background: first words of every table first, then (only while anyone is around) whole turns */
+const demand = new Map<string, { id: number; prio: number; upto: number; at: number }>();   // key: id/upto (one ask per depth)
 const DEMAND_TTL = 90_000;
+/** someone has the page open (head.json is polled every 2 s): background voicing goes deep only then */
+let lastViewerAt = 0;
+const audience = () => Date.now() - lastViewerAt < 20 * 60_000;
+function ask(id: number, prio: number, upto = 0) {
+  const key = `${id}/${upto}`, d = demand.get(key), fresh = d && Date.now() - d.at < DEMAND_TTL;
+  if (!fresh || prio <= d.prio) demand.set(key, { id, prio, upto, at: Date.now() });
+  else d.at = Date.now();
+}
 const queued = new Map<number, string>();            // comment id -> job file name
 const stale = new Set<number>();                     // voiced with an older VOICE_VERSION: re-voice in the background
 const partial = new Set<number>();                   // playable, but the worker is still voicing the rest of it
+/** clips voiced so far of a partial comment (a whole one counts as all of them): openings are measured in clips */
+const clipsOf = new Map<number, number>();
 let voicedOffset = 0;
 let booting = true;
 
@@ -105,35 +119,53 @@ function readVoiced() {
       }
       if (v.partial) {                              // a long comment arriving clip by clip: playable already
         const done = prev && !partial.has(v.id) && String(prev[0]).split('.')[1] === got;
-        if (!done && (!prev || !partial.has(v.id) || v.dur > prev[1])) { live.markVoiced(v.id, v.path, v.dur); partial.add(v.id); }
+        if (!done && (!prev || !partial.has(v.id) || v.dur > prev[1])) {
+          live.markVoiced(v.id, v.path, v.dur); partial.add(v.id);
+          clipsOf.set(v.id, Math.max(clipsOf.get(v.id) ?? 0, Number(/\.p(\d+)\.json$/.exec(v.path)?.[1] ?? 1)));
+        }
         continue;                                   // the job is still running: keep it queued
       }
       live.markVoiced(v.id, v.path, v.dur);
-      partial.delete(v.id);
+      partial.delete(v.id); clipsOf.set(v.id, Infinity);
       stale.delete(v.id);
       queued.delete(v.id);
-      demand.delete(v.id); demandAt.delete(v.id);
+      for (const u of [0, 1, 2]) demand.delete(`${v.id}/${u}`);
     } catch { /* partial line */ }
   }
 }
 
 // ---------------------------------------------------------------- voicing queue
-function wanted(): [number, number][] {
+/** Everything worth voicing now, most urgent first: [comment id, priority, upto]. */
+function wanted(): [number, number, number][] {
   // listeners who left stop costing anyone else: their requests lapse after DEMAND_TTL unless renewed
-  for (const [id, at] of demandAt) if (Date.now() - at > DEMAND_TTL) { demand.delete(id); demandAt.delete(id); }
-  const out = new Map<number, number>(demand);
-  live.tower.slice(0, PRE.floors).forEach((sid, fi) => {
+  for (const [k, d] of demand) if (Date.now() - d.at > DEMAND_TTL) demand.delete(k);
+  const out = new Map<number, [number, number]>();
+  const add = (id: number, prio: number, upto: number) => {
+    // an opening is done once its comment has any voice at all; a whole turn once it's whole (or, after a
+    // VOICE_VERSION bump, re-voiced: the old version plays until then)
+    // (a stale comment, voiced whole by an older VOICE_VERSION, is re-voiced whole: an opening would swap its
+    // complete old audio for one or two new clips)
+    if (upto && stale.has(id)) return;
+    if (!(upto ? !live.voiced.has(id) || (clipsOf.get(id) ?? 0) < upto : needsVoice(id) || stale.has(id))) return;
+    const o = out.get(id);
+    if (!o || prio < o[0]) out.set(id, [prio, upto]);
+  };
+  for (const d of demand.values()) add(d.id, d.prio, d.upto);
+  const convo = (f: FloorSnapshot) => f.tables.filter((t) => t.turns.length >= 2);
+  live.tower.forEach((sid, rank) => {
     const f = floors.get(sid);
     if (!f) return;
-    f.tables.filter((t) => t.turns.length >= 2).slice(0, PRE.tables).forEach((t, ti) => {
-      t.turns.slice(0, PRE.turns).forEach((u, k) => { if (!out.has(u.id)) out.set(u.id, 1000 + fi * 100 + ti * 15 + k); });
-    });
-    // the bar's one-liners too, after the conversations
-    f.tables.filter((t) => t.turns.length === 1).slice(0, PRE.bar).forEach((t, k) => {
-      if (!out.has(t.turns[0].id)) out.set(t.turns[0].id, 1000 + fi * 100 + 80 + k);
-    });
+    // first words of every table on every floor, so whoever sits down anywhere hears someone at once: two clips
+    // (about twenty seconds) at the best tables of the top floors, which covers voicing the rest on three cores
+    convo(f).slice(0, 6).forEach((t, ti) => add(t.turns[0].id, 1000 + rank * 20 + ti, rank < 10 && ti < 4 ? 2 : 1));
+    if (!audience()) return;                         // nobody around: that's all (a core saved, steal spared)
+    if (rank < 10) convo(f).slice(0, 4).forEach((t, ti) => t.turns.slice(0, 2).forEach((u, k) => add(u.id, 3000 + rank * 50 + ti * 10 + k, 0)));
+    if (rank < PRE.floors) {
+      convo(f).slice(0, PRE.tables).forEach((t, ti) => t.turns.slice(0, PRE.turns).forEach((u, k) => add(u.id, 5000 + rank * 200 + ti * 20 + k, 0)));
+      f.tables.filter((t) => t.turns.length === 1).slice(0, PRE.bar).forEach((t, k) => add(t.turns[0].id, 5000 + rank * 200 + 150 + k, 0));
+    }
   });
-  return [...out].filter(([id]) => needsVoice(id) || stale.has(id)).sort((a, b) => a[1] - b[1]);
+  return [...out].map(([id, [prio, upto]]) => [id, prio, upto] as [number, number, number]).sort((a, b) => a[1] - b[1]);
 }
 
 /** audio voiced while HN still showed a moderation placeholder: the client skips it, so a listener needs the real thing */
@@ -152,7 +184,7 @@ function revOf(id: number): string | undefined {
   return createHash('sha1').update(VOICE_VERSION + ':' + t + hush).digest('hex').slice(0, 8);
 }
 
-function jobFor(id: number, prio: number) {
+function jobFor(id: number, prio: number, upto = 0) {
   const it = live.items.get(id);
   if (!it?.text || !it.by || it.dead || it.deleted || live.optOut.has(it.by)) return undefined;
   const parent = it.parent !== undefined ? live.items.get(it.parent) : undefined;
@@ -165,6 +197,7 @@ function jobFor(id: number, prio: number) {
     parentBy: parent?.type === 'comment' && parent.by && !live.optOut.has(parent.by) ? parent.by : undefined,
     rev: revOf(id)!,
     segments: sp.segments,
+    ...(upto ? { upto } : {}),                       // an opening: only its first clips, the rest on demand
   };
 }
 
@@ -177,11 +210,11 @@ function syncJobs() {
     try { unlinkSync(join(JOBS, name)); } catch { /* the worker has it already */ }
     queued.delete(id);
   }
-  for (const [id, prio] of target) {
-    const name = `${String(prio).padStart(6, '0')}-${id}.json`;
+  for (const [id, prio, upto] of target) {
+    const name = `${String(prio).padStart(6, '0')}-${id}${upto ? `.o${upto}` : ''}.json`;
     const cur = queued.get(id);
     if (cur === name) continue;
-    const job = jobFor(id, prio);
+    const job = jobFor(id, prio, upto);
     if (!job) continue;
     if (cur && existsSync(join(JOBS, cur))) { try { unlinkSync(join(JOBS, cur)); } catch { /* worker took it */ } }
     writeFileSync(join(JOBS, name + '.tmp'), JSON.stringify(job));
@@ -195,6 +228,7 @@ const TYPES: Record<string, string> = {
   '.json': 'application/json', '.ogg': 'audio/ogg', '.aac': 'audio/aac', '.m4a': 'audio/mp4',
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.txt': 'text/plain; charset=utf-8', '.woff2': 'font/woff2',
+  '.webmanifest': 'application/manifest+json',
 };
 // The page loads nothing from anywhere else; comments are text, and links in them are plain http(s) anchors.
 const CSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
@@ -274,16 +308,30 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     req.on('end', () => {
       if (res.writableEnded) return;
       try {
-        const { story, table, from = 0 } = JSON.parse(body);
-        if (![story, table, from].every((n) => Number.isInteger(n) && n >= 0)) throw new Error('bad request');
+        const { story, table = 0, from = 0, warm = 0 } = JSON.parse(body);
+        if (![story, table, from, warm].every((n) => Number.isInteger(n) && n >= 0) || warm > 2) throw new Error('bad request');
         const f = floors.get(story);
-        const turns = f?.tables[table]?.turns.slice(from, from + 24) ?? [];
-        const fresh = (id: number) => Date.now() - (demandAt.get(id) ?? 0) < DEMAND_TTL;
-        turns.forEach((u, k) => {
-          if (!needsVoice(u.id)) return;
-          demand.set(u.id, fresh(u.id) ? Math.min(demand.get(u.id) ?? 999, k) : k);
-          demandAt.set(u.id, Date.now());
-        });
+        if (!f) throw new Error('not on the tower');
+        lastViewerAt = Date.now();
+        let turns: FloorSnapshot['tables'][number]['turns'] = [];
+        if (warm) {
+          // ahead of anyone sitting down: 1 = the floor is in focus on the tower, 2 = they're standing in the room
+          const convo = f.tables.filter((t) => t.turns.length >= 2);
+          if (warm === 2) {
+            // first words at every table before second words at any: whichever table they pick can start
+            convo.slice(0, 6).forEach((t, ti) => ask(t.turns[0].id, 100 + ti, 1));
+            convo.slice(0, 6).forEach((t, ti) => ask(t.turns[0].id, 120 + ti, 2));
+            convo.slice(0, 3).forEach((t, ti) => { ask(t.turns[0].id, 150 + ti * 3); if (t.turns[1]) ask(t.turns[1].id, 151 + ti * 3, 1); });
+          } else {
+            // the floor in focus now goes ahead of floors glanced at before (the queue holds twelve)
+            for (const d of demand.values()) if (d.prio >= 200 && d.prio < 1000) d.prio = Math.min(999, d.prio + 10);
+            convo.slice(0, 3).forEach((t, ti) => ask(t.turns[0].id, 200 + ti, 1));
+          }
+          turns = convo.slice(0, warm === 2 ? 6 : 3).map((t) => t.turns[0]);
+        } else {
+          turns = f.tables[table]?.turns.slice(from, from + 24) ?? [];
+          turns.forEach((u, k) => { if (needsVoice(u.id)) ask(u.id, k); });
+        }
         syncJobs();
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ queued: turns.filter((u) => needsVoice(u.id)).length }));
@@ -293,7 +341,7 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
   }
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-    res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: queued.size, demand: demand.size, tower: live.tower.length }));
+    res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: queued.size, demand: demand.size, tower: live.tower.length, audience: audience() }));
     return;
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
@@ -306,31 +354,61 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     if (missing) p = join(STATIC, 'index.html');
     if (!existsSync(p)) { res.writeHead(404); res.end(); return; }
     const forever = url.pathname.startsWith('/assets/');
-    const body = readOr503(p, res);
-    if (!body) return;
+    const file = readOr503(p, res);
+    if (!file) return;
+    const out = squeeze(req, p, file, forever);
     res.writeHead(200, {
       'content-type': TYPES[extname(p)] ?? 'application/octet-stream',
       'cache-control': forever ? 'public, max-age=31536000, immutable' : 'no-cache',
+      ...(out.enc ? { 'content-encoding': out.enc } : {}), vary: 'accept-encoding',
       ...(extname(p) === '.html' ? { 'content-security-policy': CSP, 'referrer-policy': 'strict-origin-when-cross-origin' } : {}),
     });
-    res.end(req.method === 'HEAD' ? undefined : body);
+    res.end(req.method === 'HEAD' ? undefined : out.body);
     return;
   }
   const p = resolve(LIVE, '.' + url.pathname.slice(5));
   if (!p.startsWith(LIVE + '/') || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
   const isHead = url.pathname === '/live/head.json';
-  const body = readOr503(p, res);
-  if (!body) return;
+  if (isHead) lastViewerAt = Date.now();
+  const file = readOr503(p, res);
+  if (!file) return;
+  const out = squeeze(req, p, file, false);
   res.writeHead(200, {
     'content-type': TYPES[extname(p)] ?? 'application/octet-stream',
     'cache-control': isHead ? 'public, max-age=1, stale-while-revalidate=10' : 'public, max-age=31536000, immutable',
+    ...(out.enc ? { 'content-encoding': out.enc } : {}), vary: 'accept-encoding',
   });
-  res.end(req.method === 'HEAD' ? undefined : body);
+  res.end(req.method === 'HEAD' ? undefined : out.body);
+}
+
+/**
+ * Compressed bodies, cached: JSON shrinks ~4.5x (a floor is 75 KB raw, 17 KB gzipped, and a listener fetches every
+ * revision) and the client's script 3.7x. Brotli for the content-hashed assets (compressed once, served forever),
+ * gzip for the rest. Audio is already compressed: never touched.
+ */
+const squeezed = new Map<string, { mtime: number; enc: string; body: Buffer }>();
+let squeezedBytes = 0;
+function squeeze(req: import('node:http').IncomingMessage, p: string, f: { body: Buffer; mtime: number }, asset: boolean) {
+  const accept = String(req.headers['accept-encoding'] ?? '');
+  const ext = extname(p);
+  if (f.body.length < 1024 || !['.json', '.js', '.css', '.html', '.svg', '.txt'].includes(ext)) return { body: f.body };
+  const enc = asset && /\bbr\b/.test(accept) ? 'br' : /\bgzip\b/.test(accept) ? 'gzip' : '';
+  if (!enc) return { body: f.body };
+  const key = `${enc}:${p}`, hit = squeezed.get(key);
+  if (hit && hit.mtime === f.mtime) { squeezed.delete(key); squeezed.set(key, hit); return { body: hit.body, enc }; }
+  const body = enc === 'br'
+    ? brotliCompressSync(f.body, { params: { [zlibc.BROTLI_PARAM_QUALITY]: 9, [zlibc.BROTLI_PARAM_SIZE_HINT]: f.body.length } })
+    : gzipSync(f.body, { level: 6 });
+  if (hit) squeezedBytes -= hit.body.length;
+  squeezed.set(key, { mtime: f.mtime, enc, body });
+  squeezedBytes += body.length;
+  for (const [k, v] of squeezed) { if (squeezedBytes < 24e6) break; squeezed.delete(k); squeezedBytes -= v.body.length; }
+  return { body, enc };
 }
 
 /** A file's bytes, or a 503 nobody caches: a read error must never become an empty response cached for a year. */
 function readOr503(p: string, res: import('node:http').ServerResponse) {
-  try { return readFileSync(p); } catch {
+  try { return { body: readFileSync(p), mtime: statSync(p).mtimeMs }; } catch {
     res.writeHead(503, { 'cache-control': 'no-store', 'retry-after': '2' });
     res.end();
     return null;

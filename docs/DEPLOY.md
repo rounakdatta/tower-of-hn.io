@@ -2,23 +2,39 @@
 
 Written 20 Nov 2026. Prices were read on the day; sources are listed at the end.
 
-## Where it stands (20 Nov, evening)
+## Where it stands (21 Nov)
 
-**Live privately at https://towerofhan.taptappers.club** (tailnet only), as 0.1.2.
+**Live privately at https://towerofhan.taptappers.club** (tailnet only).
 - **Images:** a `v*` tag builds `towerofhan-web` and `towerofhan-voice` into GHCR. Both are private.
 - **Deploy:**
   1. Pin the new tag by digest in `homelab.setup/kubernetes/apps/towerofhan/values.yaml`.
   2. Deploy that branch with `deploy-stuff.yml --ref`.
   3. Merge.
-- **Done:** steps 1 and 2 below, and most of step 3:
-  - retention
-  - takedowns that remove every version
-  - opt-out, through `optout.txt` on the volume or `OPTOUT`
-  - per-visitor rate limits
-  - crash-proof start-up
-  - three review passes
-- **Phones:** browsers that can't decode Ogg Opus (Safari before 26) use a 68 KB WebAssembly decoder.
-- **Still to do:** an iPhone test (WebGPU, frame rate, audio), then step 3's about page and self-serve opt-out, then step 4.
+
+**0.2.0, from your first look on a phone:**
+- **Voicing starts before anyone asks.** Jobs are ranked: someone sitting at the table first, then someone on the floor, then a floor in focus on the tower, then the background.
+  - The background voices the first words of every table on all 30 floors first.
+  - It goes deeper only while someone has the page open, so an empty site doesn't burn a core all day.
+  - Walking onto a floor that nobody had touched: all six tables had first words within 26 s, the first in 8 s (it was 56 s).
+- **The worker is faster without heating the node.**
+  - The fp16 model runs at 0.94× real time on one thread, against 0.77× for fp32.
+  - Someone listening gets a three-thread session at 1.81× real time, capped at 300 s of bursts per ten minutes.
+  - Background work stays on one thread.
+- **The tower is navigable on a phone.**
+  - A focus card shows the floor's title, its crowd and one action.
+  - An elevator rail sits on the right edge.
+  - Drag the tower and it moves with your finger, then settles on a floor; a tap focuses, a second tap goes in.
+  - The titles are signs that face you, and a neon sign sits on the crown.
+- **Crowds.** Each floor counts its different commenters, shown as silhouettes in its windows and on the card.
+- **Faces.** Worried and cross brows, one raised brow, smiling eyes, slanted angry lids, smirks, teeth, blush and an angry flush, all driven by each comment's tags.
+- **Mobile.**
+  - The screen stays on while listening.
+  - The back gesture steps out a level.
+  - Sound plays with the iPhone's silent switch on.
+  - The lock screen shows what's playing.
+  - It can be installed to the home screen (full screen).
+  - Tables render at 30 fps on phones, and resolution adapts to load.
+- **Smaller payloads.** gzip and brotli: the script drops from 964 KB to 238 KB, a floor from 75 KB to 17 KB.
 
 ## The short answer
 

@@ -59,9 +59,16 @@ export class Rig {
     }
     this.camera.lookAt(this.target);
     this.fov += (this.fovTarget - this.fov) * (1 - Math.exp(-dt * 3));
-    // shots are composed for 16:9; on a tall phone widen the lens so the framing (not the crop) stays the same
-    const a = this.camera.aspect, k = a < 1.6 ? Math.min(2.3, 1.6 / a) : 1;
-    const v = Math.min(88, (2 * Math.atan(Math.tan((this.fov * Math.PI) / 360) * k) * 180) / Math.PI);
+    const v = this.lens(this.fov);
     if (Math.abs(this.camera.fov - v) > 0.01) { this.camera.fov = v; this.camera.updateProjectionMatrix(); }
   }
+
+  /** Shots are composed for 16:9; on a tall phone the lens widens so the framing (not the crop) stays the same. */
+  private widen() { const a = this.camera.aspect; return a < 1.6 ? Math.min(2.3, 1.6 / a) : 1; }
+  /** the camera's vertical field of view for a shot composed at `fov` */
+  lens(fov: number) { return Math.min(88, (2 * Math.atan(Math.tan((fov * Math.PI) / 360) * this.widen()) * 180) / Math.PI); }
+  /** half the horizontal field of view a shot composed at `fov` will really have (radians) */
+  halfWidth(fov: number) { return Math.atan(Math.tan((this.lens(fov) * Math.PI) / 360) * this.camera.aspect); }
+  /** Take over the lens as it is (from the tower's camera) instead of jumping to a widened one. */
+  matchLens() { this.fov = this.fovTarget = (2 * Math.atan(Math.tan((this.camera.fov * Math.PI) / 360) / this.widen()) * 180) / Math.PI; }
 }

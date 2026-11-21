@@ -52,8 +52,14 @@ export class AudioEngine {
     return run;
   }
 
+  /** there is a context to decode into (it exists once someone has tapped in) */
+  get live() { return !!this.ctx; }
+
   /** Must be called from a user gesture (browsers require it). */
   ensure() {
+    // iPhones mute web audio with the ringer switch unless the page says it's playback, like a podcast app
+    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    if (session) try { session.type = 'playback'; } catch { /* older Safari */ }
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
     const ctx = (this.ctx = new AudioContext({ latencyHint: 'interactive' }));
     const comp = ctx.createDynamicsCompressor();
@@ -107,7 +113,8 @@ export class AudioEngine {
       p.catch(() => this.cache.delete(url));
       this.cache.set(url, p);
       this.order.push(url);
-      while (this.order.length > 160) this.cache.delete(this.order.shift()!);
+      // decoded audio is ~190 KB a second at 48 kHz: keep the last 64 clips (a few minutes), not hundreds of MB
+      while (this.order.length > 64) this.cache.delete(this.order.shift()!);
     }
     return p;
   }
