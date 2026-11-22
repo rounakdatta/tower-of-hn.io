@@ -226,6 +226,8 @@ camera.position.copy(HOME.pos); camera.lookAt(HOME.target);
 // ---------------------------------------------------------------- state
 type Mode = 'tower' | 'floor' | 'table';
 let mode: Mode = 'tower';
+let entered = false;                     // past the splash: the tower is in your hands
+const touch = matchMedia('(hover: none)').matches;
 let clock = 0;
 let activeStory = -1, activeFloor: Floor | null = null, roomY = 0, roomYaw = 0;
 let spots: TableSpot[] = [];
@@ -272,9 +274,9 @@ sync.onDelta = (d) => {
 let towerNoteAt = -1e9, landed = 0;
 const rowSeen = new Set<number>();
 function towerNote(html: string, sid: number) {
-  if (mode !== 'tower' || !entered || arriving || leanBack || clock - towerNoteAt < 20 || $id('toast').classList.contains('show')) return false;   // never over a reply to you
+  if (recording || mode !== 'tower' || !entered || arriving || leanBack || clock - towerNoteAt < 20 || $id('toast').classList.contains('show')) return false;   // never over a reply to you
   towerNoteAt = clock;
-  ui.toast(html, () => { const r = sync.head?.tower.indexOf(sid) ?? -1; if (r >= 0) cam.focus(r); });
+  ui.toast(html, () => { const r = sync.head?.tower.indexOf(sid) ?? -1; if (r >= 0 && mode === 'tower') cam.focus(r); });
   return true;
 }
 tower.onMove = () => { if (mode === 'tower') audio.sfx('rumble'); };
@@ -334,10 +336,11 @@ function warmSoon(sid: number) { clearTimeout(warmTimer); warmTimer = window.set
 
 // Voices through the glass: stop on a floor and someone inside is heard, muffled, before you go in ("Listen in" is
 // literal). One line, from a clip prewarm fetches anyway, so it costs nothing; it stops when you move on or go in.
-let preview: { stop(): void } | undefined;
-function hush() { preview?.stop(); preview = undefined; }
+let preview: { stop(): void } | undefined, peekSeq = 0;
+function hush() { peekSeq++; preview?.stop(); preview = undefined; }
 async function peek(sid: number) {
   if (recording || !audio.live || document.hidden) return;
+  const me = ++peekSeq;                  // a newer peek, or a hush, makes this one stand down
   const f = await sync.floor(sid).catch(() => null);
   const ready = f?.tables.filter((t) => t.turns.length >= 2 && t.turns[0].v).slice(0, 3) ?? [];
   const v = ready[Math.floor(Math.random() * ready.length)]?.turns[0].v;
@@ -345,9 +348,10 @@ async function peek(sid: number) {
   try {
     const clip = (await sync.sidecar(v[0])).clips[0];
     const buf = clip && await audio.load(sync.url(clip.u));
-    if (!buf || mode !== 'tower' || focusSid !== sid || arriving || leanBack || document.hidden) return;
-    hush();
-    preview = audio.murmur(buf, audio.now() + 0.1, camera.position.clone().addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 2.5));
+    if (!buf || me !== peekSeq || mode !== 'tower' || focusSid !== sid || arriving || leanBack || document.hidden) return;
+    preview?.stop();
+    // straight ahead and still: the tower camera drifts round on its own, and a voice placed in the world would slide off
+    preview = audio.murmur(buf, audio.now() + 0.1, null, 0.09);
   } catch { /* nothing voiced there yet: the glass stays quiet */ }
 }
 async function prewarm(sid: number, level: 1 | 2) {
@@ -398,12 +402,12 @@ let walkHint = !localStorage.getItem('tohn-walk');
  */
 async function enterFloor(sid: number, push = false, listen = false) {
   void listen;
+  hush();
   if (!sync.head) return;
   const rank = sync.head.tower.indexOf(sid);
   const floor = await sync.floor(sid);
   if (!floor || rank < 0) return;
   if (activeStory >= 0 && activeStory !== sid) sync.unwatch(activeStory);
-  hush();
   activeStory = sid; activeFloor = floor; focusSid = sid;
   roomY = floorY(rank) - FLOOR_H * 0.47;
   const slot = tower.slotOf.get(sid) ?? -1;
@@ -912,7 +916,7 @@ function frame(dt: number, draw = true) {
   renderer.toneMappingExposure += (ev - renderer.toneMappingExposure) * Math.min(1, dt * 8);
   if (recording) audio.vclock = clock;
   tower.update(clock, dt);
-  sync.relaxed = mode === 'tower';
+  sync.relaxed = mode === 'tower'; sync.listening = mode === 'table';
   if (mode === 'tower' && (cam.enabled || !entered)) { cam.update(dt); tower.faceYaw = cam.theta; }
   else if (mode === 'floor' && walk.enabled) walk.update(dt);
   else rig.update(clock, dt);
@@ -975,8 +979,6 @@ for (let a = 0; ; a++) {
   }
 }
 ui.mode('tower');
-let entered = false;                     // past the splash: the tower is in your hands
-const touch = matchMedia('(hover: none)').matches;
 /** Inside: the sign lights, the camera comes down to the top floor, and (first visit) how to move is shown. */
 function arrive() {
   entered = true;
@@ -1072,7 +1074,9 @@ if (recording) {
   // Pacing: never more than 60 frames a second (a 120 Hz phone would draw everything twice), and 30 at a table on
   // a phone (lips follow a 30 Hz track; the rest moves slowly), which halves the GPU's work for a long listen.
   // If frames still come late, the resolution steps down a quarter at a time; with room to spare, back up.
-  let last = performance.now(), lastDraw = 0, slow = 0, quick = 0, settle = 3;
+  let last = performance.now(), lastDraw = 0, slow = 0, quick = 0, settle = 3, ceil = Infinity;
+  // a pixel ratio that was too slow once isn't tried again (no flicking back and forth, no reallocating targets)
+  const to = (r: number) => { if (r < dpr) ceil = Math.min(ceil, dpr); dpr = r; renderer.setPixelRatio(dpr); slow = quick = 0; settle = 1.5; };
   renderer.setAnimationLoop(() => {
     const now = performance.now();
     // a phone standing still on a floor needs no more than a table does (mouths move at 30 Hz): 60 only while moving
@@ -1085,11 +1089,11 @@ if (recording) {
     settle -= dt;
     if (settle > 0 || interval > 250) return;          // start-up, shader compiles, a backgrounded tab
     if (interval > gap * 1.45) { slow += dt; quick = 0; } else if (interval < gap * 1.15) { quick += dt; slow = 0; }
-    if (slow > 2 && dpr > 1) { dpr = Math.max(1, dpr - 0.25); renderer.setPixelRatio(dpr); slow = 0; settle = 1.5; }
-    // still slow at 1x: the post effects go, then a little resolution (once: no flicking back and forth)
+    if (slow > 2 && dpr > 1) to(Math.max(1, dpr - 0.25));
+    // still slow at 1x: the post effects go, then a little resolution
     else if (slow > 3 && !lite) { goLite(); slow = 0; settle = 1.5; }
-    else if (slow > 3 && lite && dpr > 0.75) { dpr = 0.75; renderer.setPixelRatio(dpr); slow = 0; settle = 1.5; }
-    else if (quick > 12 && dpr < DPR_CAP && (!lite || dpr < 1)) { dpr = Math.min(lite ? 1 : DPR_CAP, dpr + 0.25); renderer.setPixelRatio(dpr); quick = 0; settle = 1.5; }
+    else if (slow > 3 && lite && dpr > 0.75) to(0.75);
+    else if (quick > 12 && dpr + 0.25 < ceil && dpr < (lite ? 1 : DPR_CAP)) to(Math.min(lite ? 1 : DPR_CAP, dpr + 0.25));
   });
   warmShaders();
   ui.splash(() => {

@@ -24,7 +24,8 @@ export class UI {
     s.classList.add('show');
     b.disabled = false; b.textContent = 'Enter the tower';
     // the door alone while it's shut (no second wordmark or live line behind it); the sign ignites as it opens
-    const go = () => { s.classList.remove('show'); s.classList.add('gone'); document.body.classList.remove('door'); onEnter(); };
+    // once faded, it leaves the page (its live dot would otherwise pulse, unseen, all session)
+    const go = () => { s.classList.remove('show'); s.classList.add('gone'); document.body.classList.remove('door'); setTimeout(() => { s.style.display = 'none'; }, 1300); onEnter(); };
     b.addEventListener('click', go, { once: true });
   }
 

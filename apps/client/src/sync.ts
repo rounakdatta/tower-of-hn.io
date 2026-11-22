@@ -37,18 +37,20 @@ export class LiveSync {
   onDelta: (d: Delta) => void = () => {};
   /** on the tower, not in a room: polling can be half as often */
   relaxed = false;
+  /** seated at a table: its conversation plays on with the screen off, so it keeps the quick pace */
+  listening = false;
 
   constructor(public base: string) {}
 
   async start() {
     await this.poll();
-    // every 2 s on a floor (someone may walk in with a new comment); every 4 s on the tower (a window lighting a
-    // moment later is the same window); every 10 s from a tab in the background (often left open for hours), which
-    // still keeps a conversation you're listening to with the screen off current
+    // every 2 s on a floor (someone may walk in with a new comment) and at a table, even with the screen off (lines
+    // still being voiced reach a table only through these polls); every 4 s on the tower (a window lighting a moment
+    // later is the same window); every 10 s from a background tab that isn't playing (often left open for hours)
     let quiet = 0;
     setInterval(() => {
       ++quiet;
-      if (document.hidden ? quiet % 5 : this.relaxed && quiet % 2) return;
+      if (quiet % (this.listening ? 1 : document.hidden ? 5 : this.relaxed ? 2 : 1)) return;
       this.poll().catch(() => {});
     }, 2000);
     document.addEventListener('visibilitychange', () => { quiet = 0; if (!document.hidden) this.poll().catch(() => {}); });
