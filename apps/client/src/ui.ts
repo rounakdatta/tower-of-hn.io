@@ -3,13 +3,14 @@ import * as THREE from 'three/webgpu';
 import { esc, domainOf } from './util.ts';
 import { lookOf } from './people.ts';
 import type { TableSpot } from './interior.ts';
+import type { Line } from './performer.ts';
+import { MOOD, moodOf, tableMood, deliveryWord, rowOf } from './mood.ts';
 
 const $ = (id: string) => document.getElementById(id)!;
 
 export class UI {
   private camera!: THREE.PerspectiveCamera;
   private pinned: { el: HTMLElement; at: THREE.Vector3; dy: number }[] = [];
-  private labels: { el: HTMLElement; at: THREE.Vector3 }[] = [];
   private v = new THREE.Vector3();
   private subTimer = 0;
 
@@ -44,6 +45,8 @@ export class UI {
   }
   flash() { const f = $('fade'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go'); }
   hint(text: string) { $('hint').textContent = text; }
+  /** under the aiming dot (first person at a desk): what a click would do */
+  aim(text: string) { const el = $('aim'); if (el.textContent !== text) el.textContent = text; el.classList.toggle('show', !!text); }
 
   tip(d: { rank: number; title: string; url: string; score: number; comments: number; act: number } | null, x = 0, y = 0) {
     const el = $('tip');
@@ -112,11 +115,11 @@ export class UI {
   private pick: (rank: number) => void = () => {};
 
   /** On foot beside a table: the one thing to do there. */
-  sitDown(s: { name: string; go: () => void } | null) {
+  sitDown(s: { name: string; go: () => void; key?: boolean } | null) {
     const el = $('sitdown');
     if (!s) { el.classList.remove('show'); return; }
     const label = `Sit down with ${s.name}`;
-    if (el.dataset.label !== label) { el.dataset.label = label; el.textContent = label; }
+    if (el.dataset.label !== label) { el.dataset.label = label; el.innerHTML = `${esc(label)}${s.key ? ' <kbd>E</kbd>' : ''}`; }
     el.onclick = (e) => { e.stopPropagation(); s.go(); };
     el.classList.add('show');
   }
@@ -156,60 +159,101 @@ export class UI {
   }
 
   /**
-   * A label over each of the liveliest tables (and the bar). Updated in place as the floor changes: rebuilding them
-   * every revision (every few seconds while voicing runs) swallowed taps that landed mid-rebuild.
+   * Signs over the tables near you, to find your way and choose where to stand: what each table is about (the first
+   * words of the comment that started it) in its mood's colour, and, at a table that is talking, who has the floor
+   * and how they're saying it. Only the nearest few in view, above the heads (never over faces), and never piled on
+   * each other: a sign that would overlap a nearer one waits until there's room. Built once per floor; placed every
+   * frame without reading layout (each sign's size is measured only when its words change).
    */
-  private labelKey = '';
-  tableLabels(spots: TableSpot[], roomY: number, onPick: (s: TableSpot) => void, best?: TableSpot) {
-    const box = $('labels');
-    box.classList.toggle('show', this.labelsOn);
-    const tables = spots.filter((x) => !x.bar).slice(0, 5), bar = spots.filter((x) => x.bar);
-    const key = tables.map((x) => x.table.root).join(',') + `|${bar.length}`;
-    const html = (s: TableSpot) => {
-      const people = new Set(s.table.turns.map((t) => t.by)).size;
-      const mins = s.table.turns.reduce((n, t) => n + (t.v ? t.v[1] : 18), 0) / 60;
-      const start = best && s.table.root === best.table.root;
-      return `${start ? '<i class="kick">Start here</i>' : ''}<b>${esc(s.table.turns[0].by)}${people > 1 ? ` <em>+${people - 1}</em>` : ''}</b><span>${s.table.turns.length} turns · ~${Math.max(1, Math.round(mins))} min</span>`;
-    };
-    if (key === this.labelKey && this.labels.length === tables.length + (bar.length ? 1 : 0)) {
-      tables.forEach((s, k) => {
-        const el = this.labels[k].el, h = html(s);
-        if (el.innerHTML !== h) el.innerHTML = h;
-        el.classList.toggle('best', !!best && s.table.root === best.table.root);
-      });
-      return;
-    }
-    this.labelKey = key;
-    box.innerHTML = '';
-    this.labels = [];
-    for (const s of tables) {
-      const el = document.createElement('button');
-      el.className = 'tlabel';
-      if (best && s.table.root === best.table.root) el.classList.add('best');
-      el.innerHTML = html(s);
-      el.onclick = (e) => { e.stopPropagation(); onPick(s); };
-      box.appendChild(el);
-      this.labels.push({ el, at: new THREE.Vector3(s.pos.x, roomY + 1.55, s.pos.z) });
-    }
-    if (bar.length) {
-      const el = document.createElement('button');
-      el.className = 'tlabel bar';
-      el.innerHTML = `<b>The bar</b><span>${bar.length} one-liner${bar.length === 1 ? '' : 's'}</span>`;
-      el.onclick = (e) => { e.stopPropagation(); onPick(bar[0]); };
-      box.appendChild(el);
-      this.labels.push({ el, at: new THREE.Vector3(bar[0].pos.x * 0.92, roomY + 1.7, bar[0].pos.z * 0.92) });
-    }
-  }
-  clearLabels() { $('labels').innerHTML = ''; this.labels = []; this.labelKey = ''; this.showLabels(false); }
+  private signData: { spots: TableSpot[]; roomY: number; onPick: (s: TableSpot) => void; best?: TableSpot } | null = null;
+  private signPool: { el: HTMLButtonElement; key: string; w: number; h: number; spot: TableSpot | null }[] = [];
   private labelsOn = false;
+  tableLabels(spots: TableSpot[], roomY: number, onPick: (s: TableSpot) => void, best?: TableSpot) {
+    this.signData = { spots, roomY, onPick, best };
+    $('labels').classList.toggle('show', this.labelsOn);
+  }
+  clearLabels() { $('labels').innerHTML = ''; this.signPool = []; this.signData = null; this.showLabels(false); }
   showLabels(on: boolean) { this.labelsOn = on; $('labels').classList.toggle('show', on); }
+  /** the "start here" kick stays until you've chosen a table yourself */
+  chosen = false;
+  private cand: { s: TableSpot; d: number; x: number; y: number }[] = [];
+  private rects: { x: number; y: number; w: number; h: number }[] = [];
+  signs(you: THREE.Vector3, focus: TableSpot | null, speaking: (s: TableSpot) => Line | null) {
+    const data = this.signData;
+    if (!data || !this.labelsOn || !this.camera) return;
+    const compact = innerWidth < 700, max = compact ? 4 : 6, box = $('labels');
+    // candidates: tables in front of you, near enough to matter, the one you're with first, then the nearest
+    this.cand.length = 0;
+    for (const s of data.spots) {
+      const d = Math.hypot(s.pos.x - you.x, s.pos.z - you.z);
+      if (d > (s.bar ? 7.5 : 11.5) || (s === focus && d < s.radius + 0.4)) continue;   // too far, or right on top of it
+      this.v.set(s.bar ? s.pos.x * 0.92 : s.pos.x, data.roomY + (s.bar ? 2.0 : 2.08), s.bar ? s.pos.z * 0.92 : s.pos.z).project(this.camera);
+      if (this.v.z >= 1 || Math.abs(this.v.x) > 1.05 || this.v.y > 1.05 || this.v.y < -0.6) continue;
+      this.cand.push({ s, d: s === focus ? -1 : d + (s.bar ? 2 : 0), x: (this.v.x * 0.5 + 0.5) * innerWidth, y: (-this.v.y * 0.5 + 0.5) * innerHeight });
+    }
+    this.cand.sort((p, q) => p.d - q.d);
+    this.rects.length = 0;
+    let used = 0;
+    for (const c of this.cand) {
+      if (used >= max) break;
+      const slot = this.signPool[used] ?? this.newSign(box);
+      this.fill(slot, c.s, data, c.s === focus, speaking(c.s), compact);
+      const k = c.s === focus ? 1.04 : Math.max(0.8, Math.min(1, 1.08 - c.d * 0.035));
+      const w = slot.w * k, h = slot.h * k, x = Math.max(w / 2 + 8, Math.min(innerWidth - w / 2 - 8, c.x)), y = Math.max(h / 2 + 64, c.y - h / 2);
+      if (this.rects.some((r) => Math.abs(r.x - x) < (r.w + w) / 2 + 6 && Math.abs(r.y - y) < (r.h + h) / 2 + 4)) continue;
+      this.rects.push({ x, y, w, h });
+      slot.el.style.transform = `translate(${(x - slot.w / 2).toFixed(1)}px, ${(y - slot.h / 2).toFixed(1)}px) scale(${k.toFixed(3)})`;
+      slot.el.style.opacity = c.s === focus ? '1' : String(Math.max(0.72, 1 - c.d * 0.03).toFixed(2));
+      slot.el.classList.add('on');
+      used++;
+    }
+    for (let i = used; i < this.signPool.length; i++) { const p = this.signPool[i]; if (p.spot) { p.el.classList.remove('on'); p.spot = null; } }
+  }
+  private newSign(box: HTMLElement) {
+    const el = document.createElement('button');
+    el.className = 'tlabel';
+    box.appendChild(el);
+    const slot = { el, key: '', w: 0, h: 0, spot: null as TableSpot | null };
+    el.onclick = (e) => { e.stopPropagation(); if (slot.spot && this.signData) this.signData.onPick(slot.spot); };
+    this.signPool.push(slot);
+    return slot;
+  }
+  private fill(slot: { el: HTMLButtonElement; key: string; w: number; h: number; spot: TableSpot | null }, s: TableSpot, data: NonNullable<UI['signData']>, focus: boolean, line: Line | null, compact: boolean) {
+    slot.spot = s;
+    const t = s.table, people = new Set(t.turns.map((u) => u.by)).size, mood = tableMood(t.turns).mood;
+    const now = line ? moodOf(line.side.emotion, line.side.stance) : mood;
+    const word = line ? deliveryWord(line.side.emotion, line.side.stance, line.side.intensity) : '';
+    const kick = !this.chosen && data.best === s ? 'Start here' : '';
+    const key = `${t.root}|${focus}|${line ? line.turn.by + ':' + word : ''}|${mood}|${people}|${kick}|${compact}`;
+    if (key === slot.key) return;
+    slot.key = key;
+    let html: string;
+    if (s.bar) html = `<b class="gist">The bar</b><span class="meta">${t.turns.length} one-liner${t.turns.length === 1 ? '' : 's'}</span>`;
+    else {
+      const gist = t.gist ? (compact && t.gist.length > 46 ? t.gist.slice(0, 44).replace(/\s+\S*$/, '') + '…' : t.gist) : '';
+      const row = rowOf(t.turns);
+      const meta = line
+        ? `<em style="color:${MOOD[now].color}">${esc(line.turn.by)}</em>${word ? ` · ${esc(word)}` : ' is speaking'}`
+        : `${row && (mood === 'heated' || mood === 'tense') ? `${esc(row[0])} ⇄ ${esc(row[1])}` : `${people} ${people === 1 ? 'person' : 'people'}`}${mood !== 'calm' ? ` · <em style="color:${MOOD[mood].color}">${MOOD[mood].word}</em>` : ''}`;
+      html = `${kick ? `<i class="kick">${kick}</i>` : ''}<b class="gist"><i class="dot" style="background:${MOOD[now].color}"></i>${gist ? `“${esc(gist)}”` : `${esc(t.turns[0]?.by ?? '')}${people > 1 ? ` <em>+${people - 1}</em>` : ''}`}</b><span class="meta">${meta}</span>`;
+    }
+    slot.el.innerHTML = html;
+    slot.el.classList.toggle('focus', focus);
+    slot.el.classList.toggle('best', !!kick);
+    slot.el.classList.toggle('talk', !!line);
+    slot.el.style.transform = 'none';
+    slot.w = slot.el.offsetWidth; slot.h = slot.el.offsetHeight;   // measured once per change of words
+  }
 
-  subtitle(s: { name: string; to?: string; text: string; color: string; emotion: string } | null) {
+  subtitle(s: { name: string; to?: string; text: string; color: string; emotion: string; stance?: string; intensity?: number } | null) {
     const el = $('subs');
     clearTimeout(this.subTimer);
     if (!s) { this.subTimer = window.setTimeout(() => el.classList.remove('show'), 350); return; }
     const text = s.text.length > 320 ? s.text.slice(0, 317) + '…' : s.text;
-    el.innerHTML = `<span class="who" style="color:${s.color}">${esc(s.name)}${s.to && s.to !== s.name ? `<span class="to"> → ${esc(s.to)}</span>` : ''}</span><span class="said">${esc(text)}</span>`;
+    // how it's being said, in the mood's colour (nothing for a plain line)
+    const word = deliveryWord(s.emotion, s.stance, s.intensity), m = moodOf(s.emotion, s.stance);
+    const how = word ? `<span class="how" style="color:${MOOD[m].color};border-color:${MOOD[m].color}55">${esc(word)}</span>` : '';
+    el.innerHTML = `<span class="who" style="color:${s.color}">${esc(s.name)}${s.to && s.to !== s.name ? `<span class="to"> → ${esc(s.to)}</span>` : ''}</span>${how}<span class="said">${esc(text)}</span>`;
     el.dataset.tone = s.emotion;
     el.classList.add('show');
   }
@@ -249,24 +293,7 @@ export class UI {
       el.style.transform = `translate(-50%, -50%) translate(${(this.v.x * 0.5 + 0.5) * innerWidth}px, ${(-this.v.y * 0.5 + 0.5) * innerHeight + dy}px)`;
     };
     for (const p of this.pinned) place(p.el, p.at, p.dy);
-    if (!this.labelsOn) return;
-    // project labels, then nudge apart so none overlap
-    const placed: { x: number; y: number; el: HTMLElement; vis: boolean }[] = [];
-    for (const l of this.labels) {
-      this.v.copy(l.at).project(this.camera);
-      placed.push({ x: (this.v.x * 0.5 + 0.5) * innerWidth, y: (-this.v.y * 0.5 + 0.5) * innerHeight, el: l.el, vis: this.v.z < 1 && Math.abs(this.v.x) < 1.1 && Math.abs(this.v.y) < 1.1 });
-    }
-    placed.sort((a, b) => a.y - b.y);
-    for (let i = 0; i < placed.length; i++) for (let j = 0; j < i; j++) {
-      const a = placed[i], b = placed[j];
-      if (Math.abs(a.x - b.x) < 175 && Math.abs(a.y - b.y) < 46) a.y = b.y + 46;
-    }
-    for (const q of placed) {
-      // never cut off at the screen's edge: a label half off a phone is a button nobody can press
-      const w = q.el.offsetWidth / 2 + 8;
-      q.el.style.opacity = q.vis ? '' : '0';
-      q.el.style.transform = `translate(-50%, -50%) translate(${Math.max(w, Math.min(innerWidth - w, q.x))}px, ${q.y}px)`;
-    }
+
   }
 }
 

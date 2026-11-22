@@ -11,6 +11,8 @@ import { Interior, uLift, type TableSpot } from './interior.ts';
 import { Room } from './room.ts';
 import { Mixer } from './mixer.ts';
 import { WalkCam, EYE } from './walk.ts';
+import { Minimap } from './minimap.ts';
+import { MOOD, moodOf, tableMood } from './mood.ts';
 import { Crowd, setTimeValue } from './people.ts';
 import { Director } from './director.ts';
 import { esc } from './util.ts';
@@ -104,12 +106,41 @@ room.spawn = (name, at, facing) => {
 const cam = new TowerCam(camera, renderer.domElement);
 const walk = new WalkCam(camera, renderer.domElement, scene);
 walk.lens = (f) => rig.lens(f);
-walk.obstacles = () => [
-  ...spots.filter((s) => !s.bar).map((s) => ({ x: s.pos.x, z: s.pos.z, r: s.radius + 0.42 })),
-  ...crowd.people.map((p) => ({ x: p.pose.pos.x, z: p.pose.pos.z, r: 0.34 })),
-];
+// what's in the way, refreshed in place (asked for every step: no new objects each frame)
+const obstacleList: { x: number; z: number; r: number }[] = [];
+walk.obstacles = () => {
+  let n = 0;
+  const put = (x: number, z: number, r: number) => { const o = (obstacleList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = x; o.z = z; o.r = r; };
+  for (const s of spots) if (!s.bar) put(s.pos.x, s.pos.z, s.radius + 0.42);
+  for (const p of crowd.people) put(p.pose.pos.x, p.pose.pos.z, 0.34);
+  obstacleList.length = n;
+  return obstacleList;
+};
 walk.route = (a, b) => room.route(a, b);
-walk.onMove = () => { if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); ui.hint(''); } };
+walk.onMove = () => { if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); if (!walk.locked) ui.hint(''); } };
+walk.onUse = () => { const t = nearTable(); if (t) sit(t, true); };
+// a click on someone or a table acts at once; a click on open floor takes the mouse (first person)
+walk.capturable = (x, y) => !aimAt(x, y).kind;
+walk.onLock = (locked) => {
+  document.body.classList.toggle('fps', locked);
+  if (mode !== 'floor') return;
+  ui.hint(locked ? 'WASD to walk · Shift to hurry · click to go or meet · E to sit · Esc gives the mouse back' : HINT_DESK);
+  if (!locked) ui.aim('');
+};
+// the floor at a glance: tap a table there to walk over
+const map = new Minimap();
+map.onPick = (s) => walkToTable(s);
+map.onWalk = (x, z) => { if (walk.enabled) { chose = ui.chosen = true; walk.goTo(new THREE.Vector3(x, 0, z)); } };
+/** Walk up to a table (from its sign, the map, or a tap on it): beside it, facing it. */
+function walkToTable(s: TableSpot) {
+  if (s.bar) { sit(s, true); return; }
+  if (!walk.enabled) return;
+  chose = ui.chosen = true;
+  const p = standAt(s, walk.pos);
+  walk.goTo(p, Math.atan2(s.pos.x - p.x, s.pos.z - p.z));
+}
+const HINT_TOUCH = 'Left thumb walks · right thumb looks round · tap a table to go to it';
+const HINT_DESK = 'Click the floor to look around · WASD to walk · click a table to go to it';
 const HOME = { pos: new THREE.Vector3(96, 58, 128), target: new THREE.Vector3(0, TOWER_TOP * 0.5, 0) };
 camera.position.copy(HOME.pos); camera.lookAt(HOME.target);
 
@@ -253,7 +284,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
   const slot = tower.slotOf.get(sid) ?? -1;
   prewarm(sid, 2);
   nav(`?story=${sid}`, push && mode === 'tower');
-  mode = 'floor'; ui.mode('floor'); cam.enabled = false; walk.enabled = false; awake();
+  mode = 'floor'; ui.mode('floor'); cam.enabled = false; walk.disable(); awake();
   ui.tip(null); ui.hint(''); ui.sitDown(null);
   const out = new THREE.Vector2(camera.position.x, camera.position.z).normalize();
   roomYaw = Math.atan2(out.x, out.y);           // the room's front (its tables) faces the way we came in
@@ -289,10 +320,10 @@ async function enterFloor(sid: number, push = false, listen = false) {
       if (activeStory !== sid || mode !== 'floor') return;
       walk.begin(stand, Math.atan2(-stand.x, -stand.z));     // facing into the room
       ui.card(`Floor ${rank + 1} · ${floor.story.comments} comments`, floor.story.title);
-      ui.tableLabels(spots, roomY, (s) => sit(s, true), bestSpot(false));
-      ui.showLabels(true);
-      chose = false;
-      ui.hint(walkHint ? (touch ? 'Drag to look around · tap the floor to walk · tap someone to meet them' : 'Drag to look around · arrow keys or a click to walk · click someone to meet them') : '');
+      ui.tableLabels(spots, roomY, walkToTable, bestSpot(false));
+      ui.showLabels(true); map.show(true);
+      chose = ui.chosen = false;
+      ui.hint(walkHint || !touch ? (touch ? HINT_TOUCH : HINT_DESK) : '');
       if (leanBack || deepLinked) after(deepLinked ? 1.2 : 2.4, () => { if (mode === 'floor' && !chose) sit(bestSpot()); deepLinked = false; });
     });
   audio.sfx('whoosh');
@@ -315,7 +346,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
       sp.table = f.tables[k]; sp.index = k;
     }
     if (mode === 'table' && !params.has('freeze')) director.refresh(f);     // ?freeze: a take that live HN can't rewrite mid-shot
-    else if (mode === 'floor') ui.tableLabels(spots, roomY, (s) => sit(s, true), bestSpot(false));
+    else if (mode === 'floor') ui.tableLabels(spots, roomY, walkToTable, bestSpot(false));
     if (mode === 'floor') prewarm(sid, 2);              // still standing here a minute on: keep the first words coming
   });
 }
@@ -362,9 +393,11 @@ function sit(s: TableSpot | undefined, push = false) {
   if (mode === 'table' && director.spot && !director.spot.bar && director.spot !== s) mixer.handBack(director.spot, director.said);
   const from = s.bar ? 0 : mixer.take(s);
   mixer.exclude = s;
-  if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.enabled = false; }
+  if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.disable(); }
+  ui.aim('');
   ui.sitDown(null);
-  mode = 'table'; ui.mode('table'); audio.setMode('table'); audio.sfx('sit'); ui.showLabels(false); awake();
+  mode = 'table'; ui.mode('table'); audio.setMode('table'); audio.sfx('sit'); ui.showLabels(false); map.show(false); awake();
+  subLine = null; ui.subtitle(null);
   ui.flash(); setDof(true);
   nav(`?story=${activeFloor.story.id}&table=${s.table.root}`, fromFloor && depth === 1);
   media(activeFloor.story.title, s.table.turns[0]?.by);
@@ -410,8 +443,8 @@ function standUp() {
   rig.fly([camera.position.clone(), camera.position.clone().lerp(stand, 0.5).setY(roomY + EYE), stand], [rig.target.clone(), look, look.clone()], 1.3, clock, () => {
     if (mode !== 'floor') return;
     walk.begin(stand, Math.atan2(c.x - stand.x, c.z - stand.z));
-    ui.tableLabels(spots, roomY, (s) => sit(s, true), bestSpot(false));
-    ui.showLabels(true);
+    ui.tableLabels(spots, roomY, walkToTable, bestSpot(false));
+    ui.showLabels(true); map.show(true);
   });
 }
 
@@ -425,8 +458,9 @@ function leaveFloor() {
   if (activeStory >= 0) sync.unwatch(activeStory);
   activeStory = -1; activeFloor = null;
   mode = 'tower'; ui.mode('tower'); audio.setMode('tower'); awake();
-  walk.enabled = false;
-  ui.floorHeader(null); ui.clearLabels(); ui.hint(''); ui.sitDown(null); ui.profile(null);
+  walk.disable(); ui.aim('');
+  ui.floorHeader(null); ui.clearLabels(); map.show(false); ui.hint(''); ui.sitDown(null); ui.profile(null);
+  subLine = null; ui.subtitle(null);
   const r = Math.max(0, sync.head?.tower.indexOf(left) ?? cam.rank);
   focusSid = sync.head?.tower[r] ?? focusSid;
   if (tower.slotOf.has(left)) doorSlot = tower.slotOf.get(left)!;
@@ -458,7 +492,8 @@ document.getElementById('leave')!.onclick = () => stepOut(1);
 document.getElementById('next')!.onclick = () => nextTable();
 document.getElementById('pause')!.onclick = (e) => { director.togglePause(); (e.target as HTMLElement).textContent = director.paused ? 'Play' : 'Pause'; };
 addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { if (mode === 'table') stepOut(1); else if (mode === 'floor') { leanBack = false; stepOut(1); } }
+  // (an Esc that gave the mouse back is only that: it doesn't also leave the floor)
+  if (e.key === 'Escape') { if (walk.locked || performance.now() - walk.unlockedAt < 500) return; if (mode === 'table') stepOut(1); else if (mode === 'floor') { leanBack = false; stepOut(1); } }
   else if (e.key === ' ' && mode === 'table') { e.preventDefault(); director.togglePause(); }
   else if ((e.key === 'n' || e.key === 'N') && mode === 'table') nextTable();
   else if (e.key === 'm' || e.key === 'M') audio.setMuted(!audio.muted);
@@ -491,7 +526,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   } else ui.tip(null);
   renderer.domElement.style.cursor = sid !== null ? 'pointer' : 'grab';
 });
-renderer.domElement.addEventListener('pointerdown', (e) => { downAt = performance.now(); downXY = [e.clientX, e.clientY]; if (mode === 'floor') chose = true; });
+renderer.domElement.addEventListener('pointerdown', (e) => { downAt = performance.now(); downXY = [e.clientX, e.clientY]; if (mode === 'floor') chose = ui.chosen = true; });
 // at a table, a tap on someone opens their card
 renderer.domElement.addEventListener('pointerup', (e) => {
   if (mode !== 'table' || performance.now() - downAt > 400 || Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 8) return;
@@ -501,19 +536,33 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   if (i >= 0) showProfile(crowd.people[i].name);
 });
 const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hitPoint = new THREE.Vector3();
-walk.onTap = (x, y) => {
+/** What's at a point on the screen: someone, a table, or the floor (and where). */
+function aimAt(x: number, y: number): { kind: 'person'; i: number } | { kind: 'table'; spot: TableSpot } | { kind: 'floor' | null; at?: THREE.Vector3 } {
   ptr.set((x / innerWidth) * 2 - 1, -(y / innerHeight) * 2 + 1);
   ray.setFromCamera(ptr, camera);
   const i = crowd.pick(ray);
-  if (i >= 0) { showProfile(crowd.people[i].name); return; }
-  const k = ray.intersectObject(interior.tableMesh)[0]?.instanceId;
-  if (k !== undefined) {
-    const sp = spots.filter((x) => !x.bar)[k];
-    if (sp) { const p = standAt(sp, walk.pos); walk.goTo(p, Math.atan2(sp.pos.x - p.x, sp.pos.z - p.z)); }
+  if (i >= 0) return { kind: 'person', i };
+  const hit = ray.intersectObject(interior.tableMesh)[0];
+  const sp = hit?.instanceId !== undefined ? spots.filter((x) => !x.bar)[hit.instanceId] : undefined;
+  if (sp && (!hit || hit.distance < 14)) return { kind: 'table', spot: sp };
+  floorPlane.constant = -roomY;
+  return { kind: null, at: ray.ray.intersectPlane(floorPlane, hitPoint) ? hitPoint.clone() : undefined };
+}
+/** the table you're standing beside (close enough to sit), if any */
+function nearTable() {
+  let best: TableSpot | null = null, bd = 1.45;
+  for (const s of spots) { if (s.bar) continue; const d = Math.hypot(s.pos.x - walk.pos.x, s.pos.z - walk.pos.z) - s.radius; if (d < bd) { bd = d; best = s; } }
+  return best;
+}
+walk.onTap = (x, y) => {
+  const a = aimAt(x, y);
+  if (a.kind === 'person') { walk.release(); showProfile(crowd.people[a.i].name); return; }
+  if (a.kind === 'table') {
+    if (nearTable() === a.spot) sit(a.spot, true);                              // already beside it: sit down
+    else walkToTable(a.spot);
     return;
   }
-  floorPlane.constant = -roomY;
-  if (ray.ray.intersectPlane(floorPlane, hitPoint)) walk.goTo(hitPoint);
+  if (a.at) walk.goTo(a.at);
 };
 
 // ---------------------------------------------------------------- commenters: who they are
@@ -600,6 +649,35 @@ function neonTick(now: number) {
 
 // ---------------------------------------------------------------- the loop
 const fwd = new THREE.Vector3();
+let aimTick = 0, lampTick = 0;
+/** On foot, the table you're with is subtitled (as the one you sit at is): you can follow it, and see how it's said. */
+let subLine: object | null = null;
+function walkSubtitles() {
+  const l = mixer.focus ? mixer.speaking(mixer.focus) : null;
+  if (l === subLine) return;
+  subLine = l;
+  if (!l) { ui.subtitle(null); return; }
+  const look = crowd.people[l.who]?.look;
+  const to = l.clip.who === l.turn.by && l.turn.replyTo ? mixer.focus!.table.turns.find((u) => u.id === l.turn.replyTo)?.by : undefined;
+  ui.subtitle({ name: l.clip.who, to, text: l.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: l.side.emotion, stance: l.side.stance, intensity: l.side.intensity });
+}
+/** Each table's lamp wears its mood: strongly while a line is being said there, faintly from the table's history. */
+const lampNow = new Map<TableSpot, [number, number, number, number]>();
+function lampMoods(dt: number) {
+  let k = 0;
+  for (const s of spots) {
+    if (s.bar) continue;
+    const line = director.spot === s ? director.line : mixer.speaking(s);
+    let rgb: [number, number, number] = MOOD.calm.rgb, a = 0;
+    if (line) { const m = moodOf(line.side.emotion, line.side.stance); if (m !== 'calm') { rgb = MOOD[m].rgb; a = 0.45 + 0.4 * Math.min(1, line.side.intensity ?? 0.4); } }
+    else { const m = tableMood(s.table.turns).mood; if (m !== 'calm') { rgb = MOOD[m].rgb; a = 0.22; } }
+    const cur = lampNow.get(s) ?? [1, 0.9, 0.8, 0], e = Math.min(1, dt * 2.5);
+    for (let c = 0; c < 3; c++) cur[c] += (rgb[c] - cur[c]) * e;
+    cur[3] += (a - cur[3]) * e;
+    lampNow.set(s, cur);
+    interior.lampMood(k++, cur[0], cur[1], cur[2], cur[3]);
+  }
+}
 function frame(dt: number, draw = true) {
   clock += dt;
   for (let k = timers.length - 1; k >= 0; k--) if (timers[k].at <= clock) { const t = timers.splice(k, 1)[0]; t.fn(); }
@@ -617,7 +695,7 @@ function frame(dt: number, draw = true) {
   if (mode === 'tower' && (cam.enabled || !entered)) { cam.update(dt); tower.faceYaw = cam.theta; }
   else if (mode === 'floor' && walk.enabled) walk.update(dt);
   else rig.update(clock, dt);
-  if (activeFloor || doorSlot >= 0) mixer.update(camera.position);
+  if (activeFloor || doorSlot >= 0) { camera.getWorldDirection(fwd); mixer.update(camera.position, fwd, dt); }
   uLift.value = Math.max(0, uLift.value - dt * 0.45);
   // the floor we fly into (or out of): its glass clears as we come close; inside, there is no slab at all; well
   // out again, behind closed glass, the room goes
@@ -636,11 +714,20 @@ function frame(dt: number, draw = true) {
     }
   }
   // on foot beside a table: offer to sit down there
-  if (mode === 'floor' && walk.enabled && !walk.walking) {
-    const near = spots.filter((s) => !s.bar).map((s) => ({ s, d: Math.hypot(s.pos.x - walk.pos.x, s.pos.z - walk.pos.z) - s.radius })).sort((a, b) => a.d - b.d)[0];
-    ui.sitDown(near && near.d < 1.45 ? { name: near.s.table.turns[0]?.by ?? '', go: () => sit(near.s, true) } : null);
+  if (mode === 'floor' && walk.enabled) {
+    const t = walk.walking ? null : nearTable();
+    ui.sitDown(t ? { name: t.table.turns[0]?.by ?? '', go: () => sit(t, true), key: !touch } : null);
+    ui.signs(walk.pos, mixer.focus, (s) => mixer.speaking(s));
+    walkSubtitles();
+    map.draw(clock, spots, walk.pos, walk.yaw, { focus: mixer.focus, talking: (s) => !!mixer.speaking(s), people: crowd.people, door: interior.door, lift: uLift.value });
+    // first person at a desk: what the dot in the middle is on, and what a click would do
+    if (walk.locked && ++aimTick % 6 === 0) {
+      const a = aimAt(innerWidth / 2, innerHeight / 2);
+      ui.aim(a.kind === 'person' ? `${crowd.people[a.i].name} · click to meet them` : a.kind === 'table' ? (nearTable() === a.spot ? 'Click or E to sit down' : 'Click to walk over') : '');
+    }
   } else if (mode === 'floor') ui.sitDown(null);
   neonTick(clock);
+  if ((mode === 'floor' || mode === 'table') && ++lampTick % 4 === 0) lampMoods(dt * 4);
   director.update(clock, dt);
   crowd.update(dt);
   ui.update();
@@ -693,6 +780,7 @@ if (recording) {
     callOver: (name: string, k: number) => room.callOver(name, spots.filter((sp) => !sp.bar)[k], audio.now()),
     tables: () => spots.filter((sp) => !sp.bar).map((sp, k) => ({ k, x: +sp.pos.x.toFixed(2), z: +sp.pos.z.toFixed(2), people: sp.seats.map((st) => st.name) })),
     lookAt: (x: number, z: number) => { walk.yaw = Math.atan2(x - walk.pos.x, z - walk.pos.z); },
+    where: () => ({ x: +walk.pos.x.toFixed(2), z: +walk.pos.z.toFixed(2), yaw: +walk.yaw.toFixed(2), walking: walk.walking }),
     towerDebug: () => ({ roomY, doorSlot, hidden: tower.hidden, cam: camera.position.toArray().map((v) => +v.toFixed(2)),
       slots: tower.slots.map((sl, i) => ({ i, sid: sl.sid, rank: sync.head?.tower.indexOf(sl.sid ?? -1), y: +sl.y.toFixed(2), label: (tower as unknown as { drawn: string[] }).drawn[i] })).filter((x) => x.rank !== undefined && x.rank >= 0 && x.rank < 5) }),
     standUp: () => standUp(),
@@ -700,6 +788,10 @@ if (recording) {
     profile: (name: string) => showProfile(name),
     people: () => crowd.people.map((p, i) => ({ i, name: p.name, x: p.pose.pos.x, z: p.pose.pos.z, walking: crowd.isWalking(i) })),
     fov: () => camera.fov,
+    /** who is acting right now (anyone the crowd is animating), and how far: stand, arms, lean, mouth */
+    acting: () => [...crowd.active].map((i) => { const p = crowd.people[i], e = p?.expr; return e ? { name: p.name, stand: +e.stand.toFixed(2), armR: +e.armR.toFixed(2), armL: +e.armL.toFixed(2), lean: +e.lean.toFixed(2), open: +e.open.toFixed(2), smile: +e.smile.toFixed(2), flush: +e.flush.toFixed(2) } : null; }).filter(Boolean),
+    /** the table you're with (heard clearly), and what each nearby table is saying */
+    mix: () => ({ focus: mixer.focus ? spots.filter((x) => !x.bar).indexOf(mixer.focus) : -1, speaking: spots.filter((x) => !x.bar).map((sp, k) => { const l = mixer.speaking(sp); return l ? { k, by: l.turn.by, who: l.who, emotion: l.side.emotion } : null; }).filter(Boolean) }),
     /** debug: hold a face (any Expr fields) on someone, for the face sheet */
     face: (name: string, e: Record<string, number>) => { const i = crowd.index(name); if (i < 0) return false; crowd.active.add(i); Object.assign(crowd.target(i)!, e); return true; },
     clock: () => clock,

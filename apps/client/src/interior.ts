@@ -1,7 +1,7 @@
 // A floor's interior: a warm room in the tower, tables for conversations,
 // a bar for one-off remarks, and the people placed at them.
 import * as THREE from 'three/webgpu';
-import { positionWorld, vec3, fract, smoothstep, abs, hash, floor as tfloor, mix, float, uv, sin, uniform } from 'three/tsl';
+import { positionWorld, vec3, fract, smoothstep, abs, hash, floor as tfloor, mix, float, uv, sin, uniform, instancedBufferAttribute } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { R, FLOOR_H, uTime } from './world.ts';
 import type { Floor, Table } from './sync.ts';
@@ -20,6 +20,8 @@ export class Interior {
   tableMesh: THREE.InstancedMesh;
   private chairMesh: THREE.InstancedMesh;
   private lampMesh: THREE.InstancedMesh;
+  /** each lamp's mood: a colour (rgb) and how much of it (a), over the warm white it gives otherwise */
+  private aMood: THREE.InstancedBufferAttribute;
   private lights: THREE.PointLight[] = [];
   private fill!: THREE.HemisphereLight;
   /** where the lift's doorway is, on the floor, in world space (after the room is turned to face us) */
@@ -84,7 +86,10 @@ export class Interior {
     const legs = [[-0.15, -0.15], [0.15, -0.15], [-0.15, 0.15], [0.15, 0.15]].map(([x, z]) => { const g = new THREE.CylinderGeometry(0.018, 0.018, 0.42, 6); g.translate(x, 0.21, z); return g; });
     this.chairMesh = new THREE.InstancedMesh(mergeGeometries([seat, back, ...legs]), new THREE.MeshStandardNodeMaterial({ color: 0x2b211c, roughness: 0.6 }), 160);
     const lampMat = new THREE.MeshBasicNodeMaterial();
-    lampMat.colorNode = vec3(1.0, 0.78, 0.5).mul(float(2.2).add(sin(uTime.mul(2.0)).mul(0.03)));
+    this.aMood = new THREE.InstancedBufferAttribute(new Float32Array((MAX_TABLES + 3) * 4), 4);
+    const mood = instancedBufferAttribute(this.aMood);
+    // warm white; a table that's heated, laughing or thinking aloud tints its lamp (and burns a little brighter)
+    lampMat.colorNode = mix(vec3(1.0, 0.78, 0.5), mood.xyz, mood.w).mul(float(2.2).add(sin(uTime.mul(2.0)).mul(0.03)).add(mood.w.mul(0.35)));
     const shade = new THREE.ConeGeometry(0.24, 0.2, 24, 1, true); shade.translate(0, FLOOR_H * 0.8, 0);
     const bulb = new THREE.SphereGeometry(0.06, 12, 8); bulb.translate(0, FLOOR_H * 0.77, 0);
     const cord = new THREE.CylinderGeometry(0.005, 0.005, FLOOR_H * 0.1, 4); cord.translate(0, FLOOR_H * 0.88, 0);
@@ -110,6 +115,13 @@ export class Interior {
     lift.lookAt(0, 1.06, 0);
     this.group.add(floor, rug, ceil, posts, bar, barTop, shelf, this.tableMesh, this.chairMesh, this.lampMesh, fill, lift);
     this.group.visible = false;
+  }
+
+  /** Table k's lamp takes on a mood (eased by the caller): rgb, and how much of it (0 = warm white). */
+  lampMood(k: number, r: number, g: number, b: number, a: number) {
+    if (k >= MAX_TABLES) return;
+    this.aMood.setXYZW(k, r, g, b, a);
+    this.aMood.needsUpdate = true;
   }
 
   /** How much of the room's light reaches the scene (0..1): faded in as we fly up to its glass, out as we leave. */

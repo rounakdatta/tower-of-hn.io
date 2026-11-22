@@ -3,6 +3,18 @@
 
 type V3 = { x: number; y: number; z: number };
 
+/** A table's own channel: its voices pass through here, so the room can bring one table forward and let the
+ *  others fall back into a muffled murmur (a level and a low-pass, eased) */
+export interface Bus { gain: GainNode; lp: BiquadFilterNode; level: number; hz: number }
+
+/** How loud a line is said: heated and excited lines carry, sad and tender ones sit back (more so the stronger
+ *  the feeling). Within ±2.5 dB: the room's compressor keeps the peaks civil. */
+export function emoGain(emotion: string, intensity = 0.4) {
+  const g = ({ angry: 1.18, excited: 1.12, surprised: 1.08, joyful: 1.06, stern: 1.04, contemplative: 0.94, nervous: 0.92, tender: 0.86, sad: 0.82 } as Record<string, number>)[emotion] ?? 1;
+  const k = 0.6 + Math.max(0, Math.min(1, intensity)) * 0.8;
+  return 1 + (g - 1) * k;
+}
+
 export class AudioEngine {
   ctx: AudioContext | null = null;
   private master!: GainNode;
@@ -90,8 +102,9 @@ export class AudioEngine {
   setMode(mode: 'tower' | 'floor' | 'table') {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
-    this.city.gain.setTargetAtTime(mode === 'tower' ? 0.07 : 0.018, t, 0.8);
-    this.room.gain.setTargetAtTime(mode === 'tower' ? 0 : mode === 'floor' ? 0.05 : 0.025, t, 0.8);
+    // inside, the real tables are the room's sound: the city and the made-up murmur only fill the gaps
+    this.city.gain.setTargetAtTime(mode === 'tower' ? 0.07 : 0.012, t, 0.8);
+    this.room.gain.setTargetAtTime(mode === 'tower' ? 0 : mode === 'floor' ? 0.026 : 0.014, t, 0.8);
   }
 
   now() { return this.virtual ? this.vclock : this.ctx?.currentTime ?? 0; }
@@ -119,8 +132,24 @@ export class AudioEngine {
     return p;
   }
 
+  /** A table's channel (null until there is a context). */
+  bus(): Bus | null {
+    if (!this.ctx) return null;
+    const gain = this.ctx.createGain(), lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 18000; lp.Q.value = 0.5;
+    gain.connect(lp).connect(this.voiceBus);
+    return { gain, lp, level: 1, hz: 18000 };
+  }
+  /** Bring a table forward (1, open) or let it fall back (quieter, muffled), eased over about a second. */
+  setBus(b: Bus, level: number, hz: number) {
+    if (!this.ctx || (Math.abs(b.level - level) < 0.01 && Math.abs(b.hz - hz) < 50)) return;
+    const t = this.ctx.currentTime;
+    b.gain.gain.setTargetAtTime(level, t, 0.3); b.lp.frequency.setTargetAtTime(hz, t, 0.3);
+    b.level = level; b.hz = hz;
+  }
+
   /** A voice placed in the room at `pos`; returns the source so callers can stop it. */
-  voice(buf: AudioBuffer, when: number, pos: V3, url = '', gain = 1, o: { hrtf?: boolean; ref?: number; rolloff?: number } = {}): AudioScheduledSourceNode {
+  voice(buf: AudioBuffer, when: number, pos: V3, url = '', gain = 1, o: { hrtf?: boolean; ref?: number; rolloff?: number; bus?: Bus | null } = {}): AudioScheduledSourceNode {
     if (this.virtual || !this.ctx) { this.log.push({ url, when }); return { stop() {} } as unknown as AudioScheduledSourceNode; }
     const ctx = this.ctx;
     const src = ctx.createBufferSource(); src.buffer = buf;
@@ -130,7 +159,7 @@ export class AudioEngine {
     pan.panningModel = o.hrtf === false ? 'equalpower' : 'HRTF'; pan.distanceModel = 'inverse';
     pan.refDistance = o.ref ?? 1.6; pan.rolloffFactor = o.rolloff ?? 0.9;
     pan.positionX.value = pos.x; pan.positionY.value = pos.y; pan.positionZ.value = pos.z;
-    src.connect(g).connect(pan).connect(this.voiceBus);
+    src.connect(g).connect(pan).connect(o.bus?.gain ?? this.voiceBus);
     src.start(Math.max(ctx.currentTime, when));
     return src;
   }

@@ -1,20 +1,24 @@
-// The room's conversations: every table near you talks, each in its own order, from where its people stand. Walk
-// up to one and it's louder; walk away and it falls back into the room. The table you sit at is the director's;
-// the mixer plays the rest. A speaker who isn't at their table is called over first (room.ts), and a comment that
-// just arrived on Hacker News is said next, wherever its table had got to.
+// The room's conversations: every table near you talks, each in its own order, from where its people stand, and
+// acts it as the table you sit at does (performer.ts): faces, gestures, someone getting to their feet. The table
+// you're at, or facing, comes forward; the others fall back into a muffled murmur you can still hear. The table you
+// sit at is the director's; the mixer plays the rest. A speaker who isn't at their table is called over first
+// (room.ts), and a comment that just arrived on Hacker News is said next, wherever its table had got to.
 import * as THREE from 'three/webgpu';
 import type { LiveSync, Floor, Sidecar, Turn } from './sync.ts';
-import type { AudioEngine } from './audio.ts';
+import { emoGain, type AudioEngine, type Bus } from './audio.ts';
 import type { Crowd } from './people.ts';
 import type { TableSpot } from './interior.ts';
 import type { Room } from './room.ts';
-import { FACE } from './director.ts';
+import { Performer, tone, type Line } from './performer.ts';
 
 const HEAR = 9;                                          // metres: tables farther than this fall quiet
 const MAX_ON = 4;                                        // tables talking at once (the nearest)
 const LEAD = 1.0;                                        // seconds of audio scheduled ahead
+/** how a table sounds: the one you're with, the others while you're with one, all of them while you wander, and
+ *  the rest of the room while you sit (level, low-pass Hz). Distance comes on top (the panner). */
+const MIX = { focus: [1, 18000], others: [0.3, 1500], wander: [0.5, 2600], seated: [0.16, 1100] } as const;
 
-interface Scheduled { start: number; end: number; who: number; env: number[]; shape: number[]; src: AudioScheduledSourceNode; emotion: string; turn: number }
+interface Scheduled extends Line { src: AudioScheduledSourceNode }
 interface Ready { side: Sidecar; bufs: AudioBuffer[] }
 interface Player {
   spot: TableSpot;
@@ -33,13 +37,21 @@ interface Player {
   /** what's been said here (ids): the table's order shifts as replies land, so a position would replay things */
   played: Set<number>;
   resting: boolean;
+  /** out of earshot: its people ease back to calm until then, and are let go */
+  calmUntil: number;
+  perf: Performer;
+  bus: Bus | null;
 }
 
 export class Mixer {
   private players: Player[] = [];
+  private bySpot = new Map<TableSpot, Player>();
   private story = 0;
   /** the table the director is playing (we're seated there): the mixer leaves it alone */
   exclude: TableSpot | null = null;
+  /** the table you're with (nearest, or the one you're facing): it's heard clearly */
+  focus: TableSpot | null = null;
+  private focused: Player | null = null;
   private asked = new Map<string, number>();
   private tmp = new THREE.Vector3();
 
@@ -48,12 +60,22 @@ export class Mixer {
   start(floor: Floor, spots: TableSpot[]) {
     this.stop();
     this.story = floor.story.id;
-    this.players = spots.filter((s) => !s.bar).map((spot) => ({ spot, cursor: 0, done: 0, sched: [], ready: new Map(), loading: new Set(), stage: '', waitFrom: 0, doing: 0, breaking: [], played: new Set(), resting: true }));
+    this.players = spots.filter((s) => !s.bar).map((spot) => ({
+      spot, cursor: 0, done: 0, sched: [], ready: new Map(), loading: new Set(), stage: '', waitFrom: 0, doing: 0,
+      breaking: [], played: new Set(), resting: true, calmUntil: 0, bus: null,
+      // the people at this table: by name, among its seats (one person per commenter on the floor)
+      perf: new Performer(this.crowd, spot, (n) => (spot.seats.some((st) => st.name === n) ? this.crowd.index(n) : -1)),
+    }));
+    this.bySpot = new Map(this.players.map((p) => [p.spot, p]));
   }
 
   stop() {
-    for (const p of this.players) this.hush(p);
-    this.players = [];
+    for (const p of this.players) {
+      this.hush(p);
+      p.perf.reset();
+      if (p.bus) { p.bus.gain.disconnect(); p.bus.lp.disconnect(); }
+    }
+    this.players = []; this.bySpot.clear(); this.focused = null; this.focus = null;
   }
 
   /** Where a table had got to: the director hands back the table we stood up from (what it had said there). */
@@ -66,8 +88,9 @@ export class Mixer {
     const p = this.players.find((x) => x.spot === spot);
     if (!p) return 0;
     const now = this.audio.now();
-    const cut = p.sched.find((s) => s.end > now)?.turn;   // the comment we cut off: the director says it again, whole
+    const cut = p.sched.find((s) => s.end > now)?.turn.id;   // the comment we cut off: the director says it again, whole
     this.hush(p);
+    p.perf.reset();
     if (cut !== undefined) p.played.delete(cut);
     p.done = 0; p.stage = '';
     const turns = p.spot.table.turns, at = turns.findIndex((u) => !p.played.has(u.id));
@@ -80,40 +103,95 @@ export class Mixer {
     if (p && !p.breaking.includes(turn.id) && !p.played.has(turn.id)) p.breaking.push(turn.id);
   }
 
-  update(listener: THREE.Vector3) {
+  /** what's being said at a table right now (the line, and whether it's the table you're with), for labels */
+  speaking(spot: TableSpot): Line | null {
+    const p = this.bySpot.get(spot), now = this.audio.now();
+    if (!p || !p.sched.length) return null;
+    for (const s of p.sched) if (s.start <= now && s.end > now) return s;
+    return null;
+  }
+
+  update(listener: THREE.Vector3, forward: THREE.Vector3, dt: number) {
     const now = this.audio.now();
     const ranked = this.players
       .filter((p) => p.spot !== this.exclude)
       .map((p) => ({ p, d: Math.hypot(p.spot.pos.x - listener.x, p.spot.pos.z - listener.z) }))
       .sort((a, b) => a.d - b.d);
     const on = new Map(ranked.filter((x) => x.d < HEAR).slice(0, MAX_ON).map((x, k) => [x.p, k]));
+    const focus = this.exclude ? null : this.pick(ranked, listener, forward);
+    this.focus = focus?.spot ?? null;
     for (const p of this.players) {
       if (p.spot === this.exclude) continue;              // the director's table: its people are the director's
       p.sched = p.sched.filter((s) => s.end > now - 0.2);
+      if (p.bus) {
+        const [lv, hz] = this.exclude ? MIX.seated : !focus ? MIX.wander : p === focus ? MIX.focus : MIX.others;
+        this.audio.setBus(p.bus, lv, hz);
+      }
       const k = on.get(p);
-      if (k === undefined) { if (!p.sched.length && !p.resting) { this.rest(p); p.resting = true; } continue; }
-      p.resting = false;
-      this.feed(p, now, k);
-      this.act(p, now);
+      if (k === undefined) {                             // out of earshot: let its last words finish, then calm down
+        if (!p.sched.length && !p.resting) { p.resting = true; p.calmUntil = now + 1.6; }
+        if (p.calmUntil) this.calm(p, now, dt);
+        continue;
+      }
+      p.resting = false; p.calmUntil = 0;
+      this.feed(p, now, k, p === focus, !focus);
+      const cur = p.sched.find((s) => s.start <= now && s.end > now) ?? null;
+      p.perf.animate(p.sched, cur, now, dt, { upcoming: this.upcoming(p) });
+      p.perf.chairs();
     }
+  }
+
+  /** The table you're with: the nearest, or the one you're facing (facing one counts like being 0.9 m nearer), and
+   *  it stays yours until another is clearly more so (no flicking between two). */
+  private pick(ranked: { p: Player; d: number }[], at: THREE.Vector3, fwd: THREE.Vector3): Player | null {
+    const fl = Math.hypot(fwd.x, fwd.z) || 1;
+    let best: Player | null = null, bestS = Infinity, curS = Infinity;
+    for (const { p, d } of ranked) {
+      if (d > 7) break;
+      const edge = Math.max(0, d - p.spot.radius);
+      if (edge > 3.2) continue;
+      const facing = ((p.spot.pos.x - at.x) * fwd.x + (p.spot.pos.z - at.z) * fwd.z) / ((d || 1) * fl);
+      const s = edge - 0.9 * Math.max(0, facing);
+      if (s < bestS) { bestS = s; best = p; }
+      if (p === this.focused) curS = s;
+    }
+    if (this.focused && curS < Infinity && curS <= bestS + 0.35) return this.focused;
+    return (this.focused = best);
+  }
+
+  /** whoever speaks in the next few turns here, and how (someone about to push back already doubts it) */
+  private upcoming(p: Player) {
+    const up = new Map<number, string>();
+    let n = 0;
+    for (const u of p.spot.table.turns) {
+      if (p.played.has(u.id)) continue;
+      if (++n > 3) break;
+      const r = p.ready.get(u.id), i = r ? this.room.who(u.by) : -1;
+      if (r && i >= 0 && !up.has(i)) up.set(i, tone(r.side).ST);
+    }
+    return up;
   }
 
   /** Stop a table mid-word (we sat down at it, or left the floor). */
   private hush(p: Player) {
     for (const s of p.sched) { try { s.src.stop(); } catch { /* done */ } }
     p.sched = [];
-    this.rest(p);
+    p.resting = true; p.calmUntil = this.audio.now() + 1.6;
   }
-  private rest(p: Player) {
+  /** Back to calm listening (and chairs pulled in), then let go: nobody is frozen mid-word or mid-gesture. */
+  private calm(p: Player, now: number, dt: number) {
+    p.perf.animate([], null, now, dt);
+    p.perf.chairs();
+    if (now < p.calmUntil) return;
+    p.calmUntil = 0;
     for (const st of p.spot.seats) {
-      const i = this.crowd.people.findIndex((x) => x.pose.pos === st.pos);
-      const t = i >= 0 ? this.crowd.target(i) : undefined;
-      if (t && !this.crowd.isWalking(i)) { t.open = 0; this.crowd.release(i); }
+      const i = this.crowd.index(st.name);
+      if (i >= 0 && !this.crowd.isWalking(i)) this.crowd.release(i);
     }
   }
 
   /** Keep a table's next words scheduled: fetch them, bring their speaker over, then line them up. */
-  private feed(p: Player, now: number, rank: number) {
+  private feed(p: Player, now: number, rank: number, focus: boolean, wandering: boolean) {
     if (p.cursor - now > LEAD) return;
     const turns = p.spot.table.turns;
     p.breaking = p.breaking.filter((id) => !p.played.has(id) && turns.some((u) => u.id === id));
@@ -125,9 +203,11 @@ export class Mixer {
       if (turns.length) { p.played.clear(); p.done = 0; p.stage = ''; p.cursor = Math.max(p.cursor, now) + 6; }
       return;
     }
+    // the table you're with asks for its voices (or, while you wander, the nearest)
+    const ask = focus || (wandering && rank === 0);
     const live = p.breaking.includes(turn.id), at = turns.indexOf(turn);
     if (!turn.v) {
-      this.want(p, live ? 0 : rank, at);
+      if (ask || live) this.want(p, at);
       if (this.waited(p, `voice:${turn.id}`, now) > (live ? 40 : 4)) this.next(p, turn);   // not voiced yet: the table moves on
       return;
     }
@@ -145,21 +225,26 @@ export class Mixer {
     }
     if (r.side.clips.length <= p.done) {                // nothing new yet (still being voiced), or nothing at all
       if (!r.side.partial) { this.next(p, turn); return; }
-      this.want(p, rank, at);
+      if (ask) this.want(p, at);
       if (this.waited(p, `more:${turn.id}`, now) > 30) this.next(p, turn);
       return;
     }
     p.stage = '';
+    p.bus ??= this.audio.bus();
     const i = here === 'here' ? this.room.who(turn.by) : -1;
-    let t = Math.max(p.cursor, now + 0.05) + (p.done ? 0 : (turn.gapMs ?? 500) / 1000);
+    const gain = emoGain(r.side.emotion, r.side.intensity);
+    // the pause before a turn: a comeback or a heated line barely waits; after a joke, a beat for the laugh
+    const st = tone(r.side), heated = (st.E === 'angry' && st.I >= 0.45) || st.ST === 'retort';
+    const gap = p.done ? 0 : heated ? Math.min(0.12, (turn.gapMs ?? 500) / 1000) : (turn.gapMs ?? 500) / 1000;
+    let t = Math.max(p.cursor, now + 0.05) + gap;
     r.side.clips.forEach((c, k) => {
       if (k < p.done) return;
       // a quote of someone at this table is said by them; anyone else's words, by the speaker
       const q = c.who !== turn.by ? this.room.who(c.who) : -1;
       const who = q >= 0 && this.room.tableOf(q) === p.spot ? q : i;
       const pos = who >= 0 ? this.crowd.headPos(who, this.tmp) : this.tmp.set(p.spot.pos.x, this.crowd.group.position.y + 1.2, p.spot.pos.z);
-      const src = this.audio.voice(r.bufs[k], t, pos, this.sync.url(c.u), 1, { hrtf: rank < 2, ref: 1.1, rolloff: 1.35 });
-      p.sched.push({ start: t, end: t + c.d, who, env: c.env, shape: c.shape, src, emotion: r.side.emotion, turn: turn.id });
+      const src = this.audio.voice(r.bufs[k], t, pos, this.sync.url(c.u), gain, { hrtf: focus || rank < 2, ref: 1.1, rolloff: 1.35, bus: p.bus });
+      p.sched.push({ clip: c, side: r.side, turn, start: t, end: t + c.d, who, src });
       t += c.d + 0.06;
     });
     if (i >= 0) this.room.speaking(i, t);
@@ -200,38 +285,12 @@ export class Mixer {
     return r ?? null;
   }
 
-  /** Ask for a table's voicing from a turn on: the table you're nearest, every 30 s while you're there. */
-  private want(p: Player, rank: number, from: number) {
-    if (rank > 0 || from < 0) return;
+  /** Ask for a table's voicing from a turn on, every 30 s while you're there. */
+  private want(p: Player, from: number) {
+    if (from < 0) return;
     const key = `${this.story}:${p.spot.table.root}:${from}`, t = performance.now() / 1000;
     if (t - (this.asked.get(key) ?? -1e9) < 30) return;
     this.asked.set(key, t);
     this.sync.want(this.story, p.spot.index, from).then((ok) => { if (!ok) this.asked.set(key, t - 25); });
-  }
-
-  /** Faces: the one speaking moves their mouth (and wears the comment's mood); the table turns to them. */
-  private act(p: Player, now: number) {
-    const cur = p.sched.find((s) => s.start <= now && s.end > now);
-    const seats = p.spot.seats;
-    for (const st of seats) {
-      const i = this.crowd.people.findIndex((x) => x.pose.pos === st.pos);
-      const t = i >= 0 ? this.crowd.target(i) : undefined;
-      if (!t || this.crowd.isWalking(i)) continue;
-      this.crowd.active.add(i);
-      if (cur && i === cur.who) {
-        const f = Math.floor((now - cur.start) * 30);
-        t.open = Math.min(1, ((cur.env[f] ?? 0) / 255) * 1.15);
-        t.shape = (cur.shape[f] ?? 127) / 127.5 - 1;
-        const face = FACE[cur.emotion] ?? FACE.mundane;
-        t.brow = face.brow ?? 0; t.browIn = face.browIn ?? 0; t.smile = face.smile ?? 0.15; t.lid = face.lid ?? 1;
-      } else {
-        t.open = 0;
-        if (cur) {                                       // everyone else looks at whoever is talking
-          const h = this.crowd.headPos(cur.who, this.tmp);
-          t.yaw = this.crowd.yawTo(i, h);
-          t.nod = this.crowd.pitchTo(i, h);
-        }
-      }
-    }
   }
 }

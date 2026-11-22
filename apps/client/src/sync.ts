@@ -4,8 +4,10 @@
 //   f/<id>/<rev>    -> a floor's tables, play order, seats, voices, voiced clips
 //   c/<id>.<rev>    -> a comment's sidecar: text, emotion, clips with loudness and mouth tracks
 
-export interface Turn { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; v?: [string, number] }
-export interface Table { root: number; turns: Turn[]; seated: string[]; standing: string[] }
+/** voiced: [sidecar path, seconds, emotion, intensity 0..1] (older servers: just the first two) */
+export interface Turn { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; v?: [string, number, string?, number?] }
+/** gist: the first words of the comment that started it (older servers: absent) */
+export interface Table { root: number; turns: Turn[]; seated: string[]; standing: string[]; gist?: string }
 export interface Floor { story: { id: number; title: string; url?: string; by?: string; score: number; comments: number }; rev: number; epoch: number; tables: Table[] }
 export interface Head {
   epoch: number; at: number; tower: number[]; floors: Record<number, number>;
@@ -14,10 +16,10 @@ export interface Head {
   people?: Record<number, number>;
 }
 export interface Delta {
-  epoch: number; tower?: number[]; turns?: { story: number; table: number; at: number; turn: Turn }[]; voiced?: { id: number; v: [string, number] }[]; gone?: number[];
+  epoch: number; tower?: number[]; turns?: { story: number; table: number; at: number; turn: Turn }[]; voiced?: { id: number; v: [string, number, string?, number?] }[]; gone?: number[];
   floors?: Record<number, number>;
   /** audio-only revisions of a floor: apply to revision `from` to get `to` (no refetch) */
-  patches?: { s: number; from: number; to: number; v: [number, [string, number] | null][] }[];
+  patches?: { s: number; from: number; to: number; v: [number, [string, number, string?, number?] | null][] }[];
 }
 export interface Clip { u: string; d: number; t: string; who: string; env: number[]; shape: number[] }
 export interface Sidecar { id: number; by: string; emotion: string; stance: string; intensity?: number; cues?: string[]; dur: number; clips: Clip[]; links: { url: string; domain: string; text: string }[]; code: string[]; /** still being voiced: more clips will follow at a new path */ partial?: boolean; of?: number }

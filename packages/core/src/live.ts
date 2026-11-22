@@ -7,6 +7,7 @@
 // The orchestrator (a Durable Object in production, a script locally) feeds it
 // and uploads what tick() returns. Clients never talk to it, only to the CDN.
 import { playOrder, seat, voiceFor, type Node } from './conversation.ts';
+import { speakable } from './speakable.ts';
 
 export interface Item {
   id: number; type?: string; by?: string; text?: string; title?: string; url?: string;
@@ -14,8 +15,11 @@ export interface Item {
   dead?: boolean; deleted?: boolean;
 }
 export interface StoryMeta { id: number; title: string; url?: string; by?: string; score: number; comments: number }
-export interface TurnOut { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; /** voiced: [sidecar path, seconds] */ v?: [string, number] }
-export interface TableOut { root: number; turns: TurnOut[]; seated: string[]; standing: string[] }
+/** voiced: [sidecar path, seconds, how it's delivered (emotion), how strongly (0..1)] */
+export type Voiced = [string, number, string?, number?];
+export interface TurnOut { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; v?: Voiced }
+/** gist: the first words of the comment that started the table (what it's about, on its sign) */
+export interface TableOut { root: number; turns: TurnOut[]; seated: string[]; standing: string[]; gist?: string }
 export interface FloorSnapshot { story: StoryMeta; rev: number; epoch: number; tables: TableOut[] }
 export interface Delta {
   epoch: number;
@@ -26,8 +30,8 @@ export interface Delta {
   floors?: Record<number, number>;                     // story -> latest snapshot rev
   /** a revision where only audio changed (the same turns, in the same order, the same people): the voicing that
    *  moved, so a listener holding revision `from` can make `to` without fetching the whole floor again */
-  patches?: { s: number; from: number; to: number; v: [number, [string, number] | null][] }[];
-  voiced?: { id: number; v: [string, number] }[];      // turns whose audio just became ready
+  patches?: { s: number; from: number; to: number; v: [number, Voiced | null][] }[];
+  voiced?: { id: number; v: Voiced }[];                // turns whose audio just became ready
 }
 export interface Head {
   epoch: number; at: number; tower: number[]; floors: Record<number, number>; snapshotEvery: number;
@@ -54,7 +58,7 @@ export class Live {
   /** user -> voice, assigned the first time we ever see them and never changed (their packs depend on it) */
   voices = new Map<string, number>();
   /** comment -> its voiced sidecar, filled in by the voice worker */
-  voiced = new Map<number, [string, number]>();
+  voiced = new Map<number, Voiced>();
   /** HN users who asked not to be voiced: their comments are left out like dead ones (their replies still play) */
   optOut = new Set<string>();
 
@@ -96,11 +100,12 @@ export class Live {
   touchAll(): void { for (const sid of this.tower) this.dirtyStories.add(sid); }
 
   /** The voice worker finished a comment: its audio is ready for everyone. */
-  markVoiced(id: number, path: string, dur: number): void {
+  markVoiced(id: number, path: string, dur: number, emotion?: string, intensity?: number): void {
     const prev = this.voiced.get(id);
     if (prev && prev[0] === path) return;
-    this.voiced.set(id, [path, dur]);
-    (this.pending.voiced ??= []).push({ id, v: [path, dur] });
+    const v: Voiced = emotion ? [path, dur, emotion, Math.round((intensity ?? 0.4) * 100) / 100] : [path, dur];
+    this.voiced.set(id, v);
+    (this.pending.voiced ??= []).push({ id, v });
     const story = this.storyOf(id);
     if (story !== undefined) this.dirtyStories.add(story);
   }
@@ -190,6 +195,21 @@ export class Live {
     return v;
   }
 
+  private gists = new Map<number, { text: string; gist: string }>();
+  /** The first words of a comment, for a table's sign: its own words (not a quote, not code), cut at a word. */
+  private gistOf(id: number): string | undefined {
+    const text = this.items.get(id)?.text;
+    if (!text) return undefined;
+    const hit = this.gists.get(id);
+    if (hit && hit.text === text) return hit.gist;
+    const said = speakable(text).segments.find((s) => s.kind === 'say') as { display: string } | undefined;
+    let g = (said?.display ?? '').replace(/\s+/g, ' ').trim();
+    if (g.length > 72) g = g.slice(0, 72).replace(/[\s,;:.!?-]+\S*$/, '') + '…';
+    if (this.gists.size > 4000) this.gists.clear();
+    this.gists.set(id, { text, gist: g });
+    return g || undefined;
+  }
+
   private buildFloor(sid: number): FloorSnapshot | undefined {
     const st = this.items.get(sid);
     if (!st) return undefined;
@@ -206,7 +226,7 @@ export class Live {
       const turns = playOrder(root);
       if (!turns.length) continue;
       const { seated, standing } = seat(turns);
-      tables.push({ root: rootId, seated, standing, turns: turns.map((t) => ({ ...t, voice: this.voiceOf(t.by), v: this.voiced.get(t.id) })) });
+      tables.push({ root: rootId, seated, standing, gist: this.gistOf(rootId), turns: turns.map((t) => ({ ...t, voice: this.voiceOf(t.by), v: this.voiced.get(t.id) })) });
     }
     return { story: meta(st), rev: 0, epoch: 0, tables };
   }

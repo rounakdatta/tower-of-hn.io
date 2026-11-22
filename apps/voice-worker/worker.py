@@ -20,7 +20,7 @@ import soundfile as sf
 
 FPS = 30
 EMOTIONS = ["angry", "contemplative", "excited", "joyful", "mundane", "nervous", "sad", "stern", "surprised", "tender"]
-STANCES = ["agree", "disagree", "correct", "question", "joke", "inform", "expand", "praise"]
+STANCES = ["agree", "disagree", "correct", "question", "joke", "inform", "expand", "praise", "retort"]
 CUES = ["question", "uncertain", "joke", "sarcasm", "frustrated", "insult", "praise", "list", "story"]
 SPEECH_PACE = float(os.environ.get("PACE", "1.12"))   # everyone talks a little brisker than Kokoro's default
 SPEED = {"excited": 1.07, "joyful": 1.04, "angry": 1.05, "nervous": 1.08, "surprised": 1.04,
@@ -135,14 +135,23 @@ def llm_tags(batch, key):
     lines = []
     for j in batch:
         said = " ".join(s.get("text", "") for s in j["segments"] if s["kind"] in ("say", "quote"))[:600]
-        lines.append(f'{j["id"]} | {j["by"]} replying to {j.get("parentBy") or "the story"}: {said}')
+        to = j.get("parentBy")
+        who = f'{j["by"]} replying back to {to} (who had answered {j["by"]})' if j.get("back") and to else f'{j["by"]} replying to {to or "the story"}'
+        ctx = f' [answering: "{j["parentSaid"][:200]}"]' if j.get("parentSaid") else ""
+        lines.append(f'{j["id"]} | {who}{ctx}: {said}')
     prompt = ("Consecutive comments from one Hacker News thread, about to be performed by actors seated at a table. For each comment, "
               f"judge: e = how the actor should deliver it (one of: {', '.join(EMOTIONS)}); "
               f"s = its stance toward what it replies to (one of: {', '.join(STANCES)}); "
               "i = intensity from 0.0 (flat, neutral) to 1.0 (heated, emphatic, shouting); "
               f"c = any cues that apply (from: {', '.join(CUES)}). "
+              "Read each comment against what it answers. "
+              "retort is a comeback: hitting back at someone who challenged, dismissed or criticised them, pointed or cutting "
+              "(most often a reply back in a back-and-forth); a calm, friendly reply back is not a retort. "
+              "joyful is happy, amused, delighted; excited is enthusiastic, eager, can't-wait; sad is disappointed, wistful, grieving; "
+              "tender is warm, kind, consoling; nervous is worried or unsure; surprised is astonished. "
               "Dry snark is stern or mundane with the sarcasm cue; a correction is stern; musing is contemplative; jokes are joyful. "
               "Use angry only when the writing is genuinely heated (insults, outrage, exasperation), and then give a high intensity. "
+              "Most comments are calm: keep intensity low unless the words really carry feeling. "
               'Reply with JSON only: {"<id>": {"e": "...", "s": "...", "i": 0.0, "c": []}, ...}\n\n' + "\n".join(lines))
     parsed = claude_json(prompt)
     if parsed is not None:
@@ -466,7 +475,8 @@ def main(var):
                 if done is not None:
                     with open(log, "a") as f:
                         f.write(json.dumps({"id": j["id"], "by": j["by"], "path": final, "dur": round(done.get("dur", 0), 2),
-                                            "of": len(plan_clips(j)), "voices": sorted({c["who"] for c in done.get("clips", [])})}) + "\n")
+                                            "of": len(plan_clips(j)), "voices": sorted({c["who"] for c in done.get("clips", [])}),
+                                            "e": done.get("emotion"), "i": done.get("intensity")}) + "\n")
                     try:
                         os.remove(os.path.join(jobs_dir, j["_file"]))
                     except FileNotFoundError:
@@ -536,7 +546,8 @@ def main(var):
                     os.replace(os.path.join(live, prel + ".tmp"), os.path.join(live, prel))
                     with open(log, "a") as f:
                         f.write(json.dumps({"id": j["id"], "by": j["by"], "path": prel, "dur": round(total, 2), "partial": True,
-                                            "of": len(plan), "voices": sorted({c["who"] for c in clips_out})}) + "\n")
+                                            "of": len(plan), "voices": sorted({c["who"] for c in clips_out}),
+                                            "e": emotion, "i": round(intensity, 2)}) + "\n")
                     if j.get("upto") and len(clips_out) >= j["upto"]:
                         opened = True
                         break
@@ -559,7 +570,8 @@ def main(var):
             os.replace(tmp, os.path.join(live, rel))
             with open(log, "a") as f:
                 f.write(json.dumps({"id": j["id"], "by": j["by"], "path": rel, "dur": round(total, 2),
-                                    "of": len(plan), "voices": sorted({c["who"] for c in clips_out})}) + "\n")
+                                    "of": len(plan), "voices": sorted({c["who"] for c in clips_out}),
+                                    "e": emotion, "i": round(intensity, 2)}) + "\n")
             try:
                 os.remove(os.path.join(jobs_dir, j["_file"]))
             except FileNotFoundError:

@@ -100,12 +100,13 @@ function readVoiced() {
     try {
       const v = JSON.parse(line);
       if (booting && !existsSync(join(LIVE, v.path))) continue;   // pruned or lost: it will be voiced again if wanted
-      if (!v.by || !v.voices) {
+      if (!v.by || !v.voices || v.e === undefined) {
         try {
           const side = JSON.parse(readFileSync(join(LIVE, v.path), 'utf8'));
           v.by ??= side.by;
           v.voices ??= [...new Set((side.clips ?? []).map((c: { who: string }) => c.who))];
           v.of ??= side.of ?? (side.clips ?? []).length;
+          v.e ??= side.emotion; v.i ??= side.intensity;
         } catch { /* gone: nothing to remember */ }
       }
       remember(v.id, v.path, v.by, v.of, v.voices);
@@ -115,19 +116,19 @@ function readVoiced() {
       const prev = live.voiced.get(v.id);
       const want = revOf(v.id), got = String(v.path).split('.')[1];
       if (want && got !== want) {                   // an older version: use it until the new one lands
-        if (!prev) live.markVoiced(v.id, v.path, v.dur);
+        if (!prev) live.markVoiced(v.id, v.path, v.dur, v.e, v.i);
         stale.add(v.id);
         continue;
       }
       if (v.partial) {                              // a long comment arriving clip by clip: playable already
         const done = prev && !partial.has(v.id) && String(prev[0]).split('.')[1] === got;
         if (!done && (!prev || !partial.has(v.id) || v.dur > prev[1])) {
-          live.markVoiced(v.id, v.path, v.dur); partial.add(v.id);
+          live.markVoiced(v.id, v.path, v.dur, v.e, v.i); partial.add(v.id);
           clipsOf.set(v.id, Math.max(clipsOf.get(v.id) ?? 0, Number(/\.p(\d+)\.json$/.exec(v.path)?.[1] ?? 1)));
         }
         continue;                                   // the job is still running: keep it queued
       }
-      live.markVoiced(v.id, v.path, v.dur);
+      live.markVoiced(v.id, v.path, v.dur, v.e, v.i);
       partial.delete(v.id); clipsOf.set(v.id, Infinity);
       stale.delete(v.id);
       queued.delete(v.id);
@@ -194,9 +195,15 @@ function jobFor(id: number, prio: number, upto = 0) {
   const sid = live.storyOf(id)!;
   const f = floors.get(sid);
   const table = f ? f.tables.findIndex((t) => t.turns.some((u) => u.id === id)) : -1;
+  // for the tagger: what they're answering (a few words of it), and whether they're answering someone who had
+  // answered them (a back-and-forth: where comebacks happen)
+  const asked = parent?.type === 'comment' && parent.by && parent.text && !live.optOut.has(parent.by);
+  const grand = asked && parent!.parent !== undefined ? live.items.get(parent!.parent) : undefined;
   return {
     id, prio, story: sid, table, by: it.by,
     parentBy: parent?.type === 'comment' && parent.by && !live.optOut.has(parent.by) ? parent.by : undefined,
+    ...(asked ? { parentSaid: speakable(parent!.text!).segments.filter((s) => s.kind === 'say').map((s) => (s as { display: string }).display).join(' ').slice(0, 240) } : {}),
+    ...(grand?.type === 'comment' && grand.by === it.by ? { back: true } : {}),
     rev: revOf(id)!,
     segments: sp.segments,
     ...(upto ? { upto } : {}),                       // an opening: only its first clips, the rest on demand

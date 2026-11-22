@@ -1,0 +1,122 @@
+// The floor at a glance: the whole room in a small circle, turned so that whatever is ahead of you is up. Tables
+// wear their mood (one palette with the signs: red a row, yellow laughter, blue thinking aloud), the ones talking
+// right now pulse, the one you're with is ringed, and everyone else is a faint dot. Tap a table to walk over.
+// Drawn at a dozen frames a second, on a 2D canvas: next to nothing.
+import type { TableSpot } from './interior.ts';
+import type { Turn } from './sync.ts';
+import { R } from './world.ts';
+import { MOOD, tableMood } from './mood.ts';
+
+type P = { x: number; z: number };
+
+export class Minimap {
+  private cv: HTMLCanvasElement;
+  private g: CanvasRenderingContext2D;
+  private px = 0;                                        // canvas size in device pixels
+  private last = -1;
+  private moods = new WeakMap<Turn[], { color: string }>();
+  private view = { yaw: 0, spots: [] as TableSpot[] };
+  onPick: (spot: TableSpot) => void = () => {};
+  onWalk: (x: number, z: number) => void = () => {};
+
+  constructor() {
+    this.cv = document.createElement('canvas');
+    this.cv.id = 'map';
+    this.cv.setAttribute('role', 'img');
+    this.cv.setAttribute('aria-label', 'Map of this floor: tap a table to walk over');
+    document.body.appendChild(this.cv);
+    this.g = this.cv.getContext('2d')!;
+    // the map's own taps never reach the room behind it
+    for (const ev of ['pointerdown', 'pointerup', 'pointermove', 'wheel'] as const) this.cv.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
+    this.cv.addEventListener('click', (e) => { e.stopPropagation(); this.pick(e.offsetX, e.offsetY); });
+  }
+
+  show(on: boolean) { this.cv.classList.toggle('show', on); if (!on) this.last = -1; }
+
+  private moodColor(turns: Turn[]) {
+    let m = this.moods.get(turns);
+    if (!m) { m = { color: MOOD[tableMood(turns).mood].color }; this.moods.set(turns, m); }
+    return m.color;
+  }
+
+  /** where a world point lands on the map (heading up), in CSS pixels */
+  private toMap(x: number, z: number, out: P) {
+    const s = this.cv.clientWidth / 2, k = (s - 5) / R, c = Math.cos(this.view.yaw), n = Math.sin(this.view.yaw);
+    // right of you is the map's right; ahead of you is the map's up
+    out.x = s + (x * -c + z * n) * k;
+    out.z = s - (x * n + z * c) * k;
+    return out;
+  }
+
+  private pick(mx: number, my: number) {
+    const s = this.cv.clientWidth / 2, k = (s - 5) / R, c = Math.cos(this.view.yaw), n = Math.sin(this.view.yaw);
+    const u = (mx - s) / k, v = (s - my) / k;           // rightward, forward (metres, from the room's centre)
+    const x = u * -c + v * n, z = u * n + v * c;
+    let best: TableSpot | null = null, bd = Infinity;
+    for (const sp of this.view.spots) {
+      if (sp.bar) continue;
+      const d = Math.hypot(sp.pos.x - x, sp.pos.z - z) - sp.radius;
+      if (d < bd) { bd = d; best = sp; }
+    }
+    if (best && bd < 0.9) this.onPick(best);
+    else if (Math.hypot(x, z) < R - 0.6) this.onWalk(x, z);
+  }
+
+  draw(now: number, spots: TableSpot[], you: P, yaw: number, o: { focus?: TableSpot | null; talking?: (s: TableSpot) => boolean; people?: { pose: { pos: P } }[]; door?: P; lift?: number } = {}) {
+    if (now - this.last < 0.08 && this.last >= 0) return;
+    this.last = now;
+    this.view.yaw = yaw; this.view.spots = spots;
+    const css = this.cv.clientWidth;
+    if (!css) return;
+    const dpr = Math.min(2, devicePixelRatio || 1), px = Math.round(css * dpr);
+    if (px !== this.px) { this.cv.width = this.cv.height = this.px = px; }
+    const g = this.g, s = css / 2, k = (s - 5) / R, q: P = { x: 0, z: 0 };
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, css, css);
+    // the room: a dark disc inside its glass
+    g.beginPath(); g.arc(s, s, s - 1.5, 0, Math.PI * 2);
+    g.fillStyle = 'rgba(12,14,20,0.66)'; g.fill();
+    g.lineWidth = 1; g.strokeStyle = 'rgba(255,255,255,0.16)'; g.stroke();
+    // the bar along its wall, the lift in the wall
+    const bar = spots.find((x) => x.bar);
+    if (bar) {
+      this.toMap(bar.pos.x, bar.pos.z, q);
+      const a = Math.atan2(q.z - s, q.x - s);
+      g.beginPath(); g.arc(s, s, (R - 1.05) * k, a - 0.42, a + 0.42);
+      g.lineWidth = 3; g.lineCap = 'round'; g.strokeStyle = 'rgba(255,190,120,0.5)'; g.stroke();
+    }
+    if (o.door) {
+      this.toMap(o.door.x, o.door.z, q);
+      g.fillStyle = `rgba(255,205,140,${0.45 + 0.5 * (o.lift ?? 0)})`;
+      g.fillRect(q.x - 2.5, q.z - 2.5, 5, 5);
+    }
+    // everyone, faintly: how full each part of the room is
+    if (o.people) {
+      g.fillStyle = 'rgba(255,244,230,0.32)';
+      for (const p of o.people) { this.toMap(p.pose.pos.x, p.pose.pos.z, q); g.fillRect(q.x - 0.8, q.z - 0.8, 1.6, 1.6); }
+    }
+    // the tables, in their moods
+    const pulse = 0.5 + 0.5 * Math.sin(now * 5);
+    for (const sp of spots) {
+      if (sp.bar) continue;
+      this.toMap(sp.pos.x, sp.pos.z, q);
+      const r = Math.max(3, sp.radius * k), color = this.moodColor(sp.table.turns), talking = o.talking?.(sp);
+      if (talking) {
+        g.beginPath(); g.arc(q.x, q.z, r + 2 + pulse * 2.5, 0, Math.PI * 2);
+        g.lineWidth = 1.5; g.strokeStyle = color; g.globalAlpha = 0.35 + 0.35 * (1 - pulse); g.stroke(); g.globalAlpha = 1;
+      }
+      g.beginPath(); g.arc(q.x, q.z, r, 0, Math.PI * 2);
+      g.fillStyle = color; g.globalAlpha = talking ? 0.95 : 0.55; g.fill(); g.globalAlpha = 1;
+      if (o.focus === sp) { g.lineWidth = 1.6; g.strokeStyle = 'rgba(255,255,255,0.95)'; g.stroke(); }
+    }
+    // you: a soft cone of what you see, and an arrow (always pointing up: the map turns, not you)
+    this.toMap(you.x, you.z, q);
+    const cone = g.createRadialGradient(q.x, q.z, 0, q.x, q.z, s * 0.55);
+    cone.addColorStop(0, 'rgba(255,255,255,0.20)'); cone.addColorStop(1, 'rgba(255,255,255,0)');
+    g.beginPath(); g.moveTo(q.x, q.z); g.arc(q.x, q.z, s * 0.55, -Math.PI / 2 - 0.5, -Math.PI / 2 + 0.5); g.closePath();
+    g.fillStyle = cone; g.fill();
+    g.beginPath(); g.moveTo(q.x, q.z - 5.5); g.lineTo(q.x + 4, q.z + 4); g.lineTo(q.x, q.z + 2); g.lineTo(q.x - 4, q.z + 4); g.closePath();
+    g.fillStyle = '#fff'; g.fill();
+    g.lineWidth = 1; g.strokeStyle = 'rgba(0,0,0,0.5)'; g.stroke();
+  }
+}
