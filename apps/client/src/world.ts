@@ -118,7 +118,7 @@ type N = ReturnType<typeof float>;
  * the light, the title band's strip kept dark. With `open`, the panes clear (a dithered dissolve, so the slab stays
  * opaque and depth-sorted) and you see into the room: used only by the one floor we're flying into.
  */
-function floorMaterial(i: { glow: N; crowd: N; sel: N; pulse: N; seed: N; open?: N }) {
+function floorMaterial(i: { glow: N; crowd: N; sel: N; pulse: N; seed: N; heat?: N; open?: N }) {
   const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.22, metalness: 0.85 });
   const { glow, crowd, sel, pulse, seed } = i;
   const u = uv().x, v = uv().y;
@@ -130,7 +130,9 @@ function floorMaterial(i: { glow: N; crowd: N; sel: N; pulse: N; seed: N; open?:
   const lit = step(float(1).sub(max(glow, crowd.mul(0.85))), r);
   const flick = sin(uTime.mul(0.4).add(r.mul(60))).mul(0.05).add(0.95);
   const walls = step(abs(normalLocal.y), 0.5);
-  const interiorTint = mix(mix(vec3(1.0, 0.55, 0.24), vec3(1.0, 0.82, 0.56), hash(id.add(7))), vec3(0.62, 0.78, 1.0), step(0.93, hash(id.add(13))));
+  const calmTint = mix(mix(vec3(1.0, 0.55, 0.24), vec3(1.0, 0.82, 0.56), hash(id.add(7))), vec3(0.62, 0.78, 1.0), step(0.93, hash(id.add(13))));
+  // a floor where a row is on: its windows run coral, seen from the street
+  const interiorTint = i.heat ? mix(calmTint, vec3(1.0, 0.3, 0.2), i.heat.mul(0.75)) : calmTint;
   const dimRoom = vec3(0.08, 0.1, 0.16).mul(pane).mul(walls);           // unlit glass still reads as glass
   mat.colorNode = mix(vec3(0.03, 0.035, 0.05), vec3(0.05, 0.06, 0.08), pane);
   // the crowd: people inside, dark against the light, a place every 1.1 m round the floor, filled as more
@@ -173,7 +175,7 @@ export class Tower {
   /** the slot whose glass is clearing (flying in or out), and how far (0 solid .. 1 clear) */
   doorSlot = -1;
   private door!: THREE.Mesh;
-  private u = { glow: uniform(0), crowd: uniform(0), sel: uniform(0), pulse: uniform(0), seed: uniform(0), open: uniform(0) };
+  private u = { glow: uniform(0), crowd: uniform(0), sel: uniform(0), pulse: uniform(0), seed: uniform(0), open: uniform(0), heat: uniform(0) };
   /** Clear a floor's glass as far as `open` (0..1); -1 puts the door away. */
   setDoor(slot: number, open = 0) {
     this.doorSlot = slot;
@@ -181,7 +183,7 @@ export class Tower {
     if (slot < 0) { this.door.visible = false; return; }
     const light = this.aLight.array as Float32Array, st = this.aState.array as Float32Array;
     this.u.glow.value = light[slot * 2]; this.u.crowd.value = light[slot * 2 + 1];
-    this.u.sel.value = st[slot * 3]; this.u.pulse.value = st[slot * 3 + 1]; this.u.seed.value = slot;
+    this.u.sel.value = st[slot * 3]; this.u.pulse.value = st[slot * 3 + 1]; this.u.heat.value = st[slot * 3 + 2]; this.u.seed.value = slot;
   }
   /** which way the title signs face (the camera's bearing): a copy of each title is always square to the viewer */
   faceYaw = 0.64;
@@ -215,12 +217,12 @@ export class Tower {
     this.aLight = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS * 2), 2);
     this.aState = new THREE.InstancedBufferAttribute(new Float32Array(FLOORS * 3), 3);
     const light = instancedBufferAttribute(this.aLight), state = instancedBufferAttribute(this.aState);
-    const mat = floorMaterial({ glow: light.x, crowd: light.y, sel: state.x, pulse: state.y, seed: float(instanceIndex) });
+    const mat = floorMaterial({ glow: light.x, crowd: light.y, sel: state.x, pulse: state.y, heat: state.z, seed: float(instanceIndex) });
     this.floors = new THREE.InstancedMesh(geo, mat, FLOORS);
     this.floors.frustumCulled = false;
     // the door: one floor's slab on its own, its glass panes clearing (screen-door dissolve) as we fly in or out
     const u = this.u;
-    this.door = new THREE.Mesh(geo, floorMaterial({ glow: float(u.glow), crowd: float(u.crowd), sel: float(u.sel), pulse: float(u.pulse), seed: float(u.seed), open: float(u.open) }));
+    this.door = new THREE.Mesh(geo, floorMaterial({ glow: float(u.glow), crowd: float(u.crowd), sel: float(u.sel), pulse: float(u.pulse), seed: float(u.seed), heat: float(u.heat), open: float(u.open) }));
     this.door.visible = false;
     this.door.frustumCulled = false;
     scene.add(this.door);
@@ -266,7 +268,7 @@ export class Tower {
   }
 
   /** New front-page order: floors that jump slide out, travel, and slide back in. */
-  setOrder(order: number[], titles: Record<number, [string, number, number, string, string]>, act: Record<number, number>, now: number, camDir: THREE.Vector2, people: Record<number, number> = {}) {
+  setOrder(order: number[], titles: Record<number, [string, number, number, string, string]>, act: Record<number, number>, now: number, camDir: THREE.Vector2, people: Record<number, number> = {}, heat: Record<number, number> = {}) {
     const keep = new Set(order);
     let moved = false;
     this.slots.forEach((s) => { if (s.sid !== null && !keep.has(s.sid)) { this.slotOf.delete(s.sid); s.sid = null; s.scaleTarget = 0; } });
@@ -298,6 +300,8 @@ export class Tower {
       light[si * 2] = clampN(0.1 + Math.log1p(act[sid] ?? 0) / 3.2 + Math.log1p(t?.[2] ?? 0) / 14, 0.08, 0.72);
       // front-page threads run from a handful of people to nearly a thousand: six hundred fill a floor
       light[si * 2 + 1] = clampN(Math.log1p(people[sid] ?? 0) / Math.log1p(600), 0.04, 0.92);
+      // how heated (HN's everyday firmness sits below 0.18; a real row is 0.4 and up)
+      (this.aState.array as Float32Array)[si * 3 + 2] = clampN(((heat[sid] ?? 0) - 0.18) / 0.3, 0, 1);
     });
     this.aLight.needsUpdate = true; this.aState.needsUpdate = true;
     if (moved) this.onMove();

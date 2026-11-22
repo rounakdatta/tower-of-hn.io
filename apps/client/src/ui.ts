@@ -65,7 +65,7 @@ export class UI {
   }
 
   /** The floor in focus on the tower: its title big enough to read on a phone, and the one thing to do next. */
-  focusCard(f: { rank: number; title: string; url: string; score: number; comments: number; act: number; people?: number } | null, onGo?: () => void) {
+  focusCard(f: { rank: number; title: string; url: string; score: number; comments: number; act: number; people?: number; heat?: number } | null, onGo?: () => void) {
     const el = $('focus');
     if (!f) { el.classList.remove('show'); return; }
     const dom = domainOf(f.url);
@@ -74,7 +74,9 @@ export class UI {
     $('fname').title = f.title;
     // the crowd first (how many different people are in there), then the rest
     const crowd = f.people ? `<span class="crowd"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5.5" cy="5" r="2.4"/><circle cx="11" cy="5.6" r="2"/><path d="M1 13.5c.3-2.9 2.2-4.4 4.5-4.4s4.2 1.5 4.5 4.4zM10.3 13.5c-.1-1.6-.7-2.9-1.6-3.7.6-.4 1.4-.6 2.3-.6 2 0 3.5 1.3 3.8 4.3z"/></svg>${f.people} ${f.people === 1 ? 'person' : 'people'}</span> · ` : '';
-    $('fmeta').innerHTML = `${crowd}${f.comments} comments${f.act ? ` · <b>${f.act} new</b>` : ''} · ${f.score} points${dom ? ' · ' + esc(dom) : ''}`;
+    // a row going on in there says so (the same red as everywhere else)
+    const row = (f.heat ?? 0) >= 0.4 ? `<span class="hot" style="color:${MOOD.heated.color}">● heated</span> · ` : '';
+    $('fmeta').innerHTML = `${row}${crowd}${f.comments} comments${f.act ? ` · <b>${f.act} new</b>` : ''} · ${f.score} points${dom ? ' · ' + esc(dom) : ''}`;
     $('fmeta').title = `${f.people ?? '?'} people · ${f.comments} comments (${f.act} in the last 15 minutes) · ${f.score} points${dom ? ' · ' + dom : ''}`;
     $('fgo').setAttribute('aria-label', `Listen in on floor ${f.rank}: ${f.title}`);
     if (onGo) el.onclick = (e) => { e.stopPropagation(); onGo(); };

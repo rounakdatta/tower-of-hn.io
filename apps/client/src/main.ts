@@ -228,7 +228,7 @@ const after = (secs: number, fn: () => void) => timers.push({ at: clock + secs, 
 const camDir2 = () => new THREE.Vector2(camera.position.x, camera.position.z).normalize();
 
 sync.onHead = (h: Head, prev) => {
-  tower.setOrder(h.tower, h.stories, h.act, clock, camDir2(), h.people);
+  tower.setOrder(h.tower, h.stories, h.act, clock, camDir2(), h.people, h.heat);
   cam.floors = h.tower.length;
   // the focus is a story, not a height: when the front page reorders, it follows its story
   const r = focusSid >= 0 ? h.tower.indexOf(focusSid) : -1;
@@ -260,7 +260,7 @@ function showFocus() {
   const s = h.stories[focusSid], rank = h.tower.indexOf(focusSid);
   if (!s || rank < 0) return;
   tower.setSelected(tower.slotOf.get(focusSid) ?? -1);
-  ui.focusCard({ rank: rank + 1, title: s[0], url: s[4], score: s[1], comments: s[2], act: h.act[focusSid] ?? 0, people: h.people?.[focusSid] }, () => enterFloor(focusSid, true, true));
+  ui.focusCard({ rank: rank + 1, title: s[0], url: s[4], score: s[1], comments: s[2], act: h.act[focusSid] ?? 0, people: h.people?.[focusSid], heat: h.heat?.[focusSid] }, () => enterFloor(focusSid, true, true));
   ui.elevator(h.tower.length, rank, h.tower.map((id) => h.act[id] ?? 0), (k) => cam.focus(k), h.tower.map((id) => h.people?.[id] ?? 0));
   // the card covers the bottom of a phone: the floor in focus sits in the middle of what's left. Where the card
   // sits at one side instead (a wide screen, a phone on its side), the tower stands clear of it on the other.
@@ -995,7 +995,7 @@ if (recording) {
       table: director.spot ? { pos: director.spot.pos.toArray(), r: director.spot.radius } : null,
       people: crowd.people.map((p, i) => ({ name: p.name, head: crowd.headPos(i).toArray(), seated: p.pose.seated, stand: p.expr.stand, facing: p.pose.facing, turn: p.expr.turn, yaw: p.expr.yaw, at: director.spot?.seats.some((s) => s.name === p.name) })),
     }),
-    swap: () => { const h = sync.head!; const t = h.tower.slice(); [t[2], t[7]] = [t[7], t[2]]; tower.setOrder(t, h.stories, h.act, clock, camDir2(), h.people); },
+    swap: () => { const h = sync.head!; const t = h.tower.slice(); [t[2], t[7]] = [t[7], t[2]]; tower.setOrder(t, h.stories, h.act, clock, camDir2(), h.people, h.heat); },
   };
   document.getElementById('splash')!.classList.remove('show');   // recordings start inside
   arrive();

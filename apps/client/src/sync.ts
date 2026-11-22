@@ -16,6 +16,8 @@ export interface Head {
   people?: Record<number, number>;
   /** comments listeners are waiting on that aren't voiced yet: a busy evening (older servers: absent) */
   load?: number;
+  /** how heated each floor is, 0..1 (older servers: absent) */
+  heat?: Record<number, number>;
 }
 export interface Delta {
   epoch: number; tower?: number[]; turns?: { story: number; table: number; at: number; turn: Turn }[]; voiced?: { id: number; v: [string, number, string?, number?] }[]; gone?: number[];

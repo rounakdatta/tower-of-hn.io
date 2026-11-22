@@ -43,6 +43,8 @@ export interface Head {
   people: Record<number, number>;
   /** comments listeners are waiting on that aren't voiced yet (set by the server; clients wait less when it's long) */
   load?: number;
+  /** id -> how heated that floor is, 0..1 (angry lines count whole, firm or nervous ones half), once a few are voiced */
+  heat?: Record<number, number>;
 }
 
 export const VOICE_POOL = 115;
@@ -175,7 +177,21 @@ export class Live {
       set.add(it.by);
     }
     for (const id of this.tower) people[id] = who.get(id)?.size ?? 0;
-    return { delta, head: { epoch: this.epoch, at: now, tower: this.tower.slice(), floors, snapshotEvery: this.opts.snapshotEvery, stories, act, people }, snapshots };
+    // the tower shows where the rows are: each floor's heat, from how its voiced comments are delivered
+    const hot = new Map<number, [number, number]>();
+    for (const [id, v] of this.voiced) {
+      const e = v[2];
+      if (!e) continue;
+      const sid = this.storyOf(id);
+      if (sid === undefined || !(sid in act)) continue;
+      const w = 0.5 + (v[3] ?? 0.4), h = hot.get(sid) ?? [0, 0];
+      h[1] += w;
+      if (e === 'angry') h[0] += w; else if (e === 'stern' || e === 'nervous') h[0] += 0.5 * w;
+      hot.set(sid, h);
+    }
+    const heat: Record<number, number> = {};
+    for (const [sid, [h, n]] of hot) if (n >= 3) heat[sid] = Math.round((h / n) * 100) / 100;
+    return { delta, head: { epoch: this.epoch, at: now, tower: this.tower.slice(), floors, snapshotEvery: this.opts.snapshotEvery, stories, act, people, heat }, snapshots };
   }
 
   /** The story a comment belongs to: walk parents until a story (remembered: it never changes, and the head

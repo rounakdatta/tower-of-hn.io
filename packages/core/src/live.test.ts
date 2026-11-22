@@ -93,3 +93,16 @@ test('a voiced comment carries how it is delivered; a table carries the first wo
   assert.equal(t0.gist, 'Honestly, I think the "5.4 GB" number is misleading because it only…');
   assert.equal(t1.gist, 'comment 104');
 });
+
+test('the head says how heated each floor is, from how its voiced comments are delivered', () => {
+  const live = new Live({ snapshotEvery: 1 });
+  live.upsert({ ...story, kids: [101, 104, 105] });
+  for (const it of [c(101, 100, 'a'), c(104, 100, 'c'), c(105, 100, 'd')]) live.upsert(it);
+  live.setTower([100]);
+  live.tick(1000);
+  live.markVoiced(101, 'c/101.a.json', 3, 'angry', 0.9);
+  live.markVoiced(104, 'c/104.a.json', 3, 'angry', 0.8);
+  live.markVoiced(105, 'c/105.a.json', 3, 'mundane', 0.2);
+  const out = live.tick(3000);
+  assert.ok((out.head.heat?.[100] ?? 0) > 0.6, JSON.stringify(out.head.heat));
+});
