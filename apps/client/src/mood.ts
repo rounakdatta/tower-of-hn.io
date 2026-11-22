@@ -16,9 +16,9 @@ export const MOOD: Record<Mood, { color: string; word: string; rgb: [number, num
   calm: { color: '#cdbfb1', word: 'calm', rgb: [1, 0.9, 0.8] },
 };
 
-/** the mood a single delivery belongs to */
-export function moodOf(emotion?: string, stance?: string): Mood {
-  if (stance === 'retort') return 'heated';
+/** the mood a single delivery belongs to (a comeback is a row when it's sharp; a playful one keeps its own mood) */
+export function moodOf(emotion?: string, stance?: string, intensity = 0.4): Mood {
+  if (stance === 'retort' && (emotion === 'angry' || emotion === 'stern' || intensity >= 0.55)) return 'heated';
   switch (emotion) {
     case 'angry': return 'heated';
     case 'stern': case 'nervous': return 'tense';

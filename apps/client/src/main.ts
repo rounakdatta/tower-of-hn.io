@@ -675,9 +675,9 @@ function lampMoods(dt: number) {
     if (s.bar) continue;
     const line = director.spot === s ? director.line : mixer.speaking(s);
     let rgb: [number, number, number] = MOOD.calm.rgb, a = 0;
-    if (line) { const m = moodOf(line.side.emotion, line.side.stance); if (m !== 'calm') { rgb = MOOD[m].rgb; a = 0.45 + 0.4 * Math.min(1, line.side.intensity ?? 0.4); } }
+    if (line) { const m = moodOf(line.side.emotion, line.side.stance, line.side.intensity); if (m !== 'calm') { rgb = MOOD[m].rgb; a = 0.45 + 0.4 * Math.min(1, line.side.intensity ?? 0.4); } }
     else { const m = tableMood(s.table.turns).mood; if (m !== 'calm') { rgb = MOOD[m].rgb; a = 0.22; } }
-    if (line && mode === 'floor' && s !== mixer.focus && clock > rowToastAt && moodOf(line.side.emotion, line.side.stance) === 'heated' && (line.side.intensity ?? 0) >= 0.6
+    if (line && mode === 'floor' && s !== mixer.focus && clock > rowToastAt && moodOf(line.side.emotion, line.side.stance, line.side.intensity) === 'heated' && (line.side.intensity ?? 0) >= 0.6
       && Math.hypot(s.pos.x - walk.pos.x, s.pos.z - walk.pos.z) > 2.5) {
       rowToastAt = clock + 90;
       const sp = s, by = line.turn.by;

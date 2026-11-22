@@ -228,7 +228,8 @@ export class WalkCam {
     const want = this.want.set(0, 0);
     if (n > 0.01) {
       this.dest = null; this.turnTo = null;
-      const speed = this.hurry ? HURRY : WALK;
+      // Shift hurries; the stick pushed right to its edge strides out a little (crossing the room on a phone)
+      const speed = this.hurry ? HURRY : this.stickV.lengthSq() > 0.92 ? WALK * 1.3 : WALK;
       // forward is (sin, cos) of the yaw; right is a quarter turn clockwise of it
       want.set(f.x * fwd - f.z * right, f.z * fwd + f.x * right).multiplyScalar(speed);
     } else if (this.dest) {

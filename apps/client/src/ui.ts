@@ -225,7 +225,7 @@ export class UI {
   private fill(slot: { el: HTMLButtonElement; key: string; w: number; h: number; spot: TableSpot | null }, s: TableSpot, data: NonNullable<UI['signData']>, focus: boolean, line: Line | null, compact: boolean) {
     slot.spot = s;
     const t = s.table, people = new Set(t.turns.map((u) => u.by)).size, mood = tableMood(t.turns).mood;
-    const now = line ? moodOf(line.side.emotion, line.side.stance) : mood;
+    const now = line ? moodOf(line.side.emotion, line.side.stance, line.side.intensity) : mood;
     const word = line ? deliveryWord(line.side.emotion, line.side.stance, line.side.intensity) : '';
     const kick = !this.chosen && data.best === s ? 'Start here' : '';
     const key = `${t.root}|${focus}|${line ? line.turn.by + ':' + word : ''}|${mood}|${people}|${kick}|${compact}`;
@@ -255,7 +255,7 @@ export class UI {
     if (!s) { this.subTimer = window.setTimeout(() => el.classList.remove('show'), 350); return; }
     const text = s.text.length > 320 ? s.text.slice(0, 317) + '…' : s.text;
     // how it's being said, in the mood's colour (nothing for a plain line)
-    const word = deliveryWord(s.emotion, s.stance, s.intensity), m = moodOf(s.emotion, s.stance);
+    const word = deliveryWord(s.emotion, s.stance, s.intensity), m = moodOf(s.emotion, s.stance, s.intensity);
     const how = word ? `<span class="how" style="color:${MOOD[m].color};border-color:${MOOD[m].color}55">${esc(word)}</span>` : '';
     el.innerHTML = `<span class="who" style="color:${s.color}">${esc(s.name)}${s.to && s.to !== s.name ? `<span class="to"> → ${esc(s.to)}</span>` : ''}</span>${how}<span class="said">${esc(text)}</span>`;
     el.dataset.tone = s.emotion;
