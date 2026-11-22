@@ -34,8 +34,8 @@ anyone answers you, you hear it. This note is what exists (0.4.1), what we can't
 
 ## What we checked (22 Nov 2026)
 
-Each fact below has a source in the research notes (`docs/posting-research-2026-11-22.md`
-). V means read from a primary source; I means inferred.
+Each fact below has a source in the research notes (`docs/posting-research-2026-11-22.md`). V means read from a
+primary source; I means inferred.
 
 - **HN's rule [V].** "Don't post generated text or AI-edited text. HN is for conversation between humans."
   ([guidelines](https://news.ycombinator.com/newsguidelines.html)). dang, March 2026: the AI-edited clause targets
