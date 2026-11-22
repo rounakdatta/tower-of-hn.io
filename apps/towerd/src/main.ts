@@ -52,7 +52,11 @@ async function many(ids: number[], lenient = false, conc = 24, beat = true): Pro
   return res;
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-function write(rel: string, data: unknown) { writeAt(join(LIVE, rel), data); }
+function write(rel: string, data: unknown) {
+  const p = join(LIVE, rel);
+  writeAt(p, data);
+  try { hotPut(p, readFileSync(p), statSync(p).mtimeMs); } catch { /* served from disk then */ }
+}
 function writeAt(p: string, data: unknown) {
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p + '.tmp', JSON.stringify(data));
@@ -249,6 +253,27 @@ function syncJobs() {
 }
 
 let headKey = '';
+/** a burst of /want requests rebuilds the job queue once, a moment later (each rebuild walks every floor and writes files) */
+let soonTimer: ReturnType<typeof setTimeout> | null = null;
+function soon() { soonTimer ??= setTimeout(() => { soonTimer = null; try { syncJobs(); } catch (e) { console.error('jobs', String(e).slice(0, 160)); } }, 250); }
+
+/**
+ * The hot files, in memory: everything under /live/ is immutable except head.json, so once read (or written) it can
+ * be served without touching the disk again. Bounded by bytes, least recently used out first; a takedown (unvoice)
+ * or a prune drops what it deletes. head.json is held as written.
+ */
+const hot = new Map<string, { body: Buffer; mtime: number; size: number }>();
+let hotBytes = 0;
+const HOT_BYTES = 48e6;
+function hotPut(p: string, body: Buffer, mtime: number) {
+  const had = hot.get(p);
+  if (had) { hotBytes -= had.body.length; hot.delete(p); }
+  if (body.length > 2e6) return;
+  hot.set(p, { body, mtime, size: body.length });
+  hotBytes += body.length;
+  for (const [k, v] of hot) { if (hotBytes <= HOT_BYTES) break; hot.delete(k); hotBytes -= v.body.length; }
+}
+function hotDrop(p: string) { const had = hot.get(p); if (had) { hotBytes -= had.body.length; hot.delete(p); } }
 
 // ---------------------------------------------------------------- HTTP: the CDN, the client, one write endpoint
 const TYPES: Record<string, string> = {
@@ -270,7 +295,7 @@ const take = (b: Bucket, rate: number, burst: number) => {
   if (b.n < 1) return false;
   b.n--; return true;
 };
-const everyone: Bucket = { n: 120, at: Date.now() }, clients = new Map<string, Bucket>();
+const everyone: Bucket = { n: 240, at: Date.now() }, clients = new Map<string, Bucket>();
 // https://www.cloudflare.com/ips-v4 and ips-v6 (20 Nov 2026)
 const CF4 = ['173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18',
   '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
@@ -306,7 +331,7 @@ function allow(req: import('node:http').IncomingMessage) {
     b = { n: 20, at: Date.now() };
     clients.set(ip, b);
   }
-  return take(b, 1, 20) && take(everyone, 30, 120);
+  return take(b, 1, 20) && take(everyone, 60, 240);
 }
 createServer((req, res) => {
   try { handle(req, res); } catch (e) {
@@ -362,7 +387,7 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
           turns = f.tables[table]?.turns.slice(from, from + 24) ?? [];
           turns.forEach((u, k) => { if (needsVoice(u.id)) ask(u.id, k, 0, who); });
         }
-        syncJobs();
+        soon();                                         // the queue is rebuilt shortly (once for a burst of asks)
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ queued: turns.filter((u) => needsVoice(u.id)).length }));
       } catch { res.writeHead(400); res.end(); }
@@ -417,16 +442,23 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     return;
   }
   const p = resolve(LIVE, '.' + url.pathname.slice(5));
-  const st = p.startsWith(LIVE + '/') ? statOr(p) : null;
-  if (!st || st.isDirectory()) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+  if (!p.startsWith(LIVE + '/')) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
   const isHead = url.pathname === '/live/head.json';
   if (isHead) lastViewerAt = Date.now();
+  let h = hot.get(p);
+  if (!h) {
+    const st = statOr(p);
+    if (!st || st.isDirectory()) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+    const f = readOr503(p, res, st.mtimeMs);
+    if (!f) return;
+    hotPut(p, f.body, f.mtime);
+    h = { body: f.body, mtime: f.mtime, size: f.body.length };
+  } else { hot.delete(p); hot.set(p, h); }               // recently used
   const cache = isHead ? 'public, max-age=1, stale-while-revalidate=10' : 'public, max-age=31536000, immutable';
   // a poll that finds nothing new costs a header, not a body
-  const tag = `W/"${Math.round(st.mtimeMs).toString(36)}-${st.size.toString(36)}"`;
+  const tag = `W/"${Math.round(h.mtime).toString(36)}-${h.size.toString(36)}"`;
   if (req.headers['if-none-match'] === tag) { res.writeHead(304, { etag: tag, 'cache-control': cache, vary: 'accept-encoding' }); res.end(); return; }
-  const file = readOr503(p, res, st.mtimeMs);
-  if (!file) return;
+  const file = { body: h.body, mtime: h.mtime };
   const out = squeeze(req, p, file, false);
   res.writeHead(200, {
     'content-type': TYPES[extname(p)] ?? 'application/octet-stream', 'cache-control': cache, etag: tag,
@@ -495,7 +527,8 @@ function unvoice(id: number) {
   for (const [stem, of] of stems) {
     if (!stem.startsWith(`c/${id}.`)) continue;
     // a clip per planned chunk (c/<id>.<rev>.<k>.ogg), a snapshot per clip count (.p<n>.json), the sidecar
-    for (let n = 0; n <= of; n++) for (const f of [`${stem}.${n}.ogg`, `${stem}.p${n}.json`]) { try { unlinkSync(join(LIVE, f)); } catch { /* none */ } }
+    for (let n = 0; n <= of; n++) for (const f of [`${stem}.${n}.ogg`, `${stem}.p${n}.json`]) { hotDrop(join(LIVE, f)); try { unlinkSync(join(LIVE, f)); } catch { /* none */ } }
+    hotDrop(join(LIVE, `${stem}.json`));
     try { unlinkSync(join(LIVE, `${stem}.json`)); } catch { /* none */ }
   }
   known.delete(id);
@@ -526,7 +559,7 @@ async function prune() {
   let removed = 0, seen = 0;
   const breathe = async () => { if (++seen % 400 === 0) await new Promise((r) => setImmediate(r)); };
   // deltas: clients catch up from at most the last 20 epochs
-  const gone = (f: string) => { try { unlinkSync(f); removed++; } catch { /* already gone, or mid-write */ } };
+  const gone = (f: string) => { hotDrop(f); try { unlinkSync(f); removed++; } catch { /* already gone, or mid-write */ } };
   const epochs = readdirSync(join(LIVE, 'e')).map((n) => parseInt(n)).filter(Number.isFinite);
   const latest = epochs.reduce((a, b) => Math.max(a, b), 0);
   for (const n of readdirSync(join(LIVE, 'e'))) if (parseInt(n) < latest - 600) gone(join(LIVE, 'e', n));

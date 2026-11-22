@@ -30,9 +30,17 @@ earshot), asks for voicing every 30 s, and opens a card now and then.
 |---|---|---|---|---|---|---|---|
 | 100 | 121 | 1–3 ms | ≤ 17 ms | 12% of a core | 298 MB | 8 Mbit/s | 0 |
 | 300 | 383 | 2–4 ms | ≤ 36 ms | 24% of a core | 302 MB | 24 Mbit/s | 0 |
+| 1000 (before the hot cache) | 1091 | 4–8 ms | up to 1.2 s | 39% of a core | 360 MB | 73 Mbit/s | 0 |
+| **1000** (two load generators of 500) | 1108 | 2–4 ms | 24–82 ms | 30% of a core | 335 MB | 69 Mbit/s | 0 |
 
-The HTTP side is roughly linear: about a thousand concurrent listeners per core, about 80 Mbit/s of audio and
-JSON at that point. Bandwidth runs out before CPU; a CDN removes both (below).
+What fixed the thousand-listener tail:
+- **Hot files in memory.** Everything under /live/ is immutable except head.json, so towerd keeps what it has
+  served or written in a 48 MB LRU and stops touching the disk on the hot path. Takedowns and prunes drop what they
+  delete.
+- **A debounced queue.** A burst of /want requests rebuilds the job queue once, 250 ms later, instead of walking
+  every floor and writing job files once per request.
+
+Bandwidth runs out before CPU; a CDN removes both (below).
 
 ## What protects the scarce part (voicing)
 
@@ -47,7 +55,7 @@ JSON at that point. Bandwidth runs out before CPU; a CDN removes both (below).
   tables stop waiting on unvoiced lines (1.5–2 s instead of 4) and play what's ready, so the room never stalls.
 - **Interruptible background work.** A clip being voiced in the background is cancelled mid-inference when a
   listener's request arrives (ONNX `RunOptions.terminate`).
-- **Bounded endpoints.** `/want`: per client 1/s (burst 20) and 30/s overall. `/profile`: cached three days; on a
+- **Bounded endpoints.** `/want`: per client 1/s (burst 20) and 60/s overall (burst 240). `/profile`: cached three days; on a
   miss, at most two cards are being written at once (503 + Retry-After; the client retries once), twenty model
   calls a minute.
 
