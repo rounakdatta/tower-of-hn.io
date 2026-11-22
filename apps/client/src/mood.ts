@@ -39,8 +39,15 @@ export function deliveryWord(emotion?: string, stance?: string, intensity = 0.4)
   return w[emotion ?? ''] ?? '';
 }
 
-/** A table's mood from what's been voiced there: the strongest feeling, if it's more than a passing one. */
+const moods = new WeakMap<Turn[], { mood: Mood; heat: number }>();
+/** A table's mood from what's been voiced there: the strongest feeling, if it's more than a passing one. (Remembered
+ *  per revision of the table's turns: every new floor revision brings new arrays, so it's never stale.) */
 export function tableMood(turns: Turn[]): { mood: Mood; heat: number } {
+  let m = moods.get(turns);
+  if (!m) { m = moodNow(turns); moods.set(turns, m); }
+  return m;
+}
+function moodNow(turns: Turn[]): { mood: Mood; heat: number } {
   const score: Partial<Record<Mood, number>> = {};
   let total = 0;
   for (const u of turns) {

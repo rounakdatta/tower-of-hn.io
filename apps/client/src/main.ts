@@ -126,6 +126,7 @@ walk.onUse = () => { const t = nearTable(); if (t) sit(t, true); };
 walk.capturable = (x, y) => !aimAt(x, y).kind;
 walk.onLock = (locked) => {
   document.body.classList.toggle('fps', locked);
+  if (locked) ui.profile(null);                          // back to the room: a card left open would sit under the dot
   if (mode !== 'floor') return;
   ui.hint(locked ? 'WASD to walk · Shift to hurry · click to go or meet · E to sit · Esc gives the mouse back' : HINT_DESK);
   if (!locked) ui.aim('');
@@ -654,7 +655,7 @@ function neonTick(now: number) {
 
 // ---------------------------------------------------------------- the loop
 const fwd = new THREE.Vector3();
-let aimTick = 0, lampTick = 0;
+let aimTick = 0, lampTick = 0, rowToastAt = 0;
 /** On foot, the table you're with is subtitled (as the one you sit at is): you can follow it, and see how it's said. */
 let subLine: object | null = null;
 function walkSubtitles() {
@@ -676,6 +677,12 @@ function lampMoods(dt: number) {
     let rgb: [number, number, number] = MOOD.calm.rgb, a = 0;
     if (line) { const m = moodOf(line.side.emotion, line.side.stance); if (m !== 'calm') { rgb = MOOD[m].rgb; a = 0.45 + 0.4 * Math.min(1, line.side.intensity ?? 0.4); } }
     else { const m = tableMood(s.table.turns).mood; if (m !== 'calm') { rgb = MOOD[m].rgb; a = 0.22; } }
+    if (line && mode === 'floor' && s !== mixer.focus && clock > rowToastAt && moodOf(line.side.emotion, line.side.stance) === 'heated' && (line.side.intensity ?? 0) >= 0.6
+      && Math.hypot(s.pos.x - walk.pos.x, s.pos.z - walk.pos.z) > 2.5) {
+      rowToastAt = clock + 90;
+      const sp = s, by = line.turn.by;
+      ui.toast(`<b>${esc(by)}</b> is getting heated at a table nearby`, () => walkToTable(sp));
+    }
     const cur = lampNow.get(s) ?? [1, 0.9, 0.8, 0], e = Math.min(1, dt * 2.5);
     for (let c = 0; c < 3; c++) cur[c] += (rgb[c] - cur[c]) * e;
     cur[3] += (a - cur[3]) * e;
@@ -839,7 +846,8 @@ if (recording) {
   let last = performance.now(), lastDraw = 0, slow = 0, quick = 0, settle = 3;
   renderer.setAnimationLoop(() => {
     const now = performance.now();
-    const gap = mode === 'table' && touch ? 1000 / 30 : 1000 / 60;
+    // a phone standing still on a floor needs no more than a table does (mouths move at 30 Hz): 60 only while moving
+    const gap = touch && (mode === 'table' || (mode === 'floor' && walk.enabled && !walk.busy)) ? 1000 / 30 : 1000 / 60;
     if (now - lastDraw < gap - 4) return;
     const interval = now - lastDraw;
     lastDraw = now;

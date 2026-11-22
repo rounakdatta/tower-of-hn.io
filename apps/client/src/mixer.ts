@@ -9,7 +9,7 @@ import { emoGain, type AudioEngine, type Bus } from './audio.ts';
 import type { Crowd } from './people.ts';
 import type { TableSpot } from './interior.ts';
 import type { Room } from './room.ts';
-import { Performer, tone, type Line } from './performer.ts';
+import { Performer, tone, RISE_LEAD, type Line } from './performer.ts';
 
 const HEAR = 9;                                          // metres: tables farther than this fall quiet
 const MAX_ON = 4;                                        // tables talking at once (the nearest)
@@ -113,13 +113,18 @@ export class Mixer {
     return null;
   }
 
+  private ranked: { p: Player; d: number }[] = [];
+  private on = new Map<Player, number>();
   update(listener: THREE.Vector3, forward: THREE.Vector3, dt: number) {
     const now = this.audio.now();
-    const ranked = this.players
-      .filter((p) => p.spot !== this.exclude)
-      .map((p) => ({ p, d: Math.hypot(p.spot.pos.x - listener.x, p.spot.pos.z - listener.z) }))
-      .sort((a, b) => a.d - b.d);
-    const on = new Map(ranked.filter((x) => x.d < HEAR).slice(0, MAX_ON).map((x, k) => [x.p, k]));
+    // the tables by distance (reusing last frame's list: this runs every frame)
+    const ranked = this.ranked;
+    ranked.length = 0;
+    for (const p of this.players) if (p.spot !== this.exclude) ranked.push({ p, d: Math.hypot(p.spot.pos.x - listener.x, p.spot.pos.z - listener.z) });
+    ranked.sort((a, b) => a.d - b.d);
+    const on = this.on;
+    on.clear();
+    for (let k = 0; k < ranked.length && k < MAX_ON && ranked[k].d < HEAR; k++) on.set(ranked[k].p, k);
     const focus = this.exclude ? null : this.pick(ranked, listener, forward);
     this.focus = focus?.spot ?? null;
     for (const p of this.players) {
@@ -250,6 +255,16 @@ export class Mixer {
       t += c.d + 0.06;
     });
     if (i >= 0) this.room.speaking(i, t);
+    // someone at the table you're with getting to their feet: the chair scrapes back, palms on the table
+    const first = p.sched.find((s) => s.turn.id === turn.id && s.clip === r.side.clips[0]);
+    if (focus && first && !p.done && i >= 0) {
+      const plan = p.perf.plan(first, p.sched);
+      if (plan.stand) {
+        const at = this.crowd.people[i].pose.pos, y = this.crowd.group.position.y;
+        this.audio.sfxAt('chair', { x: at.x, y: y + 0.4, z: at.z }, first.start - RISE_LEAD + 0.05);
+        this.audio.sfxAt('thump', { x: p.spot.pos.x, y: y + 0.76, z: p.spot.pos.z }, first.start - RISE_LEAD + 0.3);
+      }
+    }
     p.cursor = t;
     if (r.side.partial) { p.done = r.side.clips.length; p.doing = turn.id; return; }   // the rest is on its way: stay on this turn
     this.next(p, turn);

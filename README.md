@@ -37,7 +37,13 @@ open http://127.0.0.1:5288
   - Floors slide when stories trade ranks.
   - Windows flash when a comment lands.
   - The beacon pulses for every new comment on the front page.
-- **Floor.** Pick a table (▶ means it's voiced), or the bar, where the one-off remarks are.
+- **Floor.** You arrive on foot, among every conversation on the floor. The table you're with (nearest, or the one you're facing) is heard clearly and subtitled; the others murmur, muffled, as a room does.
+  - **Desktop:** click the floor and the mouse looks around (Esc gives it back); WASD or the arrows walk, Shift hurries. A dot in the middle aims: click someone to see their card, a table to walk over. E sits down.
+  - **Phone:** the left thumb walks (a stick appears where it lands), the right thumb looks round; tap a table to go to it, someone to see their card.
+  - **Signs** over the nearest tables say what each is about (its opener's first words), its mood, and who has the floor and how ("furious", "comeback", "thinking aloud").
+  - **The map** (top right) shows the whole room turned the way you face: tables in their moods, the ones talking pulse. Tap a table to walk there; on a phone it opens big first, with names.
+  - **Lamps** take the colour of what's said under them: red for a row, yellow for laughter, blue for people thinking aloud. A row breaking out elsewhere gets a note you can tap to go there.
+  - Every table in earshot acts what it says, as the one you sit at does: people get to their feet, point, laugh, slump.
 - **Table.** Space pauses, N moves to the next table, Esc stands you up, M mutes.
   - Links are held up as placards you can click.
   - When someone quotes the comment they're answering, its author speaks the quote.
@@ -61,6 +67,8 @@ The tags drive the performance, and nothing is canned:
   - The table gasps at an insult.
   - Whoever is praised lights up, hand to chest.
   - Someone about to disagree narrows their eyes and shakes their head.
+- **Comebacks.** Someone hitting back at whoever challenged them (the tagger reads each reply against what it answers, and knows a reply back in a back-and-forth) leans in with narrowed eyes and a half smile, points, and comes in fast; if it really stings they stand. The one it's aimed at looks stung, the rest of the table goes "oooh".
+- **Voices.** Heated and excited lines carry, sad and tender ones sit back (within ±2.5 dB).
 - **Timing.** Heated replies cut in, a joke gets room for its laugh, and an answer to a question comes quickly.
 - **The camera.** A small virtual cinematographer models everyone as capsules and won't shoot through a head. It keeps faces visible and changes angle and size on long comments. Its shots:
   - a rise shot, then a hero angle looking up at the one standing, over the shoulder of the one being told off

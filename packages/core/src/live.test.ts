@@ -76,3 +76,20 @@ test('a voiced comment bumps its floor and travels in the delta; head carries ti
   assert.equal(out.head.floors[100], 2);
   assert.deepEqual(out.snapshots[0].tables[0].turns[0].v, ['c/101.ab12.json', 7.5]);
 });
+
+test('a voiced comment carries how it is delivered; a table carries the first words of its opener', () => {
+  const live = new Live({ snapshotEvery: 1 });
+  live.upsert(story);
+  live.upsert({ ...c(101, 100, 'a'), text: '<i>&gt; what they said</i><p>Honestly, I think the &quot;5.4 GB&quot; number is misleading because it only counts the weights and not the cache at all.' });
+  live.upsert(c(104, 100, 'c'));
+  live.setTower([100]);
+  live.tick(1000);
+  live.markVoiced(101, 'c/101.ab12.json', 7.5, 'angry', 0.834);
+  const out = live.tick(3000);
+  assert.deepEqual(out.delta?.voiced, [{ id: 101, v: ['c/101.ab12.json', 7.5, 'angry', 0.83] }]);
+  const [t0, t1] = out.snapshots[0].tables;
+  assert.deepEqual(t0.turns[0].v, ['c/101.ab12.json', 7.5, 'angry', 0.83]);
+  // its own words (not the quote), entities decoded, cut at a word
+  assert.equal(t0.gist, 'Honestly, I think the "5.4 GB" number is misleading because it only…');
+  assert.equal(t1.gist, 'comment 104');
+});

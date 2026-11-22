@@ -138,6 +138,8 @@ export class WalkCam {
   }
 
   get walking() { return !!this.dest || this.keys.size > 0 || this.stickV.lengthSq() > 0 || this.vel.lengthSq() > 0.01; }
+  /** moving or looking round (a finger or the mouse on the view): the frame rate matters now */
+  get busy() { return this.walking || this.drags.size > 0 || this.locked || this.turnTo !== null; }
 
   // ---------------------------------------------------------------- pointers: a mouse, a thumb stick, a look drag
   private down(e: PointerEvent) {

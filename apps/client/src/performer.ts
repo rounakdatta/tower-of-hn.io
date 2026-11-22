@@ -63,6 +63,9 @@ export class Performer {
   /** brows that flash up on a stressed syllable, per person (decays) */
   private flash = new Map<number, number>();
   private chairK = new Map<number, number>();
+  /** heads looked at this frame (kept: acting runs every frame at every table in earshot) */
+  private hFocus = new THREE.Vector3();
+  private hTmp = new THREE.Vector3();
 
   constructor(private crowd: Crowd, public spot: TableSpot, private ix: (name: string) => number,
     private pushChair: (chair: number, k: number) => void = () => {}) {}
@@ -123,7 +126,7 @@ export class Performer {
     const env = cur ? (cur.clip.env[Math.floor((at - cur.start) * 30)] ?? 0) / 255 : 0;
     const shape = cur ? ((cur.clip.shape[Math.floor((at - cur.start) * 30)] ?? 127) / 127.5 - 1) : 0;
     const focus = speaking >= 0 ? speaking : plan?.S ?? -1;
-    const focusHead = focus >= 0 ? this.crowd.headPos(focus) : null;
+    const focusHead = focus >= 0 ? this.crowd.headPos(focus, this.hFocus) : null;
     const voice = cur ? FACE[tone(cur.side).E] ?? FACE.mundane : FACE.mundane;
     this.tension = plan && inTurn && (plan.stand || (plan.E === 'angry' && plan.I >= 0.45)) ? Math.min(1, 0.5 + plan.I * 0.6) : 0;
     const clipNo = cur ? cur.side.clips.indexOf(cur.clip) : -1, clipT = cur ? at - cur.start : 0;
@@ -151,7 +154,7 @@ export class Performer {
       const performing = !!plan && inTurn && i === plan.S;
       if (performing) {
         // square up to the person being answered: shoulders part of the way, the head the rest
-        const aHead = plan.A >= 0 ? this.crowd.headPos(plan.A) : null;
+        const aHead = plan.A >= 0 ? this.crowd.headPos(plan.A, this.hTmp) : null;
         const total = aHead ? this.crowd.yawTo(i, aHead) : Math.sin(at * 0.35 + i) * 0.45;
         t.turn = Math.max(-0.85, Math.min(0.85, total * 0.55));
         t.yaw = total - t.turn;
@@ -188,7 +191,7 @@ export class Performer {
         if (plan.laughEnd && at > plan.end - 1.1) { t.bounce = 1; t.smile = 1; t.lid = 0.6; t.happy = 1; t.teeth = 1; }
       }
       if (riser?.stand && i === riser.S && !performing && i !== speaking) {
-        const aHead = riser.A >= 0 ? this.crowd.headPos(riser.A) : null;
+        const aHead = riser.A >= 0 ? this.crowd.headPos(riser.A, this.hTmp) : null;
         const total = aHead ? this.crowd.yawTo(i, aHead) : t.yaw;
         t.turn = Math.max(-0.85, Math.min(0.85, total * 0.55));
         t.yaw = total - t.turn;
@@ -227,14 +230,18 @@ export class Performer {
           if (plan.laughEnd && at > plan.end - 1.1) { t.happy = 1; t.teeth = 1; t.open = Math.max(t.open, 0.35); t.blush = 0.5; }
           if (plan.E === 'angry' && env > 0.55) t.teeth = Math.max(t.teeth, 0.85);
         }
-        if (!performing && plan && plan.S >= 0) t.yaw = this.crowd.yawTo(i, this.crowd.headPos(plan.S));   // a quoted line, said to its quoter
+        if (!performing && plan && plan.S >= 0) t.yaw = this.crowd.yawTo(i, this.crowd.headPos(plan.S, this.hTmp));   // a quoted line, said to its quoter
         continue;
       }
       if (performing) continue;
       // listeners react to what's being said, and to whom
       if (plan && inTurn) {
-        const strong = plan.I >= 0.6, pushback = plan.ST === 'disagree' || plan.ST === 'correct' || plan.E === 'angry';
-        if (i === plan.A) {
+        const strong = plan.I >= 0.6, pushback = plan.ST === 'disagree' || plan.ST === 'correct' || plan.ST === 'retort' || plan.E === 'angry';
+        if (plan.ST === 'retort' && at > plan.start + 0.4) {
+          // a comeback lands: its target is stung; everyone else goes "oooh" (brows up, a half smile, back in their seats)
+          if (i === plan.A) { t.brow = -0.1; t.browIn = -0.75; t.lidTilt = 0.5; t.flush = 0.35; t.smile = -0.25; t.lean = -0.18; }
+          else { t.brow = 0.55; t.lid = 1.16; t.smile = 0.22; t.smileAsym = this.crowd.seed(i, 6) > 0.5 ? 0.35 : -0.35; t.lean = -0.14; }
+        } else if (i === plan.A) {
           if (pushback && plan.E === 'angry' && strong) { t.brow = 0.55; t.browIn = 0.35; t.lid = 1.22; t.lean = -0.3; t.smile = -0.1; t.flush = 0.2; }  // taken aback
           else if (pushback) { t.brow = -0.15; t.browIn = -0.6; t.lidTilt = 0.3; t.smile = -0.15; t.smileAsym = -0.2; t.lean = -0.12; if (plan.ST === 'correct' && !strong) pose('cross', t, 0.5, 0, false); }
           else if (plan.ST === 'agree' || plan.ST === 'praise') { t.smile = 0.65; t.happy = 0.3; t.blush = 0.25; t.nod += Math.max(0, Math.sin(at * 2.4 + i)) * 0.14; }
@@ -273,7 +280,7 @@ export class Performer {
     let cheat = 0;
     const ci = o.onCamera ?? -1, ct = ci >= 0 && o.cam ? this.crowd.target(ci) : undefined;
     if (ct && o.cam && this.crowd.people[ci]?.pose.seated !== undefined) {
-      const h = this.crowd.headPos(ci), cam = o.cam, pose = this.crowd.people[ci].pose;
+      const h = this.crowd.headPos(ci, this.hTmp), cam = o.cam, pose = this.crowd.people[ci].pose;
       let d = Math.atan2(cam.x - h.x, cam.z - h.z) - (pose.facing + ct.turn + Math.max(-1.1, Math.min(1.1, ct.yaw)));
       d = Math.atan2(Math.sin(d), Math.cos(d));
       if (Math.abs(d) < 1.5) { cheat = Math.max(-0.5, Math.min(0.5, d * 0.4)); ct.yaw += cheat; }

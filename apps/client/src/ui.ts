@@ -37,11 +37,15 @@ export class UI {
     c.classList.remove('go'); void c.offsetWidth; c.classList.add('go');
   }
   private toastTimer = 0;
-  toast(html: string) {
+  /** A short note at the top; with `act`, a note you can tap to go there (it stays a little longer). */
+  toast(html: string, act?: () => void) {
     const t = $('toast');
-    t.innerHTML = html; t.classList.add('show');
+    t.innerHTML = act ? `${html} <span class="go">→</span>` : html;
+    t.classList.toggle('act', !!act);
+    t.onclick = act ? (e) => { e.stopPropagation(); t.classList.remove('show'); act(); } : null;
+    t.classList.add('show');
     clearTimeout(this.toastTimer);
-    this.toastTimer = window.setTimeout(() => t.classList.remove('show'), 3600);
+    this.toastTimer = window.setTimeout(() => t.classList.remove('show'), act ? 6000 : 3600);
   }
   flash() { const f = $('fade'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go'); }
   hint(text: string) { $('hint').textContent = text; }
