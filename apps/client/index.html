@@ -221,6 +221,8 @@
   #reply .post:disabled { opacity:.35; cursor:default }
   #reply .how { margin:10px 2px 0; font-size:11.5px; color:var(--mute); line-height:1.45 } #reply .how a { color:var(--ink) }
   @media (min-width: 900px) { #reply { left:auto; right:24px; bottom:24px; width:420px } }
+  /* iOS zooms into a field set smaller than 16 px: these never are */
+  @media (hover: none) { #reply textarea, #reply .me input { font-size:16px } }
   body.reply-open #sitdown, body.reply-open #hint, body.reply-open #subs, body.reply-open #controls { opacity:0; pointer-events:none }
   #profile .answer { background:none; border:0; padding:0; font:inherit; font-weight:650; color:var(--ink); cursor:pointer; white-space:nowrap }
   #profile .answer:hover { text-decoration:underline }

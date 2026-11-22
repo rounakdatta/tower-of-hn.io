@@ -497,7 +497,7 @@ function sit(s: TableSpot | undefined, push = false) {
   ui.flash(); setDof(true);
   nav(`?story=${activeFloor.story.id}&table=${s.table.root}`, fromFloor && depth === 1);
   media(activeFloor.story.title, s.table.turns[0]?.by);
-  ui.hint('Esc to stand up · Space to pause · N for the next table');
+  ui.hint(touch ? '' : 'Esc to stand up · Space to pause · N for the next table · R to reply');
   director.others = spots.filter((x) => !x.bar && x !== s).map((x) => ({ pos: x.pos, turns: x.table.turns }));
   director.jumpTo = deepFrom; deepFrom = 0;
   director.skipIds = new Set((params.get('skip') ?? '').split(',').filter(Boolean).map(Number));
