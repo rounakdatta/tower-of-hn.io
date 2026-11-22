@@ -109,6 +109,11 @@ export class WalkCam {
     this.enabled = false; this.keys.clear(); this.drags.clear(); this.endStick(); this.vel.set(0, 0);
     if (this.locked) document.exitPointerLock();
   }
+  /** A faint stick where the left thumb goes, until the first walk with it (phones: how to move, shown not told). */
+  ghost(on: boolean) {
+    this.stickEl.classList.toggle('ghost', on);
+    if (on) { this.stickEl.style.transform = `translate(70px, ${innerHeight - 128}px)`; this.knobEl.style.transform = 'translate(-50%, -50%)'; }
+  }
   /** Capture the mouse (from a click, as browsers require). */
   capture() {
     if (this.locked || !this.enabled) return;
@@ -147,6 +152,7 @@ export class WalkCam {
     this.drags.set(e.pointerId, { x0: e.clientX, y0: e.clientY, t0: performance.now(), yaw0: this.yaw, pitch0: this.pitch, moved: false, stick });
     if (stick) {
       this.stickId = e.pointerId;
+      this.stickEl.classList.remove('ghost');
       this.stickEl.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
       this.knobEl.style.transform = 'translate(-50%, -50%)';
       this.stickEl.classList.add('show');

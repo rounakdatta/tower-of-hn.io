@@ -103,6 +103,8 @@ export class Mixer {
     if (p && !p.breaking.includes(turn.id) && !p.played.has(turn.id)) p.breaking.push(turn.id);
   }
 
+  /** each table's channel (vibe tests): level and low-pass, or null before it has spoken */
+  levels() { return this.players.map((p) => (p.bus ? { level: p.bus.level, hz: p.bus.hz } : null)); }
   /** what's being said at a table right now (the line, and whether it's the table you're with), for labels */
   speaking(spot: TableSpot): Line | null {
     const p = this.bySpot.get(spot), now = this.audio.now();

@@ -114,6 +114,8 @@
     opacity:0; pointer-events:none; transition:opacity .5s; cursor:pointer; filter:drop-shadow(0 6px 18px rgba(0,0,0,.35)) }
   #map.show { opacity:1; pointer-events:auto }
   @media (max-width: 699px) { #map { width:96px; height:96px; right:10px; top:calc(env(safe-area-inset-top) + 70px) } }
+  #map.big { width:min(86vw, 440px); height:min(86vw, 440px); right:auto; left:50%; top:50%; transform:translate(-50%, -50%); z-index:9;
+    box-shadow:0 0 0 100vmax rgba(0,0,0,.5) }
   body:not([data-mode="floor"]) #map { opacity:0; pointer-events:none }
   body:not([data-mode="floor"]) #labels { display:none }
 
@@ -132,7 +134,11 @@
   #subs .said { color:#f6f2ea; transition:color .4s }
   #subs[data-tone="angry"] .said { color:#ffe0d6; text-shadow:0 0 22px rgba(255,90,50,.28), 0 1px 3px rgba(0,0,0,.85) }
   #subs .to { color:#b9b2a6; font-weight:500 }
-  body:not([data-mode="table"]) #subs { bottom:calc(112px + env(safe-area-inset-bottom)); font-size:15.5px; width:min(760px, 92vw) }
+  body:not([data-mode="table"]) #subs { bottom:calc(124px + env(safe-area-inset-bottom)); font-size:15.5px; width:min(760px, 92vw) }
+  @media (max-width: 699px) {
+    body:not([data-mode="table"]) #subs { font-size:14px; line-height:1.38; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden }
+    #sitdown { white-space:nowrap; max-width:84vw; overflow:hidden; text-overflow:ellipsis }
+  }
   #subs .how { display:inline-block; font-size:.72em; font-weight:650; letter-spacing:.04em; text-transform:uppercase; padding:1px 7px 2px; margin:0 .6em .15em 0;
     border:1px solid; border-radius:999px; vertical-align:middle; background:rgba(0,0,0,.25) }
 
@@ -169,6 +175,12 @@
   #stick { position:fixed; left:0; top:0; width:116px; height:116px; margin:-58px 0 0 -58px; border-radius:50%; z-index:5; pointer-events:none;
     border:1.5px solid rgba(255,255,255,.28); background:radial-gradient(circle, rgba(255,255,255,.07), rgba(255,255,255,.02) 70%); opacity:0; transition:opacity .18s }
   #stick.show { opacity:1 }
+  #stick.ghost { opacity:.55; animation:ghost 2.6s ease-in-out infinite }
+  #stick.ghost::after { content:'walk'; position:absolute; left:50%; top:calc(100% + 6px); transform:translateX(-50%); color:rgba(255,255,255,.6); font-size:11px; letter-spacing:.08em; text-transform:uppercase }
+  #stick.ghost .knob { animation:nudge 2.6s ease-in-out infinite }
+  @keyframes ghost { 50% { opacity:.3 } }
+  @keyframes nudge { 0%, 100% { transform:translate(-50%, -50%) } 40% { transform:translate(-50%, -82%) } }
+  body:not([data-mode="floor"]) #stick { opacity:0 }
   #stick .knob { position:absolute; left:50%; top:50%; width:48px; height:48px; border-radius:50%; transform:translate(-50%, -50%);
     background:rgba(255,255,255,.82); box-shadow:0 2px 12px rgba(0,0,0,.35) }
   /* a card is open: the hint and (on a phone, where the card spans the screen) the table labels step back */

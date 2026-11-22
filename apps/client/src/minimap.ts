@@ -28,10 +28,19 @@ export class Minimap {
     this.g = this.cv.getContext('2d')!;
     // the map's own taps never reach the room behind it
     for (const ev of ['pointerdown', 'pointerup', 'pointermove', 'wheel'] as const) this.cv.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
-    this.cv.addEventListener('click', (e) => { e.stopPropagation(); this.pick(e.offsetX, e.offsetY); });
+    // on a phone the small map opens big first (tables you can actually hit, with names); then a tap walks there
+    this.cv.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!this.big && matchMedia('(max-width: 699px)').matches) { this.open(true); return; }
+      this.pick(e.offsetX, e.offsetY);
+      this.open(false);
+    });
+    document.addEventListener('pointerdown', (e) => { if (this.big && e.target !== this.cv) this.open(false); }, true);
   }
 
-  show(on: boolean) { this.cv.classList.toggle('show', on); if (!on) this.last = -1; }
+  private big = false;
+  open(on: boolean) { this.big = on; this.cv.classList.toggle('big', on); this.last = -1; }
+  show(on: boolean) { this.cv.classList.toggle('show', on); if (!on) { this.last = -1; this.open(false); } }
 
   private moodColor(turns: Turn[]) {
     let m = this.moods.get(turns);
@@ -108,6 +117,19 @@ export class Minimap {
       g.beginPath(); g.arc(q.x, q.z, r, 0, Math.PI * 2);
       g.fillStyle = color; g.globalAlpha = talking ? 0.95 : 0.55; g.fill(); g.globalAlpha = 1;
       if (o.focus === sp) { g.lineWidth = 1.6; g.strokeStyle = 'rgba(255,255,255,0.95)'; g.stroke(); }
+    }
+    // opened big: the busiest tables say what they are (a few words, so it stays a map)
+    if (this.big) {
+      g.font = '600 11px system-ui, -apple-system, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'top';
+      const named = spots.filter((x) => !x.bar).sort((a, b) => b.table.turns.length - a.table.turns.length).slice(0, 7);
+      for (const sp of named) {
+        this.toMap(sp.pos.x, sp.pos.z, q);
+        const words = (sp.table.gist ?? sp.table.turns[0]?.by ?? '').split(/\s+/).slice(0, 3).join(' ').replace(/[,.;:]$/, '');
+        const text = words.length > 22 ? words.slice(0, 21) + '…' : words;
+        const r = Math.max(3, sp.radius * k);
+        g.lineWidth = 3; g.strokeStyle = 'rgba(8,8,12,0.85)'; g.strokeText(text, q.x, q.z + r + 3);
+        g.fillStyle = 'rgba(255,244,232,0.92)'; g.fillText(text, q.x, q.z + r + 3);
+      }
     }
     // you: a soft cone of what you see, and an arrow (always pointing up: the map turns, not you)
     this.toMap(you.x, you.z, q);

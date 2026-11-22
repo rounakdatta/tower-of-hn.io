@@ -88,7 +88,7 @@ scene.add(interior.group, crowd.group);
 const ui = new UI();
 ui.bind(camera);
 const audio = new AudioEngine();
-audio.virtual = recording;
+audio.virtual = recording && !params.has('realaudio');   // ?realaudio: stepped frames, a real audio clock (to check the mix)
 const sync = new LiveSync(DATA);
 const rig = new Rig(camera);
 const director = new Director(sync, audio, crowd, rig, ui);
@@ -117,7 +117,10 @@ walk.obstacles = () => {
   return obstacleList;
 };
 walk.route = (a, b) => room.route(a, b);
-walk.onMove = () => { if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); if (!walk.locked) ui.hint(''); } };
+walk.onMove = () => {
+  if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); if (!walk.locked) ui.hint(''); }
+  if (touch && !localStorage.getItem('tohn-stick')) { localStorage.setItem('tohn-stick', '1'); walk.ghost(false); }
+};
 walk.onUse = () => { const t = nearTable(); if (t) sit(t, true); };
 // a click on someone or a table acts at once; a click on open floor takes the mouse (first person)
 walk.capturable = (x, y) => !aimAt(x, y).kind;
@@ -324,6 +327,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
       ui.showLabels(true); map.show(true);
       chose = ui.chosen = false;
       ui.hint(walkHint || !touch ? (touch ? HINT_TOUCH : HINT_DESK) : '');
+      if (touch && !localStorage.getItem('tohn-stick')) walk.ghost(true);
       if (leanBack || deepLinked) after(deepLinked ? 1.2 : 2.4, () => { if (mode === 'floor' && !chose) sit(bestSpot()); deepLinked = false; });
     });
   audio.sfx('whoosh');
@@ -394,6 +398,7 @@ function sit(s: TableSpot | undefined, push = false) {
   const from = s.bar ? 0 : mixer.take(s);
   mixer.exclude = s;
   if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.disable(); }
+  walk.ghost(false);
   ui.aim('');
   ui.sitDown(null);
   mode = 'table'; ui.mode('table'); audio.setMode('table'); audio.sfx('sit'); ui.showLabels(false); map.show(false); awake();
@@ -458,7 +463,7 @@ function leaveFloor() {
   if (activeStory >= 0) sync.unwatch(activeStory);
   activeStory = -1; activeFloor = null;
   mode = 'tower'; ui.mode('tower'); audio.setMode('tower'); awake();
-  walk.disable(); ui.aim('');
+  walk.disable(); walk.ghost(false); ui.aim('');
   ui.floorHeader(null); ui.clearLabels(); map.show(false); ui.hint(''); ui.sitDown(null); ui.profile(null);
   subLine = null; ui.subtitle(null);
   const r = Math.max(0, sync.head?.tower.indexOf(left) ?? cam.rank);
@@ -768,6 +773,15 @@ if (params.has('probe')) (window as any).__probe = async (url: string) => {
   for (const x of b.getChannelData(0)) peak = Math.max(peak, Math.abs(x));
   return { seconds: b.duration, rate: b.sampleRate, channels: b.numberOfChannels, peak };
 };
+// ?debug: a few handles on the live page (real audio, real time), for checking the room's mix
+if (params.has('debug')) (window as any).__dbg = {
+  enter: (rank: number) => enterFloor(sync.head!.tower[rank]),
+  mix: () => ({ focus: mixer.focus ? spots.filter((x) => !x.bar).indexOf(mixer.focus) : -1, levels: mixer.levels(), mode, ctx: audio.ctx?.state }),
+  tables: () => spots.filter((sp) => !sp.bar).map((sp, k) => ({ k, x: sp.pos.x, z: sp.pos.z })),
+  walkTo: (x: number, z: number) => walk.goTo(new THREE.Vector3(x, 0, z)),
+  lookAt: (x: number, z: number) => { walk.yaw = Math.atan2(x - walk.pos.x, z - walk.pos.z); },
+  sit: () => sit(bestSpot()),
+};
 if (recording) {
   (window as any).__tohn = {
     frame: (dt: number, draw = true) => frame(dt, draw),
@@ -780,7 +794,8 @@ if (recording) {
     callOver: (name: string, k: number) => room.callOver(name, spots.filter((sp) => !sp.bar)[k], audio.now()),
     tables: () => spots.filter((sp) => !sp.bar).map((sp, k) => ({ k, x: +sp.pos.x.toFixed(2), z: +sp.pos.z.toFixed(2), people: sp.seats.map((st) => st.name) })),
     lookAt: (x: number, z: number) => { walk.yaw = Math.atan2(x - walk.pos.x, z - walk.pos.z); },
-    where: () => ({ x: +walk.pos.x.toFixed(2), z: +walk.pos.z.toFixed(2), yaw: +walk.yaw.toFixed(2), walking: walk.walking }),
+    ensureAudio: () => audio.ensure(),
+    where: () => ({ x: +walk.pos.x.toFixed(2), z: +walk.pos.z.toFixed(2), yaw: +walk.yaw.toFixed(2), walking: walk.walking, locked: walk.locked, aim: document.getElementById('aim')?.textContent ?? '' }),
     towerDebug: () => ({ roomY, doorSlot, hidden: tower.hidden, cam: camera.position.toArray().map((v) => +v.toFixed(2)),
       slots: tower.slots.map((sl, i) => ({ i, sid: sl.sid, rank: sync.head?.tower.indexOf(sl.sid ?? -1), y: +sl.y.toFixed(2), label: (tower as unknown as { drawn: string[] }).drawn[i] })).filter((x) => x.rank !== undefined && x.rank >= 0 && x.rank < 5) }),
     standUp: () => standUp(),
@@ -791,7 +806,7 @@ if (recording) {
     /** who is acting right now (anyone the crowd is animating), and how far: stand, arms, lean, mouth */
     acting: () => [...crowd.active].map((i) => { const p = crowd.people[i], e = p?.expr; return e ? { name: p.name, stand: +e.stand.toFixed(2), armR: +e.armR.toFixed(2), armL: +e.armL.toFixed(2), lean: +e.lean.toFixed(2), open: +e.open.toFixed(2), smile: +e.smile.toFixed(2), flush: +e.flush.toFixed(2) } : null; }).filter(Boolean),
     /** the table you're with (heard clearly), and what each nearby table is saying */
-    mix: () => ({ focus: mixer.focus ? spots.filter((x) => !x.bar).indexOf(mixer.focus) : -1, speaking: spots.filter((x) => !x.bar).map((sp, k) => { const l = mixer.speaking(sp); return l ? { k, by: l.turn.by, who: l.who, emotion: l.side.emotion } : null; }).filter(Boolean) }),
+    mix: () => ({ levels: mixer.levels(), focus: mixer.focus ? spots.filter((x) => !x.bar).indexOf(mixer.focus) : -1, speaking: spots.filter((x) => !x.bar).map((sp, k) => { const l = mixer.speaking(sp); return l ? { k, by: l.turn.by, who: l.who, emotion: l.side.emotion } : null; }).filter(Boolean) }),
     /** debug: hold a face (any Expr fields) on someone, for the face sheet */
     face: (name: string, e: Record<string, number>) => { const i = crowd.index(name); if (i < 0) return false; crowd.active.add(i); Object.assign(crowd.target(i)!, e); return true; },
     clock: () => clock,
