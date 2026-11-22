@@ -57,8 +57,10 @@ export class Mixer {
   focus: TableSpot | null = null;
   private focused: Player | null = null;
   /** a table brought to your ears for a while, wherever you are on the floor (someone just answered you there) */
-  private light: { p: Player; until: number } | null = null;
-  spotlight(spot: TableSpot, secs: number) { const p = this.bySpot.get(spot); if (p) this.light = { p, until: this.audio.now() + secs }; }
+  private light: { p: Player; turn: number; until: number } | null = null;
+  /** someone answered you at this table (comment `turn`): it's the table you hear until that reply has been said
+   *  (waiting up to a minute for its voice) */
+  spotlight(spot: TableSpot, turn: number) { const p = this.bySpot.get(spot); if (p) this.light = { p, turn, until: this.audio.now() + 60 }; }
   private asked = new Map<string, number>();
   private tmp = new THREE.Vector3();
 
@@ -83,7 +85,7 @@ export class Mixer {
       p.perf.reset();
       if (p.bus) { p.bus.gain.disconnect(); p.bus.lp.disconnect(); }
     }
-    this.players = []; this.bySpot.clear(); this.focused = null; this.focus = null;
+    this.players = []; this.bySpot.clear(); this.focused = null; this.focus = null; this.light = null;
   }
 
   /** Where a table had got to: the director hands back the table we stood up from (what it had said there). */
@@ -233,7 +235,10 @@ export class Mixer {
     const turn = going ?? (p.breaking.length ? turns.find((u) => u.id === p.breaking[0]) : undefined) ?? turns.find((u) => !p.played.has(u.id));
     if (!turn) {                                         // the whole thread said: a pause, then round again
       // (its plans go too: a plan keeps the earliest start it has seen, so a second lap would act everything late)
-      if (turns.length) { p.played.clear(); p.perf.plans.clear(); p.done = 0; p.stage = ''; p.cursor = Math.max(p.cursor, now) + 6; }
+      if (turns.length) {
+        p.played.clear(); p.done = 0; p.stage = ''; p.cursor = Math.max(p.cursor, now) + 6;
+        for (const id of p.perf.plans.keys()) if (!p.sched.some((s) => s.turn.id === id)) p.perf.plans.delete(id);
+      }
       return;
     }
     // the table you're with asks for its voices (or, while you wander, the nearest)
@@ -283,6 +288,7 @@ export class Mixer {
       t += c.d + 0.06;
     });
     if (i >= 0) this.room.speaking(i, t);
+    if (lit && this.light?.turn === turn.id) this.light.until = t + 2;   // the reply is said now: hold until it's done
     // someone at the table you're with getting to their feet: the chair scrapes back, palms on the table
     const first = p.sched.find((s) => s.turn.id === turn.id && s.clip === r.side.clips[0]);
     if (focus && first && !p.done && i >= 0) {

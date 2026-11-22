@@ -20,11 +20,10 @@ const SR = (window as unknown as { SpeechRecognition?: new () => Rec; webkitSpee
   ?? (window as unknown as { webkitSpeechRecognition?: new () => Rec }).webkitSpeechRecognition;
 const HN = 'https://hacker-news.firebaseio.com/v0';
 
-/** HN's HTML (paragraphs, links, entities) as plain text */
+/** HN's HTML (paragraphs, links, entities) as plain text: parsed in an inert document (nothing in it can run) */
 function plain(html: string) {
-  const d = document.createElement('div');
-  d.innerHTML = html.replace(/<p>/gi, '\n\n');
-  return (d.textContent ?? '').replace(/\n{3,}/g, '\n\n').trim();
+  const doc = new DOMParser().parseFromString(html.replace(/<p>/gi, '\n\n'), 'text/html');
+  return (doc.body.textContent ?? '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 export class Reply {
@@ -51,7 +50,7 @@ export class Reply {
     addEventListener('message', (e) => {
       if (e.source !== window || !e.data || typeof e.data !== 'object') return;
       if (e.data.tohn === 'here') { this.ext = true; if (!this.me && typeof e.data.user === 'string' && e.data.user) this.setMe(e.data.user); }
-      if (e.data.tohn === 'posted' && this.target) this.posted(!!e.data.ok, String(e.data.error ?? ''));
+      if (e.data.tohn === 'posted' && this.target && e.data.parent === this.target.id) this.posted(!!e.data.ok, String(e.data.error ?? ''));
     });
     window.postMessage({ tohn: 'hello' }, location.origin);
   }
@@ -169,21 +168,30 @@ export class Reply {
     if (this.ext) {
       this.state('Posting…');
       (this.el.querySelector('.post') as HTMLButtonElement).disabled = true;
-      window.postMessage({ tohn: 'post', parent: t.id, story: t.story, text }, location.origin);
+      window.postMessage({ tohn: 'post', parent: t.id, story: t.story, text }, location.origin);   // answered with its parent
       return;
     }
     // the hand-off: copy, then open HN's own reply form for that comment (a new tab, from this tap)
     const url = `https://news.ycombinator.com/reply?id=${t.id}&goto=${encodeURIComponent(`item?id=${t.story}#${t.id}`)}`;
-    const done = () => this.handed(url);
-    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, done); else done();
+    const copy = () => navigator.clipboard?.writeText ? navigator.clipboard.writeText(text).then(() => true, () => false) : Promise.resolve(false);
+    copy().then((ok) => this.handed(url, text, ok));
     window.open(url, '_blank', 'noopener');
   }
-  private handed(url: string) {
+  /** Over to HN: the words stay here (a copy can fail, or be overwritten by logging in), with a way to copy again. */
+  private handed(url: string, text: string, copied: boolean) {
     this.el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>
       <div class="to">Over to Hacker News</div>
-      <p class="their">Your reply is copied. On the page that just opened, paste it into the box and press <b>reply</b>.</p>
+      <p class="their">${copied ? 'Your reply is copied.' : 'Copy your reply (below).'} On the page that just opened, paste it into the box and press <b>reply</b>.</p>
+      <textarea rows="4" readonly>${esc(text)}</textarea>
+      <button class="post copy" type="button">Copy it again</button>
       <p class="how">${this.me ? `When it’s up, you’ll hear it here, and you’ll hear anyone who answers you.` : `Add your HN name next time and you’ll hear anyone who answers you.`} <a href="${url}" target="_blank" rel="noopener">Open it again ↗</a></p>`;
     (this.el.querySelector('.x') as HTMLElement).onclick = () => this.close();
+    const btn = this.el.querySelector('.copy') as HTMLButtonElement, ta = this.el.querySelector('textarea') as HTMLTextAreaElement;
+    btn.onclick = () => {
+      const done = (ok: boolean) => { btn.textContent = ok ? 'Copied' : 'Select the text and copy it'; };
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => done(true), () => { ta.select(); done(false); });
+      else { ta.select(); done(document.execCommand?.('copy') ?? false); }
+    };
   }
   private posted(ok: boolean, error: string) {
     if (!ok) { this.state(error || 'Hacker News didn’t take it: try again, or post it there'); (this.el.querySelector('.post') as HTMLButtonElement).disabled = false; return; }
@@ -211,11 +219,13 @@ export class Replies {
   private timer = 0;
   onReply: (r: { id: number; by: string; parent: number; story?: number }) => void = () => {};
 
+  private name = '';
   start(me: () => string) {
     clearInterval(this.timer);
     const tick = async () => {
       const name = me();
       if (!name || document.hidden) return;
+      if (name !== this.name) { this.name = name; this.seen.clear(); this.primed = false; }
       try {
         const u = await (await fetch(`${HN}/user/${encodeURIComponent(name)}.json`)).json() as { submitted?: number[] } | null;
         const mine = (u?.submitted ?? []).slice(0, 25);

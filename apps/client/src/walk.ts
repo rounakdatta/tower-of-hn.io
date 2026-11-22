@@ -83,7 +83,7 @@ export class WalkCam {
       this.goTo(new THREE.Vector3(this.pos.x + Math.sin(this.yaw) * step, 0, this.pos.z + Math.cos(this.yaw) * step), undefined, false);
     }, { passive: false });
     addEventListener('keydown', (e) => {
-      if (!this.enabled || e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement)?.closest?.('input, textarea, [contenteditable]')) return;
+      if (!this.enabled || e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement)?.closest?.('input, textarea, [contenteditable], #reply')) return;
       const k = e.key.toLowerCase();
       this.hurry = e.shiftKey;
       if (k === 'e' || k === 'enter') { this.onUse(); return; }

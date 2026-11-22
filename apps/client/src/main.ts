@@ -143,7 +143,12 @@ reply.onOpen = (on) => {
   document.body.classList.toggle('reply-open', on);
   // seated: the table waits while you answer (you won't miss a word), and goes on when you're done
   if (on && mode === 'table' && !director.paused) { director.togglePause(); pausedForReply = true; syncPause(); }
-  if (!on && pausedForReply) { pausedForReply = false; if (director.paused) { director.togglePause(); syncPause(); } }
+  if (!on && pausedForReply) {
+    pausedForReply = false;
+    if (director.paused) director.togglePause();
+    else if (audio.ctx?.state === 'suspended') audio.ctx.resume().catch(() => {});
+    syncPause();
+  }
   if (on) { walk.release(); ui.profile(null); }
 };
 function syncPause() { const b = document.getElementById('pause'); if (b) b.textContent = director.paused ? 'Play' : 'Pause'; }
@@ -176,8 +181,8 @@ document.getElementById('answer')?.addEventListener('click', (e) => { e.stopProp
 const heard = new Set<number>();
 replies.onReply = (r) => {
   if (heard.has(r.id)) return;
+  if (spots.some((s) => !s.bar && s.table.turns.some((u) => u.id === r.parent))) return;   // it'll walk in here (the floor announces it)
   heard.add(r.id);
-  if (activeFloor?.tables.some((t) => t.turns.some((u) => u.id === r.parent))) return;   // it'll walk in here
   ui.toast(`<b>${esc(r.by)}</b> replied to you on Hacker News`, () => window.open(`https://news.ycombinator.com/item?id=${r.id}`, '_blank', 'noopener'));
 };
 replies.start(() => reply.me);
@@ -417,7 +422,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
           if (me && parent?.by === me && !heard.has(u.id)) {
             // someone answered you: said next at its table, and brought to your ears wherever you are on the floor
             heard.add(u.id);
-            mixer.spotlight(sp, 40);
+            mixer.spotlight(sp, u.id);
             ui.toast(`<b>${esc(u.by)}</b> replied to you`, () => walkToTable(sp));
             continue;
           }
@@ -434,14 +439,16 @@ async function enterFloor(sid: number, push = false, listen = false) {
 
 /** New comments on this floor, in a note: one at a time is news; a hot thread's flood is one note every 45 seconds
  *  ("X and 3 others just commented"), never a stack of them. */
-let newsAt = 0, newsQ: string[] = [];
+let newsAt = 0, newsQ: string[] = [], newsDue = false, newsFloor = -1;
 function news(by: string) {
+  if (newsFloor !== activeStory) { newsQ = []; newsFloor = activeStory; }
   newsQ.push(by);
-  if (clock < newsAt) return;
-  newsAt = clock + 45;
-  after(0.8, () => {
+  if (newsDue) return;
+  newsDue = true;
+  after(Math.max(0.8, newsAt - clock), () => {
+    newsDue = false; newsAt = clock + 45;
     const q = [...new Set(newsQ)]; newsQ = [];
-    if (!q.length || mode === 'tower') return;
+    if (!q.length || mode === 'tower' || newsFloor !== activeStory) return;
     ui.toast(q.length === 1 ? `<b>${esc(q[0])}</b> just commented on Hacker News` : `<b>${esc(q[0])}</b> and ${q.length - 1} other${q.length > 2 ? 's' : ''} just commented`);
   });
 }
@@ -589,7 +596,7 @@ document.getElementById('next')!.onclick = () => nextTable();
 document.getElementById('pause')!.onclick = (e) => { director.togglePause(); (e.target as HTMLElement).textContent = director.paused ? 'Play' : 'Pause'; };
 addEventListener('keydown', (e) => {
   // (an Esc that gave the mouse back is only that: it doesn't also leave the floor)
-  if (e.key === 'Escape' && reply.open) { reply.close(); return; }
+  if (reply.open) { if (e.key === 'Escape') reply.close(); return; }      // typing a reply never drives the room
   if (e.key === 'Escape') { if (walk.locked || performance.now() - walk.unlockedAt < 500) return; if (mode === 'table') stepOut(1); else if (mode === 'floor') { leanBack = false; stepOut(1); } }
   else if (e.key === ' ' && mode === 'table') { e.preventDefault(); director.togglePause(); }
   else if ((e.key === 'n' || e.key === 'N') && mode === 'table') nextTable();
@@ -942,7 +949,7 @@ if (recording) {
     replyTo: (name: string) => replyTo(name),
     setMe: (name: string) => reply.setMe(name),
     /** a reply to you landing at the k-th table: brought to your ears wherever you stand */
-    spotlight: (k: number) => mixer.spotlight(spots.filter((sp) => !sp.bar)[k], 40),
+    spotlight: (k: number) => { const sp = spots.filter((x) => !x.bar)[k]; const u = sp?.table.turns.find((x) => !x.v) ?? sp?.table.turns[0]; if (sp && u) mixer.spotlight(sp, u.id); },
     where: () => ({ x: +walk.pos.x.toFixed(2), z: +walk.pos.z.toFixed(2), yaw: +walk.yaw.toFixed(2), walking: walk.walking, locked: walk.locked, aim: document.getElementById('aim')?.textContent ?? '' }),
     towerDebug: () => ({ roomY, doorSlot, hidden: tower.hidden, cam: camera.position.toArray().map((v) => +v.toFixed(2)),
       slots: tower.slots.map((sl, i) => ({ i, sid: sl.sid, rank: sync.head?.tower.indexOf(sl.sid ?? -1), y: +sl.y.toFixed(2), label: (tower as unknown as { drawn: string[] }).drawn[i] })).filter((x) => x.rank !== undefined && x.rank >= 0 && x.rank < 5) }),

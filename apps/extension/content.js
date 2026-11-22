@@ -8,6 +8,6 @@ window.addEventListener('message', (e) => {
     const { parent, story, text } = e.data;
     if (!Number.isInteger(parent) || !Number.isInteger(story) || typeof text !== 'string' || !text.trim() || text.length > 8000) return;
     chrome.runtime.sendMessage({ kind: 'post', parent, story, text, from: location.origin }, (r) =>
-      window.postMessage({ tohn: 'posted', ok: !!r?.ok, error: r?.error ?? '' }, location.origin));
+      window.postMessage({ tohn: 'posted', parent, ok: !!r?.ok, error: r?.error ?? '' }, location.origin));
   }
 });

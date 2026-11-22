@@ -80,9 +80,13 @@ function ask(id: number, prio: number, upto = 0, client = '') {
   d.at = now;
   if (client) d.who.set(client, now);
 }
-/** How many listeners are waiting on it lowers its number (sooner): eight places a listener, up to thirty. With a
- *  hundred people on a few floors, the worker's seconds go where most ears are. */
-const crowdPrio = (d: { prio: number; who: Map<string, number> }) => d.prio - Math.min(30, 8 * Math.max(0, d.who.size - 1));
+/** How many listeners are waiting on it lowers its number (sooner): eight places a listener, up to thirty, never out
+ *  of its band (the worker reads urgency from the band; job files sort by it). A seated table's numbers are its turn
+ *  order, so they're left alone. With a hundred people on a few floors, the worker's seconds go where most ears are. */
+const crowdPrio = (d: { prio: number; who: Map<string, number> }) => {
+  if (d.prio < 100 || d.prio >= 1000) return d.prio;
+  return Math.max(d.prio < 200 ? 100 : 200, d.prio - Math.min(30, 8 * Math.max(0, d.who.size - 1)));
+};
 /** listener-driven voicing still waiting (head.load): clients stop waiting on unvoiced lines when it runs long */
 let backlog = 0;
 const queued = new Map<number, string>();            // comment id -> job file name

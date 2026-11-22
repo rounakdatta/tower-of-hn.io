@@ -99,6 +99,8 @@ export class Director {
   start(floor: Floor, spot: TableSpot, roomY: number, now: number, from = 0) {
     this.stop();
     this.floor = floor; this.spot = spot; this.roomY = roomY;
+    // a table starts unpaused: if a pause had suspended the sound (Space, then N), it comes back with it
+    if (this.paused && this.audio.ctx?.state === 'suspended') this.audio.ctx.resume().catch(() => {});
     this.turnIdx = Math.max(0, Math.min(from, spot.table.turns.length)); this.playing = true; this.paused = false; this.clipsDone = 0; this.waitSince = 0; this.callingSince = 0; this.breaking = [];
     this.perf?.reset();
     this.perf = new Performer(this.crowd, spot, (n) => this.ix(n), (c, k) => this.pushChair(c, k));
