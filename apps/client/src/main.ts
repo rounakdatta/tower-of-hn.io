@@ -941,6 +941,8 @@ if (recording) {
     replyHere: () => replyHere(),
     replyTo: (name: string) => replyTo(name),
     setMe: (name: string) => reply.setMe(name),
+    /** a reply to you landing at the k-th table: brought to your ears wherever you stand */
+    spotlight: (k: number) => mixer.spotlight(spots.filter((sp) => !sp.bar)[k], 40),
     where: () => ({ x: +walk.pos.x.toFixed(2), z: +walk.pos.z.toFixed(2), yaw: +walk.yaw.toFixed(2), walking: walk.walking, locked: walk.locked, aim: document.getElementById('aim')?.textContent ?? '' }),
     towerDebug: () => ({ roomY, doorSlot, hidden: tower.hidden, cam: camera.position.toArray().map((v) => +v.toFixed(2)),
       slots: tower.slots.map((sl, i) => ({ i, sid: sl.sid, rank: sync.head?.tower.indexOf(sl.sid ?? -1), y: +sl.y.toFixed(2), label: (tower as unknown as { drawn: string[] }).drawn[i] })).filter((x) => x.rank !== undefined && x.rank >= 0 && x.rank < 5) }),

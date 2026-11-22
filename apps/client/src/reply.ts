@@ -50,7 +50,7 @@ export class Reply {
     // a companion extension says hello through the page (its content script listens on our origin)
     addEventListener('message', (e) => {
       if (e.source !== window || !e.data || typeof e.data !== 'object') return;
-      if (e.data.tohn === 'here') this.ext = true;
+      if (e.data.tohn === 'here') { this.ext = true; if (!this.me && typeof e.data.user === 'string' && e.data.user) this.setMe(e.data.user); }
       if (e.data.tohn === 'posted' && this.target) this.posted(!!e.data.ok, String(e.data.error ?? ''));
     });
     window.postMessage({ tohn: 'hello' }, location.origin);

@@ -253,9 +253,11 @@ const TYPES: Record<string, string> = {
   '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.txt': 'text/plain; charset=utf-8', '.woff2': 'font/woff2',
   '.webmanifest': 'application/manifest+json',
 };
-// The page loads nothing from anywhere else; comments are text, and links in them are plain http(s) anchors.
+// The page loads nothing from anywhere else; comments are text, and links in them are plain http(s) anchors. It reads
+// one other place: HN's own public API, for the words of a comment you're answering and for replies to you (straight
+// from your browser: nothing of yours passes through us).
 const CSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
-  "media-src 'self' blob:; connect-src 'self'; font-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'none'";
+  "media-src 'self' blob:; connect-src 'self' https://hacker-news.firebaseio.com; font-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'none'";
 // POST /want only ever queues voicing of real comments on the current front page, but bound it anyway:
 // per client (a seated listener renews about once every 30 s per table) and overall.
 type Bucket = { n: number; at: number };
