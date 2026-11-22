@@ -135,7 +135,7 @@ export class UI {
    * one-line summary of what they talk about with a few interests (written by AI from their public comments, and
    * labelled so), their own bio, and what they've said on this floor. `refresh`: the summary arrived for an open card.
    */
-  profile(p: { name: string; said: number; tables: number; go?: () => void; data: null | { karma?: number; created?: number; about?: string; brief?: string; interests?: string[]; role?: string } } | null, refresh = false) {
+  profile(p: { name: string; said: number; tables: number; go?: () => void; reply?: () => void; data: null | { karma?: number; created?: number; about?: string; brief?: string; interests?: string[]; role?: string } } | null, refresh = false) {
     const el = $('profile');
     if (!p) { el.classList.remove('show'); el.dataset.name = ''; document.body.classList.remove('card-open'); return; }
     if (refresh && el.dataset.name !== p.name) return;          // they closed it, or opened someone else's
@@ -152,7 +152,9 @@ export class UI {
     el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>
       <div class="who">${avatar(p.name)}<div><h2>${esc(p.name)}</h2>${d?.role ? `<div class="role">${esc(d.role)}</div>` : ''}<div class="meta">${esc(meta)}</div></div></div>
       ${brief}${about}
-      <div class="foot">${p.go ? `<button class="hear" type="button">Hear them at their table →</button>` : `<span class="here">${esc(here)}</span>`}<a href="https://news.ycombinator.com/user?id=${encodeURIComponent(p.name)}" target="_blank" rel="noopener">On Hacker News ↗</a></div>`;
+      <div class="foot">${p.go ? `<button class="hear" type="button">Hear them at their table →</button>` : `<span class="here">${esc(here)}</span>`}${p.reply ? `<button class="answer" type="button">Reply</button>` : ''}<a href="https://news.ycombinator.com/user?id=${encodeURIComponent(p.name)}" target="_blank" rel="noopener">On Hacker News ↗</a></div>`;
+    const answer = el.querySelector('.answer') as HTMLElement | null;
+    if (answer && p.reply) { const r = p.reply; answer.onclick = (e) => { e.stopPropagation(); this.profile(null); r(); }; }
     const hear = el.querySelector('.hear') as HTMLElement | null;
     if (hear && p.go) { const go = p.go; hear.onclick = (e) => { e.stopPropagation(); this.profile(null); go(); }; }
     (el.querySelector('.x') as HTMLElement).onclick = () => this.profile(null);

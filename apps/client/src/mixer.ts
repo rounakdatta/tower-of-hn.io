@@ -56,6 +56,9 @@ export class Mixer {
   /** the table you're with (nearest, or the one you're facing): it's heard clearly */
   focus: TableSpot | null = null;
   private focused: Player | null = null;
+  /** a table brought to your ears for a while, wherever you are on the floor (someone just answered you there) */
+  private light: { p: Player; until: number } | null = null;
+  spotlight(spot: TableSpot, secs: number) { const p = this.bySpot.get(spot); if (p) this.light = { p, until: this.audio.now() + secs }; }
   private asked = new Map<string, number>();
   private tmp = new THREE.Vector3();
 
@@ -141,7 +144,9 @@ export class Mixer {
     const on = this.on;
     on.clear();
     for (let k = 0; k < ranked.length && k < MAX_ON && ranked[k].d < HEAR; k++) on.set(ranked[k].p, k);
-    const focus = this.exclude ? null : this.pick(ranked, listener, forward);
+    const lit = this.light && this.light.until > now && this.light.p.spot !== this.exclude ? this.light.p : null;
+    if (lit && !on.has(lit)) on.set(lit, 0);              // in earshot, however far
+    const focus = this.exclude ? null : lit ?? this.pick(ranked, listener, forward);
     this.focus = focus?.spot ?? null;
     for (const p of this.players) {
       if (p.spot === this.exclude) continue;              // the director's table: its people are the director's
@@ -161,7 +166,7 @@ export class Mixer {
         continue;
       }
       p.resting = false; p.calmUntil = 0;
-      this.feed(p, now, k, p === focus, !focus);
+      this.feed(p, now, k, p === focus, !focus, p === lit);
       const cur = p.sched.find((s) => s.start <= now && s.end > now) ?? null;
       p.perf.animate(p.sched, cur, now, dt, { upcoming: this.upcoming(p) });
       p.perf.chairs();
@@ -218,7 +223,7 @@ export class Mixer {
   }
 
   /** Keep a table's next words scheduled: fetch them, bring their speaker over, then line them up. */
-  private feed(p: Player, now: number, rank: number, focus: boolean, wandering: boolean) {
+  private feed(p: Player, now: number, rank: number, focus: boolean, wandering: boolean, lit = false) {
     if (p.cursor - now > LEAD) return;
     const turns = p.spot.table.turns;
     p.breaking = p.breaking.filter((id) => !p.played.has(id) && turns.some((u) => u.id === id));
@@ -272,7 +277,8 @@ export class Mixer {
       const q = c.who !== turn.by ? this.room.who(c.who) : -1;
       const who = q >= 0 && this.room.tableOf(q) === p.spot ? q : i;
       const pos = who >= 0 ? this.crowd.headPos(who, this.tmp) : this.tmp.set(p.spot.pos.x, this.crowd.group.position.y + 1.2, p.spot.pos.z);
-      const src = this.audio.voice(r.bufs[k], t, pos, this.sync.url(c.u), gain, { hrtf: focus || rank < 2, ref: 1.1, rolloff: 1.35, bus: p.bus });
+      // (a table brought to your ears carries across the room)
+      const src = this.audio.voice(r.bufs[k], t, pos, this.sync.url(c.u), gain, { hrtf: focus || rank < 2, ref: lit ? 4 : 1.1, rolloff: 1.35, bus: p.bus });
       p.sched.push({ clip: c, side: r.side, turn, start: t, end: t + c.d, who, src });
       t += c.d + 0.06;
     });

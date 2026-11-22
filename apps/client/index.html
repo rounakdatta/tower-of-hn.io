@@ -197,6 +197,33 @@
              border:1px solid var(--line); backdrop-filter:blur(18px) saturate(1.2); -webkit-backdrop-filter:blur(18px) saturate(1.2); box-shadow:0 18px 60px rgba(0,0,0,.5);
              opacity:0; transform:translateY(16px); pointer-events:none; transition:opacity .3s, transform .3s; max-height:min(70vh, 560px); overflow:auto }
   #profile.show { opacity:1; transform:none; pointer-events:auto }
+  /* replying, by voice: the same glass as a card; a big microphone that breathes while it listens */
+  #reply { position:fixed; left:12px; right:12px; bottom:calc(12px + env(safe-area-inset-bottom)); z-index:7; padding:18px 18px 14px; border-radius:18px; background:rgba(14,16,24,.9);
+           border:1px solid var(--line); backdrop-filter:blur(18px) saturate(1.2); -webkit-backdrop-filter:blur(18px) saturate(1.2); box-shadow:0 18px 60px rgba(0,0,0,.55);
+           opacity:0; transform:translateY(16px); pointer-events:none; transition:opacity .3s, transform .3s; max-height:min(80vh, 640px); overflow:auto; text-align:center }
+  #reply.show { opacity:1; transform:none; pointer-events:auto }
+  #reply .x { position:absolute; right:10px; top:8px; width:36px; height:36px; border:0; border-radius:50%; background:rgba(255,255,255,.07); color:var(--mute); font-size:20px; cursor:pointer }
+  #reply .to { font-size:15px; color:var(--mute); padding:0 40px } #reply .to b { color:var(--ink) }
+  #reply .their { margin:8px 4px 14px; color:#d9cfc4; font-size:14px; line-height:1.45; text-align:left; max-height:6.2em; overflow:hidden }
+  #reply .mic { position:relative; width:72px; height:72px; border-radius:50%; border:0; margin:2px auto 6px; display:grid; place-items:center; cursor:pointer;
+                background:var(--hn); color:#fff; box-shadow:0 10px 30px rgba(255,106,26,.35) }
+  #reply .mic svg { width:30px; height:30px; position:relative }
+  #reply .mic .ring { position:absolute; inset:-8px; border-radius:50%; border:2px solid rgba(255,106,26,.55); opacity:0 }
+  #reply.listening .mic { background:#ff4d3a } #reply.listening .mic .ring { animation:listen 1.3s ease-out infinite }
+  @keyframes listen { 0% { transform:scale(.9); opacity:.9 } 100% { transform:scale(1.35); opacity:0 } }
+  #reply .state { font-size:12.5px; color:var(--mute); margin-bottom:10px; min-height:1.2em }
+  #reply textarea { width:100%; box-sizing:border-box; background:rgba(255,255,255,.06); color:var(--ink); border:1px solid var(--line); border-radius:12px;
+                    padding:10px 12px; font:inherit; font-size:15px; line-height:1.45; resize:vertical; min-height:92px; text-align:left }
+  #reply textarea:focus { outline:none; border-color:rgba(255,106,26,.6) }
+  #reply .me { margin:8px 0 2px; font-size:12px; color:var(--mute); text-align:left }
+  #reply .me input { margin-left:6px; width:min(240px, 60%); background:transparent; border:0; border-bottom:1px solid var(--line); color:var(--ink); font:inherit; font-size:13px; padding:3px 2px }
+  #reply .post { width:100%; margin-top:12px; padding:13px 16px; border:0; border-radius:999px; background:var(--ink); color:#15110d; font-weight:750; font-size:15px; cursor:pointer }
+  #reply .post:disabled { opacity:.35; cursor:default }
+  #reply .how { margin:10px 2px 0; font-size:11.5px; color:var(--mute); line-height:1.45 } #reply .how a { color:var(--ink) }
+  @media (min-width: 900px) { #reply { left:auto; right:24px; bottom:24px; width:420px } }
+  body.reply-open #sitdown, body.reply-open #hint, body.reply-open #subs, body.reply-open #controls { opacity:0; pointer-events:none }
+  #profile .answer { background:none; border:0; padding:0; font:inherit; font-weight:650; color:var(--ink); cursor:pointer; white-space:nowrap }
+  #profile .answer:hover { text-decoration:underline }
   #profile .x { position:absolute; right:10px; top:8px; width:36px; height:36px; border:0; border-radius:50%; background:rgba(255,255,255,.07); color:var(--mute); font-size:20px; cursor:pointer }
   #profile .who { display:flex; gap:14px; align-items:center; padding-right:36px }
   #profile .ava { width:64px; height:64px; flex:none }
@@ -290,7 +317,7 @@
 <div id="toast"></div>
 <button id="sitdown" class="pill" type="button"></button>
 <div id="profile" role="dialog" aria-label="Commenter"></div>
-<div id="controls"><button class="pill" id="pause">Pause</button><button class="pill" id="next">Next table</button><button class="pill" id="leave">Stand up</button></div>
+<div id="controls"><button class="pill" id="answer" title="Answer whoever is speaking (R)">Reply</button><button class="pill" id="pause">Pause</button><button class="pill" id="next">Next table</button><button class="pill" id="leave">Stand up</button></div>
 <div id="splash" class="show"><div class="inner">
   <h1>Tower<i>Of</i>Han</h1>
   <p>Hacker News, as a living tower. Every floor is a front-page story. Every table is a thread, and the people at it are talking, in their own words, right now.</p>

@@ -13,6 +13,7 @@ import { Mixer } from './mixer.ts';
 import { WalkCam, EYE } from './walk.ts';
 import { Minimap } from './minimap.ts';
 import { MOOD, moodOf, tableMood, rowOf } from './mood.ts';
+import { Reply, Replies, type ReplyTarget } from './reply.ts';
 import { Crowd, setTimeValue } from './people.ts';
 import { Director } from './director.ts';
 import { esc } from './util.ts';
@@ -134,6 +135,53 @@ walk.onLock = (locked) => {
   if (locked) { const at = clock; after(6, () => { if (walk.locked && clock - at >= 5.9) ui.hint(''); }); }
   if (!locked) ui.aim('');
 };
+// ---------------------------------------------------------------- replying, by voice (reply.ts)
+const reply = new Reply(), replies = new Replies();
+let pausedForReply = false;
+reply.onListen = (on) => audio.duck(on);
+reply.onOpen = (on) => {
+  document.body.classList.toggle('reply-open', on);
+  // seated: the table waits while you answer (you won't miss a word), and goes on when you're done
+  if (on && mode === 'table' && !director.paused) { director.togglePause(); pausedForReply = true; syncPause(); }
+  if (!on && pausedForReply) { pausedForReply = false; if (director.paused) { director.togglePause(); syncPause(); } }
+  if (on) { walk.release(); ui.profile(null); }
+};
+function syncPause() { const b = document.getElementById('pause'); if (b) b.textContent = director.paused ? 'Play' : 'Pause'; }
+/** Answer `by`: their comment at the table you're at, else at the nearest table they've spoken at, the latest. */
+function replyTo(by: string, prefer?: number) {
+  if (!activeFloor) return;
+  const at = (mode === 'table' ? director.spot : nearTable()) ?? null;
+  const theirs = (s: TableSpot) => s.table.turns.filter((u) => u.by === by);
+  let id = prefer;
+  if (!id) {
+    const here = at ? theirs(at) : [];
+    const pool = here.length ? here : spots.filter((s) => !s.bar).sort((a, b) => Math.hypot(a.pos.x - walk.pos.x, a.pos.z - walk.pos.z) - Math.hypot(b.pos.x - walk.pos.x, b.pos.z - walk.pos.z)).flatMap(theirs);
+    id = pool.reduce((m, u) => Math.max(m, u.id), 0) || undefined;
+  }
+  if (!id) return;
+  const t: ReplyTarget = { id, by, story: activeFloor.story.id, title: activeFloor.story.title };
+  reply.show(t);
+  const u = spots.flatMap((s) => s.table.turns).find((x) => x.id === id);
+  if (u?.v) sync.sidecar(u.v[0]).then((side) => reply.said(id, side.clips.map((c) => c.t).join(' '))).catch(() => {});
+}
+/** Seated: answer whoever is speaking (or spoke last). */
+function replyHere() {
+  if (mode !== 'table' || !director.spot) return;
+  const line = director.line, turns = director.spot.table.turns, last = turns[Math.max(0, director.turnAt - 1)];
+  const u = line?.turn ?? last;
+  if (u) replyTo(u.by, u.id);
+}
+document.getElementById('answer')?.addEventListener('click', (e) => { e.stopPropagation(); replyHere(); });
+// a reply to you somewhere else on Hacker News: a note (the floor you're on handles its own, below)
+const heard = new Set<number>();
+replies.onReply = (r) => {
+  if (heard.has(r.id)) return;
+  heard.add(r.id);
+  if (activeFloor?.tables.some((t) => t.turns.some((u) => u.id === r.parent))) return;   // it'll walk in here
+  ui.toast(`<b>${esc(r.by)}</b> replied to you on Hacker News`, () => window.open(`https://news.ycombinator.com/item?id=${r.id}`, '_blank', 'noopener'));
+};
+replies.start(() => reply.me);
+
 // the floor at a glance: tap a table there to walk over
 const map = new Minimap();
 map.onPick = (s) => walkToTable(s);
@@ -361,7 +409,20 @@ async function enterFloor(sid: number, push = false, listen = false) {
         // a comment that just landed on Hacker News: its author comes in by the lift (or over from their table)
         // and says it next, as they would in a real room
         const known = new Set(sp.table.turns.map((u) => u.id));
-        for (const u of f.tables[k].turns) if (!known.has(u.id)) { mixer.breaking(sp, u); news(u.by); }
+        for (const u of f.tables[k].turns) {
+          if (known.has(u.id)) continue;
+          mixer.breaking(sp, u);
+          const me = reply.me, parent = u.replyTo !== undefined ? f.tables[k].turns.find((x) => x.id === u.replyTo) : undefined;
+          if (me && u.by === me) { ui.toast(`<b>Your reply</b> is up: you’re walking in to say it`, () => walkToTable(sp)); continue; }
+          if (me && parent?.by === me && !heard.has(u.id)) {
+            // someone answered you: said next at its table, and brought to your ears wherever you are on the floor
+            heard.add(u.id);
+            mixer.spotlight(sp, 40);
+            ui.toast(`<b>${esc(u.by)}</b> replied to you`, () => walkToTable(sp));
+            continue;
+          }
+          news(u.by);
+        }
       }
       sp.table = f.tables[k]; sp.index = k;
     }
@@ -528,10 +589,15 @@ document.getElementById('next')!.onclick = () => nextTable();
 document.getElementById('pause')!.onclick = (e) => { director.togglePause(); (e.target as HTMLElement).textContent = director.paused ? 'Play' : 'Pause'; };
 addEventListener('keydown', (e) => {
   // (an Esc that gave the mouse back is only that: it doesn't also leave the floor)
+  if (e.key === 'Escape' && reply.open) { reply.close(); return; }
   if (e.key === 'Escape') { if (walk.locked || performance.now() - walk.unlockedAt < 500) return; if (mode === 'table') stepOut(1); else if (mode === 'floor') { leanBack = false; stepOut(1); } }
   else if (e.key === ' ' && mode === 'table') { e.preventDefault(); director.togglePause(); }
   else if ((e.key === 'n' || e.key === 'N') && mode === 'table') nextTable();
   else if (e.key === 'm' || e.key === 'M') audio.setMuted(!audio.muted);
+  else if ((e.key === 'r' || e.key === 'R') && !reply.open && !(e.target as HTMLElement)?.closest?.('input, textarea')) {
+    if (mode === 'table') replyHere();
+    else if (mode === 'floor' && walk.locked) { const a = aimAt(innerWidth / 2, innerHeight / 2); if (a.kind === 'person') replyTo(crowd.people[a.i].name); }
+  }
   else if (mode === 'tower' && cam.enabled && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Enter') && document.activeElement?.id !== 'elevator') {
     e.preventDefault();
     if (e.key === 'Enter') { if (focusSid >= 0) enterFloor(focusSid, true, true); return; }
@@ -629,8 +695,9 @@ function showProfile(name: string) {
   // the card leads somewhere: to their table (the nearest one they've spoken at), when that's not where you are
   const near = here.slice().sort((a, b) => Math.hypot(a.pos.x - walk.pos.x, a.pos.z - walk.pos.z) - Math.hypot(b.pos.x - walk.pos.x, b.pos.z - walk.pos.z))[0];
   const go = mode === 'floor' && near && nearTable() !== near ? () => walkToTable(near) : undefined;
-  ui.profile({ name, said, tables: here.length, go, data: null });
-  p.then((data) => ui.profile({ name, said, tables: here.length, go, data: (data ?? {}) as never }, true));
+  const answer = said ? () => replyTo(name) : undefined;
+  ui.profile({ name, said, tables: here.length, go, reply: answer, data: null });
+  p.then((data) => ui.profile({ name, said, tables: here.length, go, reply: answer, data: (data ?? {}) as never }, true));
 }
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); showFocus(); });
 
@@ -870,6 +937,10 @@ if (recording) {
     tables: () => spots.filter((sp) => !sp.bar).map((sp, k) => ({ k, x: +sp.pos.x.toFixed(2), z: +sp.pos.z.toFixed(2), people: sp.seats.map((st) => st.name) })),
     lookAt: (x: number, z: number) => { walk.yaw = Math.atan2(x - walk.pos.x, z - walk.pos.z); },
     ensureAudio: () => audio.ensure(),
+    /** replying: seated, to whoever is speaking; or to someone by name */
+    replyHere: () => replyHere(),
+    replyTo: (name: string) => replyTo(name),
+    setMe: (name: string) => reply.setMe(name),
     where: () => ({ x: +walk.pos.x.toFixed(2), z: +walk.pos.z.toFixed(2), yaw: +walk.yaw.toFixed(2), walking: walk.walking, locked: walk.locked, aim: document.getElementById('aim')?.textContent ?? '' }),
     towerDebug: () => ({ roomY, doorSlot, hidden: tower.hidden, cam: camera.position.toArray().map((v) => +v.toFixed(2)),
       slots: tower.slots.map((sl, i) => ({ i, sid: sl.sid, rank: sync.head?.tower.indexOf(sl.sid ?? -1), y: +sl.y.toFixed(2), label: (tower as unknown as { drawn: string[] }).drawn[i] })).filter((x) => x.rank !== undefined && x.rank >= 0 && x.rank < 5) }),

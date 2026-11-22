@@ -181,7 +181,13 @@ export class AudioEngine {
 
   setMuted(m: boolean) {
     this.muted = m;
-    if (this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 0.9, this.ctx.currentTime, 0.05);
+    if (this.ctx) this.master.gain.setTargetAtTime(m ? 0 : this.ducked ? 0.08 : 0.9, this.ctx.currentTime, 0.05);
+  }
+  /** the room nearly silent while you speak (the microphone should hear you, not the toys), then back */
+  private ducked = false;
+  duck(on: boolean) {
+    this.ducked = on;
+    if (this.ctx) this.master.gain.setTargetAtTime(this.muted ? 0 : on ? 0.08 : 0.9, this.ctx.currentTime, on ? 0.08 : 0.4);
   }
 
   // ---------------------------------------------------------------- sound effects, synthesized
