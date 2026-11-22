@@ -48,7 +48,7 @@ export class TowerCam {
   }
 
   /** the distance that frames the tower: portrait phones need to stand closer for the titles to read */
-  home() { return innerWidth < innerHeight ? 38 : 44; }
+  home() { return innerWidth < innerHeight ? 42 : 44; }        // portrait: room for the rail beside the tower
   get dragging() { return this.g !== null && this.g.kind !== 'pending'; }
 
   /** Bring floor `rank` to the middle of the view (the spring does the moving). */

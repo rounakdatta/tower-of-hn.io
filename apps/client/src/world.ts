@@ -131,8 +131,8 @@ function floorMaterial(i: { glow: N; crowd: N; sel: N; pulse: N; seed: N; heat?:
   const flick = sin(uTime.mul(0.4).add(r.mul(60))).mul(0.05).add(0.95);
   const walls = step(abs(normalLocal.y), 0.5);
   const calmTint = mix(mix(vec3(1.0, 0.55, 0.24), vec3(1.0, 0.82, 0.56), hash(id.add(7))), vec3(0.62, 0.78, 1.0), step(0.93, hash(id.add(13))));
-  // a floor where a row is on: its windows run coral, seen from the street
-  const interiorTint = i.heat ? mix(calmTint, vec3(1.0, 0.3, 0.2), i.heat.mul(0.75)) : calmTint;
+  // a floor where a row is on: its windows run coral, seen from the street, and breathe (each floor its own beat)
+  const interiorTint = i.heat ? mix(calmTint, vec3(1.0, 0.3, 0.2), i.heat.mul(sin(uTime.mul(1.7).add(seed.mul(1.3))).mul(0.14).add(0.78))) : calmTint;
   const dimRoom = vec3(0.08, 0.1, 0.16).mul(pane).mul(walls);           // unlit glass still reads as glass
   mat.colorNode = mix(vec3(0.03, 0.035, 0.05), vec3(0.05, 0.06, 0.08), pane);
   // the crowd: people inside, dark against the light, a place every 1.1 m round the floor, filled as more

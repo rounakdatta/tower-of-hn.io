@@ -170,8 +170,9 @@ export class AudioEngine {
     return src;
   }
 
-  /** Another table's real voice, heard across the room: quiet, muffled, placed where they sit. */
-  murmur(buf: AudioBuffer, when: number, pos: V3) {
+  /** Another table's real voice, heard across the room (or through a floor's glass): quiet, muffled, placed where
+   *  they sit. Returns a way to fade it out early. */
+  murmur(buf: AudioBuffer, when: number, pos: V3): { stop(): void } | undefined {
     if (this.virtual || !this.ctx || !buf) return;
     const ctx = this.ctx;
     const src = ctx.createBufferSource(); src.buffer = buf;
@@ -182,6 +183,7 @@ export class AudioEngine {
     src.connect(lp).connect(g).connect(pan);
     pan.connect(this.reverbSend); pan.connect(this.master);
     src.start(Math.max(ctx.currentTime, when));
+    return { stop: () => { const t = ctx.currentTime; g.gain.setTargetAtTime(0, t, 0.08); try { src.stop(t + 0.4); } catch { /* already over */ } } };
   }
 
   setMuted(m: boolean) {

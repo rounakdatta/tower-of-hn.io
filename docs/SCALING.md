@@ -16,9 +16,14 @@ HN Firebase API ──► towerd (one Node process: ingest, files, two small POS
 browsers ──► GET static files (CDN-cacheable)  ·  POST /want (voice this table)  ·  GET /profile/<name>
 ```
 
-No database, no websockets, no per-user state on the server. A browser polls `head.json` every 2 s and fetches
-only what changed: deltas, audio-only patches for its floor (a few bytes), and the sidecars and clips it is about
-to play. Everything except `head.json` is content-addressed and served `immutable` for a year.
+No database, no websockets, no per-user state on the server. A browser polls `head.json` (every 2 s in a room, 4 s
+on the tower, 10 s from a background tab) and fetches only what changed: deltas, audio-only patches for its floor (a
+few bytes), and the sidecars and clips it is about to play. Everything except `head.json` is content-addressed and
+served `immutable` for a year.
+
+Per listener, the bytes are mostly speech: clips are Opus at ~26 kbps (compression level 0.92; libsndfile's default
+is ~36 kbps for the same 8 kHz of speech, and the top of the voice starts to go only from 0.94). Brotli for the live
+JSON was measured and dropped: 1–5% smaller than gzip, not worth the CPU.
 
 ## Measured (22 Nov 2026, local, one core for towerd, the real client's request pattern)
 

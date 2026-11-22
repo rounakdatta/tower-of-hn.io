@@ -35,7 +35,9 @@ open http://127.0.0.1:5288
 
 - **Tower.** Drag to orbit, and hover a floor to see its story. Click to ride the elevator up.
   - Floors slide when stories trade ranks.
-  - Windows flash when a comment lands, and run coral on a floor where a row is on (its focus card says heated).
+  - Windows flash when a comment lands, and run coral (breathing) on a floor where a row is on: its tick on the rail turns red and its focus card says heated.
+  - Stop on a floor and someone inside is heard through the glass, muffled, before you go in.
+  - The first few landings are named in a note ("cogman10 just commented on floor 7"), and so is each floor that turns heated, once. Tap a note to go there.
   - The beacon pulses for every new comment on the front page.
 - **Floor.** You arrive on foot, among every conversation on the floor. The table you're with (nearest, or the one you're facing) is heard clearly and subtitled; the others murmur, muffled, as a room does.
   - **Desktop:** click the floor and the mouse looks around (Esc gives it back); WASD or the arrows walk, Shift hurries. A dot in the middle aims: click someone to see their card, a table to walk over. E sits down.
@@ -95,6 +97,7 @@ The client renders headlessly on a software GPU (`?record` makes time determinis
 - `tools/plan.py` draws top-down plans of a table: who sits where, who stands, where the lens is.
 - `tools/record.cjs` and `tools/mux.py` make videos with the real voices and the synthesized chair scrapes and thumps.
 - `?force=angry|joke|question|uncertain|excited|sad|list|sarcasm` makes every turn play that way.
+- `?lite` starts without bloom and depth of field. It also switches itself on when frames stay slow at 1× resolution.
 - For takes that live HN can't rewrite mid-shot:
   - `?freeze` ignores table updates while seated.
   - `?skip=<id>,<id>` leaves comments out.

@@ -245,10 +245,17 @@ sync.onHead = (h: Head, prev) => {
   else if (r < 0 && cam.rank >= 0 && h.tower[cam.rank] !== undefined) focusSid = h.tower[cam.rank];
   if (cam.enabled) showFocus();
   const act = Object.values(h.act).reduce((a, b) => a + b, 0);
-  ui.live(`live · ${act} comments in the last 15 minutes`);
+  ui.live(`${innerWidth < 380 ? '' : 'live · '}${act} new comments in 15 min`);   // a small phone: the green dot says live
   const talking = h.tower.reduce((n, id) => n + (h.stories[id]?.[2] ?? 0), 0);
   const st = document.getElementById('stats');
-  if (st) st.textContent = `${h.tower.length} floors · ${talking.toLocaleString()} comments · ${act} in the last 15 minutes`;
+  if (st) st.textContent = `${h.tower.length} floors · ${talking.toLocaleString()} comments · ${act} landed in the last 15 minutes`;
+  // a floor where voices are raised says so from the street, once (not the one in focus: its card already does)
+  for (const [k, id] of h.tower.entries()) {
+    if ((h.heat?.[id] ?? 0) < 0.4 || rowSeen.has(id)) continue;
+    if (k === cam.rank && mode === 'tower') { rowSeen.add(id); continue; }
+    if (towerNote(`<b>Floor ${k + 1}</b> is heated: voices are raised`, id)) rowSeen.add(id);
+    break;
+  }
   if (prev && mode !== 'tower' && activeStory >= 0 && !h.tower.includes(activeStory)) ui.hint('This story just left the front page.');
 };
 sync.onDelta = (d) => {
@@ -256,33 +263,52 @@ sync.onDelta = (d) => {
     uBeacon.value = 1;
     for (const t of d.turns) tower.pulse(t.story);
     if (mode === 'tower' && clock - lastBlip > 1.2) { audio.sfx('blip'); lastBlip = clock; }
+    // the window that just flashed, named: the first few times, so the flash and the blip mean something
+    const t = d.turns[0], r = sync.head?.tower.indexOf(t.story) ?? -1;
+    if (landed < 3 && r >= 0 && towerNote(`<b>${esc(t.turn.by)}</b> just commented on floor ${r + 1}`, t.story)) landed++;
   }
 };
+/** The tower's notes (a named landing, a heated floor): only outside, one at a time, never a stream. Tap to go. */
+let towerNoteAt = -1e9, landed = 0;
+const rowSeen = new Set<number>();
+function towerNote(html: string, sid: number) {
+  if (mode !== 'tower' || !entered || arriving || leanBack || clock - towerNoteAt < 20 || $id('toast').classList.contains('show')) return false;   // never over a reply to you
+  towerNoteAt = clock;
+  ui.toast(html, () => { const r = sync.head?.tower.indexOf(sid) ?? -1; if (r >= 0) cam.focus(r); });
+  return true;
+}
 tower.onMove = () => { if (mode === 'tower') audio.sfx('rumble'); };
 
 // ---------------------------------------------------------------- the tower: the floor in focus
 let focusSid = -1;
 const $id = (id: string) => document.getElementById(id)!;
+let arriving = false;                    // the swoop down from the sky: the card and the rail wait until it lands
 function showFocus() {
   const h = sync.head;
   if (!h || focusSid < 0 || mode !== 'tower') return;
   const s = h.stories[focusSid], rank = h.tower.indexOf(focusSid);
   if (!s || rank < 0) return;
   tower.setSelected(tower.slotOf.get(focusSid) ?? -1);
-  ui.focusCard({ rank: rank + 1, title: s[0], url: s[4], score: s[1], comments: s[2], act: h.act[focusSid] ?? 0, people: h.people?.[focusSid], heat: h.heat?.[focusSid] }, () => enterFloor(focusSid, true, true));
-  ui.elevator(h.tower.length, rank, h.tower.map((id) => h.act[id] ?? 0), (k) => cam.focus(k), h.tower.map((id) => h.people?.[id] ?? 0));
-  // the card covers the bottom of a phone: the floor in focus sits in the middle of what's left. Where the card
-  // sits at one side instead (a wide screen, a phone on its side), the tower stands clear of it on the other.
+  $id('focus').classList.toggle('first', navHint);
+  // while arriving, the card is filled but not shown, so the camera can frame for it and land without a jump
+  ui.focusCard({ rank: rank + 1, title: s[0], url: s[4], score: s[1], comments: s[2], act: h.act[focusSid] ?? 0, people: h.people?.[focusSid], heat: h.heat?.[focusSid] }, () => enterFloor(focusSid, true, true), !arriving);
+  frameCard();
+  if (arriving) return;
+  ui.elevator(h.tower.length, rank, h.tower.map((id) => h.act[id] ?? 0), (k) => cam.focus(k), h.tower.map((id) => h.people?.[id] ?? 0), h.tower.map((id) => h.heat?.[id] ?? 0));
+}
+/** The card covers the bottom of a phone: the floor in focus sits in the middle of what's left. Where the card
+ *  sits at one side instead (a wide screen, a phone on its side), the tower stands clear of it on the other. */
+function frameCard() {
   const box = $id('focus').getBoundingClientRect();
   const beside = box.width < innerWidth * 0.66;
   cam.lift = beside ? 0.03 : Math.max(0.03, Math.min(0.16, (innerHeight - box.top) / innerHeight / 2));
   cam.shift = !beside ? 0 : box.left < innerWidth * 0.3 ? 0.12 : -0.2;
-  $id('focus').classList.toggle('first', navHint);
 }
 cam.onFocus = (rank) => {
   const sid = sync.head?.tower[rank];
   if (sid === undefined) return;
   focusSid = sid;
+  hush();
   showFocus();
   if (mode === 'tower') { audio.sfx('tick'); if (touch && cam.dragging) navigator.vibrate?.(5); }   // a detent per floor under the finger (Android)
   warmSoon(sid);
@@ -304,7 +330,26 @@ cam.onTap = (x, y) => {
 // first words voiced and fetched; walking onto a floor goes further. By the time you sit, someone can speak.
 const warmedAt = new Map<string, number>();
 let warmTimer = 0;
-function warmSoon(sid: number) { clearTimeout(warmTimer); warmTimer = window.setTimeout(() => prewarm(sid, 1), 650); }
+function warmSoon(sid: number) { clearTimeout(warmTimer); warmTimer = window.setTimeout(() => { prewarm(sid, 1); peek(sid); }, 650); }
+
+// Voices through the glass: stop on a floor and someone inside is heard, muffled, before you go in ("Listen in" is
+// literal). One line, from a clip prewarm fetches anyway, so it costs nothing; it stops when you move on or go in.
+let preview: { stop(): void } | undefined;
+function hush() { preview?.stop(); preview = undefined; }
+async function peek(sid: number) {
+  if (recording || !audio.live || document.hidden) return;
+  const f = await sync.floor(sid).catch(() => null);
+  const ready = f?.tables.filter((t) => t.turns.length >= 2 && t.turns[0].v).slice(0, 3) ?? [];
+  const v = ready[Math.floor(Math.random() * ready.length)]?.turns[0].v;
+  if (!v) return;
+  try {
+    const clip = (await sync.sidecar(v[0])).clips[0];
+    const buf = clip && await audio.load(sync.url(clip.u));
+    if (!buf || mode !== 'tower' || focusSid !== sid || arriving || leanBack || document.hidden) return;
+    hush();
+    preview = audio.murmur(buf, audio.now() + 0.1, camera.position.clone().addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 2.5));
+  } catch { /* nothing voiced there yet: the glass stays quiet */ }
+}
 async function prewarm(sid: number, level: 1 | 2) {
   if (recording) return;
   const key = `${sid}:${level}`;
@@ -358,6 +403,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
   const floor = await sync.floor(sid);
   if (!floor || rank < 0) return;
   if (activeStory >= 0 && activeStory !== sid) sync.unwatch(activeStory);
+  hush();
   activeStory = sid; activeFloor = floor; focusSid = sid;
   roomY = floorY(rank) - FLOOR_H * 0.47;
   const slot = tower.slotOf.get(sid) ?? -1;
@@ -935,8 +981,14 @@ const touch = matchMedia('(hover: none)').matches;
 function arrive() {
   entered = true;
   neon.at = clock;
-  cam.arrive(0);
+  towerNoteAt = clock - 12;                   // the tower's first note waits until you've had a look
   $id('fhint').textContent = touch ? 'or drag the tower to change floors' : 'or scroll to change floors';
+  // the door opens, the camera comes down and the sign catches; then the card rises, and the floor speaks
+  arriving = true;
+  cam.arrive(0);
+  const land = () => { if (!arriving) return; arriving = false; showFocus(); peek(focusSid); };
+  after(1.6, land);
+  if (!recording) setTimeout(land, 2600);   // slow first frames (shaders compiling) never hold the card back for long
 }
 // ?probe: decode one clip exactly as playback does, and describe it (tests the native and the WebAssembly Opus paths)
 if (params.has('probe')) (window as any).__probe = async (url: string) => {
@@ -954,6 +1006,7 @@ if (params.has('debug')) (window as any).__dbg = {
   walkTo: (x: number, z: number) => walk.goTo(new THREE.Vector3(x, 0, z)),
   lookAt: (x: number, z: number) => { walk.yaw = Math.atan2(x - walk.pos.x, z - walk.pos.z); },
   sit: () => sit(bestSpot()),
+  peeking: () => !!preview,
 };
 if (recording) {
   (window as any).__tohn = {
@@ -1012,6 +1065,7 @@ if (recording) {
     swap: () => { const h = sync.head!; const t = h.tower.slice(); [t[2], t[7]] = [t[7], t[2]]; tower.setOrder(t, h.stories, h.act, clock, camDir2(), h.people, h.heat); },
   };
   document.getElementById('splash')!.classList.remove('show');   // recordings start inside
+  document.body.classList.remove('door');
   arrive();
   (window as any).__ready = true;
 } else {

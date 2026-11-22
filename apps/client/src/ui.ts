@@ -23,7 +23,8 @@ export class UI {
     const s = $('splash'), b = $('enter') as HTMLButtonElement;
     s.classList.add('show');
     b.disabled = false; b.textContent = 'Enter the tower';
-    const go = () => { s.classList.remove('show'); s.classList.add('gone'); onEnter(); };
+    // the door alone while it's shut (no second wordmark or live line behind it); the sign ignites as it opens
+    const go = () => { s.classList.remove('show'); s.classList.add('gone'); document.body.classList.remove('door'); onEnter(); };
     b.addEventListener('click', go, { once: true });
   }
 
@@ -65,7 +66,7 @@ export class UI {
   }
 
   /** The floor in focus on the tower: its title big enough to read on a phone, and the one thing to do next. */
-  focusCard(f: { rank: number; title: string; url: string; score: number; comments: number; act: number; people?: number; heat?: number } | null, onGo?: () => void) {
+  focusCard(f: { rank: number; title: string; url: string; score: number; comments: number; act: number; people?: number; heat?: number } | null, onGo?: () => void, show = true) {
     const el = $('focus');
     if (!f) { el.classList.remove('show'); return; }
     const dom = domainOf(f.url);
@@ -80,12 +81,12 @@ export class UI {
     $('fmeta').title = `${f.people ?? '?'} people · ${f.comments} comments (${f.act} in the last 15 minutes) · ${f.score} points${dom ? ' · ' + dom : ''}`;
     $('fgo').setAttribute('aria-label', `Listen in on floor ${f.rank}: ${f.title}`);
     if (onGo) el.onclick = (e) => { e.stopPropagation(); onGo(); };
-    el.classList.add('show');
+    el.classList.toggle('show', show);
   }
 
   /** The elevator: a tick per floor, the one in focus lit and numbered; drag or tap it to go up and down. */
   private ticks: HTMLElement[] = [];
-  elevator(n: number, rank: number, heat: number[], pick: (rank: number) => void, crowd: number[] = []) {
+  elevator(n: number, rank: number, heat: number[], pick: (rank: number) => void, crowd: number[] = [], rows: number[] = []) {
     const el = $('elevator');
     if (this.ticks.length !== n) {
       el.innerHTML = '';
@@ -110,6 +111,7 @@ export class UI {
     const most = Math.max(1, ...crowd);
     this.ticks.forEach((t, k) => {
       t.classList.toggle('on', k === rank); t.classList.toggle('hot', (heat[k] ?? 0) >= 5);
+      t.classList.toggle('row', (rows[k] ?? 0) >= 0.4);                // voices raised: the same red as the windows
       t.style.width = k === rank ? '' : `${Math.round(5 + 11 * Math.sqrt((crowd[k] ?? 0) / most))}px`;
     });
     el.setAttribute('aria-valuemax', String(n));
