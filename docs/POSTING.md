@@ -32,6 +32,40 @@ anyone answers you, you hear it. This note is what exists (0.4.1), what we can't
   - **Every post needs a click in the extension's own confirmation window**, so a page, even a compromised one,
     can only *ask*.
 
+## What we checked (22 Nov 2026)
+
+Each fact below has a source in the research notes (`docs/posting-research-2026-11-22.md`
+). V means read from a primary source; I means inferred.
+
+- **HN's rule [V].** "Don't post generated text or AI-edited text. HN is for conversation between humans."
+  ([guidelines](https://news.ycombinator.com/newsguidelines.html)). dang, March 2026: the AI-edited clause targets
+  people who "run this through ChatGPT to fix my grammar and spelling"; "we'd rather hear you in your own voice"
+  ([item 47346253](https://news.ycombinator.com/item?id=47346253)). For submissions the rule adds: "please don't
+  automate posting".
+  - [I] Speech-to-text of your own words is your text; an LLM rewrite is "AI-edited text". So nothing rewrites.
+- **The reply form [V].**
+  - The reply link is `reply?id=<comment>&goto=item%3Fid%3D<story>%23<comment>`.
+  - The form is `<form action="comment" method="post">`, with hidden `parent`, `goto` and `hmac` (a one-time
+    token) and a `text` textarea.
+  - The login form posts `acct` and `pw`; the session cookie is `user`.
+  - HN may answer with a resubmission confirm (`/x?fnop=commconfirm`) or "You're posting too fast". It never
+    returns the new comment's id, so re-read the thread before any retry, or you can double-post.
+  - Sources: the live pages, and maintained clients (weiran/Hackers, Hacki, Harmonic).
+- **Another site can't use your HN session [V].** HN sends no CORS headers, refuses framing (`X-Frame-Options: DENY`),
+  and a Lax cookie isn't sent on a cross-site fetch or POST.
+- **An extension can [V].** Chromium: "Requests from an extension to a third-party are treated as same-site if the
+  extension has host permissions for the third-party." This doesn't hold when third-party cookies are blocked
+  (Incognito). Fetch from the service worker with `credentials: 'include'`. A content script that bridges
+  `window.postMessage` is the portable channel; Firefox has no `externally_connectable`.
+- **Logins can hit a CAPTCHA [V].** dang: "we do sometimes turn captchas on for logins when HN is under some kind of
+  (possible) attack". A third-party server can't present it, which rules out a server-side login.
+- **Speech [V].**
+  - iOS Safari: `webkitSpeechRecognition` since 14.5. It needs Siri enabled, and isn't available in a home-screen
+    web app; there the sheet offers typing instead. Chrome 139+: unprefixed `SpeechRecognition`, plus
+    `processLocally` for on-device recognition once installed. Firefox 160: on-device, desktop only.
+  - In-browser fallbacks: whisper-tiny.en ≈ 38 MB; moonshine-tiny ≈ 26 MB, about 5× less compute than Whisper
+    tiny.
+
 ## Why we can't just "use the login cookies"
 
 A page on our domain can never read or send another site's cookies; that's the browser's same-origin policy, and it
@@ -76,8 +110,11 @@ on a phone.
 - [x] The extension talks only to TowerOfHan's own origins, matches each answer to its request, and is limited to
       news.ycombinator.com.
 - [x] Your HN name lives in localStorage only; clearing it stops the watch.
+- [x] The extension never double-posts. It looks for your reply under that comment before posting (HN returns no
+      id), never retries blind, and answers HN's resubmission confirm once.
 - [ ] Before publishing the extension: a review of HN's current reply-form HTML (field names change rarely, but they
       can), a per-minute post limit inside the extension, and Chrome Web Store, Firefox and Safari packaging.
+- [ ] Consider Chrome's `processLocally` (on-device speech) where it's installed, for privacy.
 - [ ] Never test posting against HN from Rounak's account without asking first.
 
 ## Open questions for Rounak

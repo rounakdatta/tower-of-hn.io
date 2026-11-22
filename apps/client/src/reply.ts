@@ -16,7 +16,9 @@ export interface ReplyTarget { id: number; by: string; story: number; title: str
 type Rec = { start(): void; stop(): void; abort(): void; continuous: boolean; interimResults: boolean; lang: string;
   onresult: ((e: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null;
   onend: (() => void) | null; onerror: ((e: { error: string }) => void) | null };
-const SR = (window as unknown as { SpeechRecognition?: new () => Rec; webkitSpeechRecognition?: new () => Rec }).SpeechRecognition
+// (iOS has no speech recognition in a home-screen web app, though the constructor is there: typing there)
+const standaloneIOS = /iP(hone|ad|od)/.test(navigator.userAgent) && (matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true);
+const SR = standaloneIOS ? undefined : (window as unknown as { SpeechRecognition?: new () => Rec; webkitSpeechRecognition?: new () => Rec }).SpeechRecognition
   ?? (window as unknown as { webkitSpeechRecognition?: new () => Rec }).webkitSpeechRecognition;
 const HN = 'https://hacker-news.firebaseio.com/v0';
 

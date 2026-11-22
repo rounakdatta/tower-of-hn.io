@@ -13,15 +13,42 @@ async function whoami() {
   return /<a id="me" href="user\?id=([A-Za-z0-9_-]+)"/.exec(html)?.[1] ?? '';
 }
 
+/** Already there? (A post that timed out may have landed: HN returns no comment id, so look before trying again.) */
+async function already(parent, user, text) {
+  if (!user) return false;
+  const API = 'https://hacker-news.firebaseio.com/v0';
+  const kids = (await (await fetch(`${API}/item/${parent}.json`)).json())?.kids ?? [];
+  const head = text.replace(/\s+/g, ' ').trim().slice(0, 60);
+  for (const k of kids.slice(0, 60)) {
+    const it = await (await fetch(`${API}/item/${k}.json`)).json();
+    if (it?.by !== user || !it.text) continue;
+    const plain = it.text.replace(/<[^>]+>/g, ' ').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+    if (plain.startsWith(head)) return true;
+  }
+  return false;
+}
+
 async function post({ parent, story, text }) {
+  const user = await whoami().catch(() => '');
+  if (await already(parent, user, text).catch(() => false)) return { ok: true };
   // HN's own reply page for that comment carries the one-time token its form needs
   const page = await (await fetch(`${HN}/reply?id=${parent}&goto=${encodeURIComponent(`item?id=${story}#${parent}`)}`, { credentials: 'include' })).text();
   if (/name="acct"/.test(page)) return { ok: false, error: 'Log in to Hacker News in this browser first' };
   const hmac = /name="hmac" value="([^"]+)"/.exec(page)?.[1];
   if (!hmac) return { ok: false, error: 'Hacker News didn’t offer a reply form for that comment' };
   const body = new URLSearchParams({ parent: String(parent), goto: `item?id=${story}#${parent}`, hmac, text });
-  const r = await fetch(`${HN}/comment`, { method: 'POST', credentials: 'include', body, headers: { 'content-type': 'application/x-www-form-urlencoded' } });
-  const out = await r.text();
+  let r = await fetch(`${HN}/comment`, { method: 'POST', credentials: 'include', body, headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+  let out = await r.text();
+  // HN sometimes asks to confirm a resubmission (/x?fnop=commconfirm): its page carries the form again; send it once
+  if (r.url.includes('fnop=commconfirm')) {
+    const again = new URLSearchParams();
+    for (const m of out.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"/g)) again.set(m[1], m[2].replace(/&amp;/g, '&'));
+    if (again.has('hmac')) {
+      again.set('text', text);
+      r = await fetch(`${HN}/comment`, { method: 'POST', credentials: 'include', body: again, headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+      out = await r.text();
+    }
+  }
   // success lands on the thread; anything else is HN explaining (posting too fast, a duplicate, a dead thread)
   if (r.url.includes('item?id=') && !/posting too fast|you can't post/i.test(out)) return { ok: true };
   const why = /<td[^>]*>([^<]{8,160})<\/td>/.exec(out)?.[1]?.trim();
