@@ -4,7 +4,9 @@ import { esc, domainOf } from './util.ts';
 import { lookOf } from './people.ts';
 import type { TableSpot } from './interior.ts';
 import type { Line } from './performer.ts';
-import { MOOD, moodOf, tableMood, deliveryWord, rowOf } from './mood.ts';
+import { MOOD, moodOf, tableMood, deliveryWord, rowOf, peopleOf } from './mood.ts';
+
+interface Sign { el: HTMLButtonElement; key: string; w: number; h: number; /** the frame it was last placed in */ shown: number; on: boolean }
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -133,7 +135,7 @@ export class UI {
    * one-line summary of what they talk about with a few interests (written by AI from their public comments, and
    * labelled so), their own bio, and what they've said on this floor. `refresh`: the summary arrived for an open card.
    */
-  profile(p: { name: string; said: number; tables: number; data: null | { karma?: number; created?: number; about?: string; brief?: string; interests?: string[]; role?: string } } | null, refresh = false) {
+  profile(p: { name: string; said: number; tables: number; go?: () => void; data: null | { karma?: number; created?: number; about?: string; brief?: string; interests?: string[]; role?: string } } | null, refresh = false) {
     const el = $('profile');
     if (!p) { el.classList.remove('show'); el.dataset.name = ''; document.body.classList.remove('card-open'); return; }
     if (refresh && el.dataset.name !== p.name) return;          // they closed it, or opened someone else's
@@ -150,7 +152,9 @@ export class UI {
     el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>
       <div class="who">${avatar(p.name)}<div><h2>${esc(p.name)}</h2>${d?.role ? `<div class="role">${esc(d.role)}</div>` : ''}<div class="meta">${esc(meta)}</div></div></div>
       ${brief}${about}
-      <div class="foot"><span class="here">${esc(here)}</span><a href="https://news.ycombinator.com/user?id=${encodeURIComponent(p.name)}" target="_blank" rel="noopener">On Hacker News ↗</a></div>`;
+      <div class="foot">${p.go ? `<button class="hear" type="button">Hear them at their table →</button>` : `<span class="here">${esc(here)}</span>`}<a href="https://news.ycombinator.com/user?id=${encodeURIComponent(p.name)}" target="_blank" rel="noopener">On Hacker News ↗</a></div>`;
+    const hear = el.querySelector('.hear') as HTMLElement | null;
+    if (hear && p.go) { const go = p.go; hear.onclick = (e) => { e.stopPropagation(); this.profile(null); go(); }; }
     (el.querySelector('.x') as HTMLElement).onclick = () => this.profile(null);
     el.classList.add('show');
   }
@@ -170,25 +174,40 @@ export class UI {
    * frame without reading layout (each sign's size is measured only when its words change).
    */
   private signData: { spots: TableSpot[]; roomY: number; onPick: (s: TableSpot) => void; best?: TableSpot } | null = null;
-  private signPool: { el: HTMLButtonElement; key: string; w: number; h: number; spot: TableSpot | null }[] = [];
+  /** one sign per table, kept: its words are rewritten only when they change (a rewrite every frame swallowed taps) */
+  private signFor = new Map<TableSpot, Sign>();
+  private bars = 0;
+  private frameNo = 0;
   private labelsOn = false;
   tableLabels(spots: TableSpot[], roomY: number, onPick: (s: TableSpot) => void, best?: TableSpot) {
+    if (this.signData && this.signData.spots !== spots) { for (const sl of this.signFor.values()) sl.el.remove(); this.signFor.clear(); }
     this.signData = { spots, roomY, onPick, best };
+    this.bars = spots.filter((x) => x.bar).length;
     $('labels').classList.toggle('show', this.labelsOn);
   }
-  clearLabels() { $('labels').innerHTML = ''; this.signPool = []; this.signData = null; this.showLabels(false); }
+  clearLabels() { $('labels').innerHTML = ''; this.signFor.clear(); this.signData = null; this.showLabels(false); }
   showLabels(on: boolean) { this.labelsOn = on; $('labels').classList.toggle('show', on); }
   /** the "start here" kick stays until you've chosen a table yourself */
   chosen = false;
+  /** people whose card you've opened: underlined wherever they speak (you know them now) */
+  met = new Set<string>((() => { try { return JSON.parse(localStorage.getItem('tohn-met') ?? '[]'); } catch { return []; } })());
+  meet(name: string) {
+    if (this.met.has(name)) return;
+    this.met.add(name);
+    try { localStorage.setItem('tohn-met', JSON.stringify([...this.met].slice(-300))); } catch { /* private mode */ }
+  }
   private cand: { s: TableSpot; d: number; x: number; y: number }[] = [];
   private rects: { x: number; y: number; w: number; h: number }[] = [];
   signs(you: THREE.Vector3, focus: TableSpot | null, speaking: (s: TableSpot) => Line | null) {
     const data = this.signData;
     if (!data || !this.labelsOn || !this.camera) return;
-    const compact = innerWidth < 700, max = compact ? 4 : 6, box = $('labels');
-    // candidates: tables in front of you, near enough to matter, the one you're with first, then the nearest
+    const compact = innerWidth < 700, max = compact ? 4 : 6, box = $('labels'), frame = ++this.frameNo;
+    // candidates: tables in front of you, near enough to matter, the one you're with first, then the nearest (the bar
+    // is one sign, however many remarks it holds)
     this.cand.length = 0;
+    let bar = false;
     for (const s of data.spots) {
+      if (s.bar) { if (bar) continue; bar = true; }
       const d = Math.hypot(s.pos.x - you.x, s.pos.z - you.z);
       if (d > (s.bar ? 7.5 : 11.5) || (s === focus && d < s.radius + 0.4)) continue;   // too far, or right on top of it
       this.v.set(s.bar ? s.pos.x * 0.92 : s.pos.x, data.roomY + (s.bar ? 2.0 : 2.08), s.bar ? s.pos.z * 0.92 : s.pos.z).project(this.camera);
@@ -200,44 +219,48 @@ export class UI {
     let used = 0;
     for (const c of this.cand) {
       if (used >= max) break;
-      const slot = this.signPool[used] ?? this.newSign(box);
+      const slot = this.signFor.get(c.s) ?? this.newSign(box, c.s);
       this.fill(slot, c.s, data, c.s === focus, speaking(c.s), compact);
       const k = c.s === focus ? 1.04 : Math.max(0.8, Math.min(1, 1.08 - c.d * 0.035));
       const w = slot.w * k, h = slot.h * k, x = Math.max(w / 2 + 8, Math.min(innerWidth - w / 2 - 8, c.x)), y = Math.max(h / 2 + 64, c.y - h / 2);
-      if (this.rects.some((r) => Math.abs(r.x - x) < (r.w + w) / 2 + 6 && Math.abs(r.y - y) < (r.h + h) / 2 + 4)) continue;
+      if (this.rects.some((r) => Math.abs(r.x - x) < (r.w + w) / 2 + 6 && Math.abs(r.y - y) < (r.h + h) / 2 + 4)) continue;   // waits for room
       this.rects.push({ x, y, w, h });
       slot.el.style.transform = `translate(${(x - slot.w / 2).toFixed(1)}px, ${(y - slot.h / 2).toFixed(1)}px) scale(${k.toFixed(3)})`;
-      slot.el.style.opacity = c.s === focus ? '1' : String(Math.max(0.72, 1 - c.d * 0.03).toFixed(2));
-      slot.el.classList.add('on');
+      slot.el.style.opacity = c.s === focus ? '1' : Math.max(0.72, 1 - c.d * 0.03).toFixed(2);
+      if (!slot.on) { slot.el.classList.add('on'); slot.on = true; }
+      slot.shown = frame;
       used++;
     }
-    for (let i = used; i < this.signPool.length; i++) { const p = this.signPool[i]; if (p.spot) { p.el.classList.remove('on'); p.spot = null; } }
+    for (const sl of this.signFor.values()) if (sl.on && sl.shown !== frame) { sl.el.classList.remove('on'); sl.on = false; }
   }
-  private newSign(box: HTMLElement) {
+  private newSign(box: HTMLElement, spot: TableSpot): Sign {
     const el = document.createElement('button');
     el.className = 'tlabel';
     box.appendChild(el);
-    const slot = { el, key: '', w: 0, h: 0, spot: null as TableSpot | null };
-    el.onclick = (e) => { e.stopPropagation(); if (slot.spot && this.signData) this.signData.onPick(slot.spot); };
-    this.signPool.push(slot);
+    const slot: Sign = { el, key: '', w: 0, h: 0, shown: 0, on: false };
+    el.onclick = (e) => { e.stopPropagation(); this.signData?.onPick(spot); };
+    this.signFor.set(spot, slot);
     return slot;
   }
-  private fill(slot: { el: HTMLButtonElement; key: string; w: number; h: number; spot: TableSpot | null }, s: TableSpot, data: NonNullable<UI['signData']>, focus: boolean, line: Line | null, compact: boolean) {
-    slot.spot = s;
-    const t = s.table, people = new Set(t.turns.map((u) => u.by)).size, mood = tableMood(t.turns).mood;
+  private fill(slot: Sign, s: TableSpot, data: NonNullable<UI['signData']>, focus: boolean, line: Line | null, compact: boolean) {
+    const t = s.table, people = peopleOf(t.turns), mood = tableMood(t.turns).mood;
     const now = line ? moodOf(line.side.emotion, line.side.stance, line.side.intensity) : mood;
     const word = line ? deliveryWord(line.side.emotion, line.side.stance, line.side.intensity) : '';
     const kick = !this.chosen && data.best === s ? 'Start here' : '';
-    const key = `${t.root}|${focus}|${line ? line.turn.by + ':' + word : ''}|${mood}|${people}|${kick}|${compact}`;
+    // the table you're with is subtitled already: its sign doesn't say the same thing again
+    const said = line && !focus ? line : null;
+    const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${people}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
     if (key === slot.key) return;
     slot.key = key;
     let html: string;
-    if (s.bar) html = `<b class="gist">The bar</b><span class="meta">${t.turns.length} one-liner${t.turns.length === 1 ? '' : 's'}</span>`;
+    if (s.bar) html = `<b class="gist">The bar</b><span class="meta">${this.bars} one-liner${this.bars === 1 ? '' : 's'}</span>`;
     else {
-      const gist = t.gist ? (compact && t.gist.length > 46 ? t.gist.slice(0, 44).replace(/\s+\S*$/, '') + '…' : t.gist) : '';
+      // the opener's words, its own quotes taken off (they're quoted on the sign), cut at a word
+      const g0 = (t.gist ?? '').replace(/^["“”'‘’]+|["“”'‘’]+$/g, ''), cut = compact ? 46 : 64;
+      const gist = g0.length > cut ? g0.slice(0, cut - 2).replace(/\s+\S*$/, '') + '…' : g0;
       const row = rowOf(t.turns);
-      const meta = line
-        ? `<em style="color:${MOOD[now].color}">${esc(line.turn.by)}</em>${word ? ` · ${esc(word)}` : ' is speaking'}`
+      const meta = said
+        ? `<em class="${this.met.has(said.turn.by) ? 'met' : ''}">${esc(said.turn.by)}</em>${word ? ` · <span style="color:${MOOD[now].color}">${esc(word)}</span>` : ' is speaking'}`
         : `${row && (mood === 'heated' || mood === 'tense') ? `${esc(row[0])} ⇄ ${esc(row[1])}` : `${people} ${people === 1 ? 'person' : 'people'}`}${mood !== 'calm' ? ` · <em style="color:${MOOD[mood].color}">${MOOD[mood].word}</em>` : ''}`;
       html = `${kick ? `<i class="kick">${kick}</i>` : ''}<b class="gist"><i class="dot" style="background:${MOOD[now].color}"></i>${gist ? `“${esc(gist)}”` : `${esc(t.turns[0]?.by ?? '')}${people > 1 ? ` <em>+${people - 1}</em>` : ''}`}</b><span class="meta">${meta}</span>`;
     }
@@ -245,9 +268,12 @@ export class UI {
     slot.el.classList.toggle('focus', focus);
     slot.el.classList.toggle('best', !!kick);
     slot.el.classList.toggle('talk', !!line);
+    const tr = slot.el.style.transform;
     slot.el.style.transform = 'none';
     slot.w = slot.el.offsetWidth; slot.h = slot.el.offsetHeight;   // measured once per change of words
+    slot.el.style.transform = tr;
   }
+
 
   subtitle(s: { name: string; to?: string; text: string; color: string; emotion: string; stance?: string; intensity?: number } | null) {
     const el = $('subs');
@@ -257,7 +283,7 @@ export class UI {
     // how it's being said, in the mood's colour (nothing for a plain line)
     const word = deliveryWord(s.emotion, s.stance, s.intensity), m = moodOf(s.emotion, s.stance, s.intensity);
     const how = word ? `<span class="how" style="color:${MOOD[m].color};border-color:${MOOD[m].color}55">${esc(word)}</span>` : '';
-    el.innerHTML = `<span class="who" style="color:${s.color}">${esc(s.name)}${s.to && s.to !== s.name ? `<span class="to"> → ${esc(s.to)}</span>` : ''}</span>${how}<span class="said">${esc(text)}</span>`;
+    el.innerHTML = `<span class="who${this.met.has(s.name) ? ' met' : ''}" style="color:${s.color}">${esc(s.name)}${s.to && s.to !== s.name ? `<span class="to"> → ${esc(s.to)}</span>` : ''}</span>${how}<span class="said">${esc(text)}</span>`;
     el.dataset.tone = s.emotion;
     el.classList.add('show');
   }

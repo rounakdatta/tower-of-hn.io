@@ -12,7 +12,7 @@ import { Room } from './room.ts';
 import { Mixer } from './mixer.ts';
 import { WalkCam, EYE } from './walk.ts';
 import { Minimap } from './minimap.ts';
-import { MOOD, moodOf, tableMood } from './mood.ts';
+import { MOOD, moodOf, tableMood, rowOf } from './mood.ts';
 import { Crowd, setTimeValue } from './people.ts';
 import { Director } from './director.ts';
 import { esc } from './util.ts';
@@ -96,6 +96,7 @@ director.pushChair = (c, k) => interior.pushChair(c, k);
 // the room: one person per commenter, who walks between tables and in from the lift; every table near you talks
 const room = new Room(crowd);
 const mixer = new Mixer(sync, audio, crowd, room);
+mixer.pushChair = (c, k) => interior.pushChair(c, k);
 director.room = room; director.ambient = true;
 room.spawn = (name, at, facing) => {
   const i = crowd.add(name, { pos: at, facing, seated: false });
@@ -118,7 +119,7 @@ walk.obstacles = () => {
 };
 walk.route = (a, b) => room.route(a, b);
 walk.onMove = () => {
-  if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); if (!walk.locked) ui.hint(''); }
+  if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); if (!walk.locked) ui.hint(''); tapHint = false; }
   if (touch && !localStorage.getItem('tohn-stick')) { localStorage.setItem('tohn-stick', '1'); walk.ghost(false); }
 };
 walk.onUse = () => { const t = nearTable(); if (t) sit(t, true); };
@@ -128,7 +129,9 @@ walk.onLock = (locked) => {
   document.body.classList.toggle('fps', locked);
   if (locked) ui.profile(null);                          // back to the room: a card left open would sit under the dot
   if (mode !== 'floor') return;
-  ui.hint(locked ? 'WASD to walk · Shift to hurry · click to go or meet · E to sit · Esc gives the mouse back' : HINT_DESK);
+  // captured: the keys, briefly (the label under the dot carries the rest); let go: nothing (they know now)
+  ui.hint(locked ? 'WASD walk · E sit · Esc frees the mouse' : '');
+  if (locked) { const at = clock; after(6, () => { if (walk.locked && clock - at >= 5.9) ui.hint(''); }); }
   if (!locked) ui.aim('');
 };
 // the floor at a glance: tap a table there to walk over
@@ -143,8 +146,9 @@ function walkToTable(s: TableSpot) {
   const p = standAt(s, walk.pos);
   walk.goTo(p, Math.atan2(s.pos.x - p.x, s.pos.z - p.z));
 }
-const HINT_TOUCH = 'Left thumb walks · right thumb looks round · tap a table to go to it';
-const HINT_DESK = 'Click the floor to look around · WASD to walk · click a table to go to it';
+const HINT_TOUCH = 'Tap a sign to walk over';
+const HINT_DESK = 'Click a sign to walk over · click the floor to look around';
+let tapHint = false;
 const HOME = { pos: new THREE.Vector3(96, 58, 128), target: new THREE.Vector3(0, TOWER_TOP * 0.5, 0) };
 camera.position.copy(HOME.pos); camera.lookAt(HOME.target);
 
@@ -306,7 +310,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
   const centre = new THREE.Vector3(0, roomY + 1.05, 0);
   // where you'll stand: just in from the glass, clear of anyone (a head right in front of the lens is no welcome)
   const free = (q: THREE.Vector3) => crowd.people.every((pp) => Math.hypot(pp.pose.pos.x - q.x, pp.pose.pos.z - q.z) > 0.75)
-    && spots.every((sp) => sp.bar || Math.hypot(sp.pos.x - q.x, sp.pos.z - q.z) > sp.radius + 0.6);
+    && spots.every((sp) => sp.bar || Math.hypot(sp.pos.x - q.x, sp.pos.z - q.z) > sp.radius + 1.5);
   // (search near where we come in: a little either side along the glass, a little further in)
   let stand = at(R - 1.7, EYE);
   for (let k = 1; k < 30 && !free(stand); k++) {
@@ -327,7 +331,18 @@ async function enterFloor(sid: number, push = false, listen = false) {
       ui.tableLabels(spots, roomY, walkToTable, bestSpot(false));
       ui.showLabels(true); map.show(true);
       chose = ui.chosen = false;
-      ui.hint(walkHint || !touch ? (touch ? HINT_TOUCH : HINT_DESK) : '');
+      metNoted.clear(); lampLine.clear();
+      const first = bestSpot(false);
+      if (first && !first.bar) lampNow.set(first, [1, 0.42, 0.1, 1]);
+      const empty = !spots.some((x) => !x.bar);
+      // nobody here yet (a story that's just gone up): say so, and lean back moves on down the tower. Otherwise, the
+      // first time only: on a phone the ghost stick teaches walking and, a few seconds in, one line says how to go
+      // somewhere; at a desk, one line, until the first walk or click
+      if (empty) ui.hint('Nobody’s talking on this floor yet: new comments walk in by the lift');
+      else if (walkHint && !touch) ui.hint(HINT_DESK);
+      else if (walkHint && touch) after(4, () => { if (mode === 'floor' && walkHint) { tapHint = true; ui.hint(HINT_TOUCH); after(8, () => { if (tapHint) { tapHint = false; ui.hint(''); } }); } });
+      else ui.hint('');
+      if (empty && leanBack) after(3, () => { if (mode === 'floor' && leanBack && sync.head) { const o = sync.head.tower; enterFloor(o[(o.indexOf(activeStory) + 1) % Math.min(o.length, 10)], true); } });
       if (touch && !localStorage.getItem('tohn-stick')) walk.ghost(true);
       if (leanBack || deepLinked) after(deepLinked ? 1.2 : 2.4, () => { if (mode === 'floor' && !chose) sit(bestSpot()); deepLinked = false; });
     });
@@ -346,13 +361,27 @@ async function enterFloor(sid: number, push = false, listen = false) {
         // a comment that just landed on Hacker News: its author comes in by the lift (or over from their table)
         // and says it next, as they would in a real room
         const known = new Set(sp.table.turns.map((u) => u.id));
-        for (const u of f.tables[k].turns) if (!known.has(u.id)) { mixer.breaking(sp, u); ui.toast(`<b>${esc(u.by)}</b> just commented on Hacker News`); }
+        for (const u of f.tables[k].turns) if (!known.has(u.id)) { mixer.breaking(sp, u); news(u.by); }
       }
       sp.table = f.tables[k]; sp.index = k;
     }
     if (mode === 'table' && !params.has('freeze')) director.refresh(f);     // ?freeze: a take that live HN can't rewrite mid-shot
     else if (mode === 'floor') ui.tableLabels(spots, roomY, walkToTable, bestSpot(false));
     if (mode === 'floor') prewarm(sid, 2);              // still standing here a minute on: keep the first words coming
+  });
+}
+
+/** New comments on this floor, in a note: one at a time is news; a hot thread's flood is one note every 45 seconds
+ *  ("X and 3 others just commented"), never a stack of them. */
+let newsAt = 0, newsQ: string[] = [];
+function news(by: string) {
+  newsQ.push(by);
+  if (clock < newsAt) return;
+  newsAt = clock + 45;
+  after(0.8, () => {
+    const q = [...new Set(newsQ)]; newsQ = [];
+    if (!q.length || mode === 'tower') return;
+    ui.toast(q.length === 1 ? `<b>${esc(q[0])}</b> just commented on Hacker News` : `<b>${esc(q[0])}</b> and ${q.length - 1} other${q.length > 2 ? 's' : ''} just commented`);
   });
 }
 
@@ -512,13 +541,21 @@ addEventListener('keydown', (e) => {
 
 // hover (a mouse: touch has no hover, so a tap on the tower focuses first) and taps in the room
 const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
-let hoverSlot = -1, downAt = 0, downXY = [0, 0];
+let hoverSlot = -1, downAt = 0, downXY = [0, 0], hoverAt = 0;
 renderer.domElement.addEventListener('pointermove', (e) => {
   if (e.pointerType !== 'mouse' || cam.dragging) return;
   ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(ptr, camera);
   if (mode === 'floor') {
-    renderer.domElement.style.cursor = ray.intersectObject(interior.tableMesh)[0] ? 'pointer' : '';
+    if (walk.locked || performance.now() - hoverAt < 50) return;   // captured: the dot aims instead; else 20 checks a second
+    hoverAt = performance.now();
+    // someone under the mouse: their name, and a click opens their card; a table: a click walks over; open floor:
+    // a click takes the mouse (first person)
+    const a = aimAt(e.clientX, e.clientY);
+    renderer.domElement.style.cursor = a.kind ? 'pointer' : 'crosshair';
+    ui.aim(a.kind === 'person' ? crowd.people[a.i].name : '');
+    const tag = document.getElementById('aim')!;
+    if (a.kind === 'person') { tag.style.left = `${e.clientX}px`; tag.style.top = `${e.clientY + 18}px`; }
     return;
   }
   if (mode !== 'tower' || !cam.enabled) return;
@@ -532,7 +569,8 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   } else ui.tip(null);
   renderer.domElement.style.cursor = sid !== null ? 'pointer' : 'grab';
 });
-renderer.domElement.addEventListener('pointerdown', (e) => { downAt = performance.now(); downXY = [e.clientX, e.clientY]; if (mode === 'floor') chose = ui.chosen = true; });
+// (looking round isn't choosing: only walking somewhere, a sign, the map or sitting down puts "start here" away)
+renderer.domElement.addEventListener('pointerdown', (e) => { downAt = performance.now(); downXY = [e.clientX, e.clientY]; });
 // at a table, a tap on someone opens their card
 renderer.domElement.addEventListener('pointerup', (e) => {
   if (mode !== 'table' || performance.now() - downAt > 400 || Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 8) return;
@@ -562,6 +600,7 @@ function nearTable() {
 }
 walk.onTap = (x, y) => {
   const a = aimAt(x, y);
+  if (a.kind !== 'person') { chose = ui.chosen = true; if (tapHint) { tapHint = false; ui.hint(''); } }
   if (a.kind === 'person') { walk.release(); showProfile(crowd.people[a.i].name); return; }
   if (a.kind === 'table') {
     if (nearTable() === a.spot) sit(a.spot, true);                              // already beside it: sit down
@@ -586,8 +625,12 @@ function showProfile(name: string) {
     profiles.set(name, p);
     p.then((x) => { if (!x) profiles.delete(name); });
   }
-  ui.profile({ name, said, tables: here.length, data: null });
-  p.then((data) => ui.profile({ name, said, tables: here.length, data: (data ?? {}) as never }, true));
+  ui.meet(name);
+  // the card leads somewhere: to their table (the nearest one they've spoken at), when that's not where you are
+  const near = here.slice().sort((a, b) => Math.hypot(a.pos.x - walk.pos.x, a.pos.z - walk.pos.z) - Math.hypot(b.pos.x - walk.pos.x, b.pos.z - walk.pos.z))[0];
+  const go = mode === 'floor' && near && nearTable() !== near ? () => walkToTable(near) : undefined;
+  ui.profile({ name, said, tables: here.length, go, data: null });
+  p.then((data) => ui.profile({ name, said, tables: here.length, go, data: (data ?? {}) as never }, true));
 }
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); showFocus(); });
 
@@ -656,6 +699,7 @@ function neonTick(now: number) {
 // ---------------------------------------------------------------- the loop
 const fwd = new THREE.Vector3();
 let aimTick = 0, lampTick = 0, rowToastAt = 0;
+let lastNear: TableSpot | null = null;
 /** On foot, the table you're with is subtitled (as the one you sit at is): you can follow it, and see how it's said. */
 let subLine: object | null = null;
 function walkSubtitles() {
@@ -667,23 +711,44 @@ function walkSubtitles() {
   const to = l.clip.who === l.turn.by && l.turn.replyTo ? mixer.focus!.table.turns.find((u) => u.id === l.turn.replyTo)?.by : undefined;
   ui.subtitle({ name: l.clip.who, to, text: l.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: l.side.emotion, stance: l.side.stance, intensity: l.side.intensity });
 }
-/** Each table's lamp wears its mood: strongly while a line is being said there, faintly from the table's history. */
+/** Each table's lamp wears its mood: a hot line (a row, laughter) flares on its first frame and settles warm; quiet
+ *  moods stay quiet (cool light pools badly in a warm room); a table's history is only a faint tint. A row breaking
+ *  out across the room is heard (palms on a table) and gets a note; so does someone you've met, talking elsewhere. */
 const lampNow = new Map<TableSpot, [number, number, number, number]>();
+const lampLine = new Map<TableSpot, object | null>();
+const HOT = new Set(['heated', 'tense', 'playful', 'upbeat']);
+let noteAt = 0;
+const metNoted = new Set<string>();
 function lampMoods(dt: number) {
   let k = 0;
   for (const s of spots) {
     if (s.bar) continue;
-    const line = director.spot === s ? director.line : mixer.speaking(s);
+    const line = mode === 'table' && director.spot === s ? director.line : mixer.speaking(s);
+    const cur = lampNow.get(s) ?? [1, 0.9, 0.8, 0];
     let rgb: [number, number, number] = MOOD.calm.rgb, a = 0;
-    if (line) { const m = moodOf(line.side.emotion, line.side.stance, line.side.intensity); if (m !== 'calm') { rgb = MOOD[m].rgb; a = 0.45 + 0.4 * Math.min(1, line.side.intensity ?? 0.4); } }
-    else { const m = tableMood(s.table.turns).mood; if (m !== 'calm') { rgb = MOOD[m].rgb; a = 0.22; } }
-    if (line && mode === 'floor' && s !== mixer.focus && clock > rowToastAt && moodOf(line.side.emotion, line.side.stance, line.side.intensity) === 'heated' && (line.side.intensity ?? 0) >= 0.6
-      && Math.hypot(s.pos.x - walk.pos.x, s.pos.z - walk.pos.z) > 2.5) {
-      rowToastAt = clock + 90;
-      const sp = s, by = line.turn.by;
-      ui.toast(`<b>${esc(by)}</b> is getting heated at a table nearby`, () => walkToTable(sp));
-    }
-    const cur = lampNow.get(s) ?? [1, 0.9, 0.8, 0], e = Math.min(1, dt * 2.5);
+    const fresh = !!line && lampLine.get(s) !== line.turn;   // a new comment started here (per comment, not per clip)
+    if (line) {
+      const m = moodOf(line.side.emotion, line.side.stance, line.side.intensity);
+      if (m !== 'calm') {
+        rgb = MOOD[m].rgb; a = HOT.has(m) ? 0.55 : 0.3;
+        if (fresh && HOT.has(m)) { cur[0] = rgb[0]; cur[1] = rgb[1]; cur[2] = rgb[2]; cur[3] = 0.95; }
+      }
+      const away = mode === 'floor' && s !== mixer.focus, d = Math.hypot(s.pos.x - walk.pos.x, s.pos.z - walk.pos.z);
+      if (fresh && away && m === 'heated' && (line.side.intensity ?? 0) >= 0.6) {
+        if (d < 9) audio.sfxAt('thump', { x: s.pos.x, y: roomY + 0.76, z: s.pos.z }, audio.now() + 0.05);
+        if (d > 2.5 && clock > rowToastAt && clock > noteAt) {
+          rowToastAt = clock + 90; noteAt = clock + 20;
+          const sp = s, row = rowOf(s.table.turns);
+          ui.toast(row ? `<b>${esc(row[0])}</b> ⇄ <b>${esc(row[1])}</b> are going at it` : `<b>${esc(line.turn.by)}</b> is getting heated at a table nearby`, () => walkToTable(sp));
+        }
+      } else if (fresh && away && d > 2.5 && ui.met.has(line.turn.by) && !metNoted.has(line.turn.by) && clock > noteAt) {
+        metNoted.add(line.turn.by); noteAt = clock + 20;
+        const sp = s;
+        ui.toast(`<b>${esc(line.turn.by)}</b> is talking at a table nearby (you met them)`, () => walkToTable(sp));
+      }
+    } else { const m = tableMood(s.table.turns).mood; if (m !== 'calm') { rgb = MOOD[m].rgb; a = 0.15; } }
+    lampLine.set(s, line ? line.turn : null);
+    const e = Math.min(1, dt * 2.5);
     for (let c = 0; c < 3; c++) cur[c] += (rgb[c] - cur[c]) * e;
     cur[3] += (a - cur[3]) * e;
     lampNow.set(s, cur);
@@ -727,7 +792,10 @@ function frame(dt: number, draw = true) {
   }
   // on foot beside a table: offer to sit down there
   if (mode === 'floor' && walk.enabled) {
-    const t = walk.walking ? null : nearTable();
+    const here = nearTable();
+    if (here && here !== lastNear) mixer.greet(here, camera.position);                     // they notice you
+    lastNear = here;
+    const t = walk.walking ? null : here;
     ui.sitDown(t ? { name: t.table.turns[0]?.by ?? '', go: () => sit(t, true), key: !touch } : null);
     ui.signs(walk.pos, mixer.focus, (s) => mixer.speaking(s));
     walkSubtitles();

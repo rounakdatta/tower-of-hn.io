@@ -7,9 +7,9 @@ export type Mood = 'heated' | 'tense' | 'playful' | 'upbeat' | 'thoughtful' | 's
 
 export const MOOD: Record<Mood, { color: string; word: string; rgb: [number, number, number] }> = {
   heated: { color: '#ff5a4e', word: 'heated', rgb: [1, 0.35, 0.3] },
-  tense: { color: '#ff9b4a', word: 'tense', rgb: [1, 0.6, 0.3] },
+  tense: { color: '#e8775f', word: 'tense', rgb: [0.91, 0.47, 0.37] },
   playful: { color: '#f7d154', word: 'laughing', rgb: [1, 0.85, 0.4] },
-  upbeat: { color: '#7fdc8c', word: 'excited', rgb: [0.55, 0.95, 0.6] },
+  upbeat: { color: '#f7d154', word: 'excited', rgb: [1, 0.85, 0.4] },
   thoughtful: { color: '#8ab4ff', word: 'thoughtful', rgb: [0.6, 0.75, 1] },
   somber: { color: '#a78bfa', word: 'sombre', rgb: [0.7, 0.6, 1] },
   warm: { color: '#ff9ecb', word: 'warm', rgb: [1, 0.65, 0.82] },
@@ -31,12 +31,23 @@ export function moodOf(emotion?: string, stance?: string, intensity = 0.4): Mood
   }
 }
 
-/** a word for how a line is being said, for a sign or a subtitle (a retort is a comeback, whatever its tone) */
+/** A word for how a line is being said, for a sign or a subtitle, only when it says something: a badge earns its
+ *  place by being absent most of the time (firm is HN's everyday register: named only when it's really firm). */
 export function deliveryWord(emotion?: string, stance?: string, intensity = 0.4) {
   if (stance === 'retort') return 'comeback';
-  const w: Record<string, string> = { angry: intensity >= 0.7 ? 'furious' : 'angry', stern: 'firm', nervous: 'unsure', joyful: 'amused', excited: 'excited',
-    surprised: 'surprised', contemplative: 'thinking aloud', sad: 'sad', tender: 'kind', mundane: '' };
-  return w[emotion ?? ''] ?? '';
+  if (emotion === 'stern') return intensity >= 0.6 ? 'firm' : '';
+  const always: Record<string, string> = { angry: intensity >= 0.7 ? 'furious' : 'angry', joyful: 'grinning', sad: 'sad', tender: 'gently',
+    contemplative: 'thinking aloud', surprised: 'surprised' };
+  if (always[emotion ?? '']) return always[emotion!];
+  return intensity >= 0.55 ? ({ excited: 'excited', nervous: 'unsure' } as Record<string, string>)[emotion ?? ''] ?? '' : '';
+}
+
+const people = new WeakMap<Turn[], number>();
+/** how many different people talk at a table (remembered per revision of its turns) */
+export function peopleOf(turns: Turn[]) {
+  let n = people.get(turns);
+  if (n === undefined) { n = new Set(turns.map((u) => u.by)).size; people.set(turns, n); }
+  return n;
 }
 
 const moods = new WeakMap<Turn[], { mood: Mood; heat: number }>();

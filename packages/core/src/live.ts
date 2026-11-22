@@ -41,6 +41,8 @@ export interface Head {
   act: Record<number, number>;
   /** id -> how many different people are talking on that floor (its crowd, seen through the windows) */
   people: Record<number, number>;
+  /** comments listeners are waiting on that aren't voiced yet (set by the server; clients wait less when it's long) */
+  load?: number;
 }
 
 export const VOICE_POOL = 115;
@@ -226,7 +228,7 @@ export class Live {
       const turns = playOrder(root);
       if (!turns.length) continue;
       const { seated, standing } = seat(turns);
-      tables.push({ root: rootId, seated, standing, gist: this.gistOf(rootId), turns: turns.map((t) => ({ ...t, voice: this.voiceOf(t.by), v: this.voiced.get(t.id) })) });
+      tables.push({ root: rootId, seated, standing, gist: this.gistOf(turns[0].id), turns: turns.map((t) => ({ ...t, voice: this.voiceOf(t.by), v: this.voiced.get(t.id) })) });
     }
     return { story: meta(st), rev: 0, epoch: 0, tables };
   }

@@ -65,6 +65,9 @@ export class Performer {
   private chairK = new Map<number, number>();
   /** heads looked at this frame (kept: acting runs every frame at every table in earshot) */
   private hFocus = new THREE.Vector3();
+  /** someone here glancing at a point (you, walking up), until a time on the audio clock */
+  private looks = new Map<number, { x: number; y: number; z: number; until: number }>();
+  glance(i: number, at: THREE.Vector3, until: number) { this.looks.set(i, { x: at.x, y: at.y, z: at.z, until }); }
   private hTmp = new THREE.Vector3();
 
   constructor(private crowd: Crowd, public spot: TableSpot, private ix: (name: string) => number,
@@ -151,6 +154,10 @@ export class Performer {
       t.nod = Math.sin(at * 0.9 + i * 1.7) * 0.03;
       t.yaw = focusHead && focus !== i ? this.crowd.yawTo(i, focusHead) : Math.sin(at * 0.3 + i) * 0.3;
       if (focusHead && focus !== i) t.nod += this.crowd.pitchTo(i, focusHead);              // eye-lines: look up at someone standing
+      const lk = this.looks.get(i);
+      if (lk && at < lk.until && i !== speaking) {                                           // someone walked up: a look round
+        this.hTmp.set(lk.x, lk.y, lk.z); t.yaw = this.crowd.yawTo(i, this.hTmp); t.nod = this.crowd.pitchTo(i, this.hTmp); t.brow = 0.25;
+      } else if (lk) this.looks.delete(i);
       const performing = !!plan && inTurn && i === plan.S;
       if (performing) {
         // square up to the person being answered: shoulders part of the way, the head the rest

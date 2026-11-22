@@ -132,13 +132,14 @@ export class AudioEngine {
     return p;
   }
 
-  /** A table's channel (null until there is a context). */
-  bus(): Bus | null {
+  /** A table's channel, starting at the level it should have (null until there is a context). */
+  bus(level = 1, hz = 18000): Bus | null {
     if (!this.ctx) return null;
     const gain = this.ctx.createGain(), lp = this.ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 18000; lp.Q.value = 0.5;
+    gain.gain.value = level;
+    lp.type = 'lowpass'; lp.frequency.value = hz; lp.Q.value = 0.5;
     gain.connect(lp).connect(this.voiceBus);
-    return { gain, lp, level: 1, hz: 18000 };
+    return { gain, lp, level, hz };
   }
   /** Bring a table forward (1, open) or let it fall back (quieter, muffled), eased over about a second. */
   setBus(b: Bus, level: number, hz: number) {

@@ -314,8 +314,10 @@ export class Crowd {
   }
 
   /** Everyone who was performing goes back to a neutral, listening face (no frozen open mouths). */
-  settle() {
-    for (const i of this.active) {
+  /** Everyone (or just `only`) back to neutral, at once: walkers keep going. */
+  settle(only?: number[]) {
+    const set = only ? new Set(only.filter((i) => this.active.has(i))) : this.active;
+    for (const i of set) {
       const p = this.people[i];
       if (!p || p.walk) continue;                         // someone on their way somewhere keeps going
       for (const x of [p.expr, p.target]) Object.assign(x, NEUTRAL);
@@ -324,7 +326,8 @@ export class Crowd {
     }
     this.exprTex.needsUpdate = true;
     this.flush();
-    this.active = new Set([...this.active].filter((i) => this.people[i]?.walk));
+    if (only) { for (const i of set) if (!this.people[i]?.walk) this.active.delete(i); }
+    else this.active = new Set([...this.active].filter((i) => this.people[i]?.walk));
   }
 
   private byName = new Map<string, number>();

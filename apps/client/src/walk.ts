@@ -102,17 +102,18 @@ export class WalkCam {
   /** Stand here, looking this way (after the flight in, or after standing up from a table). */
   begin(pos: THREE.Vector3, yaw: number, pitch = -0.1) {
     this.pos.set(pos.x, 0, pos.z); this.yaw = yaw; this.pitch = pitch;
-    this.stop(); this.vel.set(0, 0); this.enabled = true;
+    this.stop(); this.vel.set(0, 0); this.turnTo = null; this.unmark(); this.enabled = true;
   }
   /** Off the floor (sitting down, leaving): the mouse is given back, the stick put away. */
   disable() {
     this.enabled = false; this.keys.clear(); this.drags.clear(); this.endStick(); this.vel.set(0, 0);
+    this.stop(); this.turnTo = null; this.unmark();
     if (this.locked) document.exitPointerLock();
   }
   /** A faint stick where the left thumb goes, until the first walk with it (phones: how to move, shown not told). */
   ghost(on: boolean) {
     this.stickEl.classList.toggle('ghost', on);
-    if (on) { this.stickEl.style.transform = `translate(70px, ${innerHeight - 128}px)`; this.knobEl.style.transform = 'translate(-50%, -50%)'; }
+    if (on) { this.stickEl.style.transform = `translate(72px, ${innerHeight - 215}px)`; this.knobEl.style.transform = 'translate(-50%, -50%)'; }
   }
   /** Capture the mouse (from a click, as browsers require). */
   capture() {
@@ -288,6 +289,7 @@ export class WalkCam {
     this.camera.lookAt(this.look);
   }
   private stop() { this.dest = null; }
+  private unmark() { this.marker.visible = false; this.markerMat.opacity = 0; }
 
   /** Out of tables and people, inside the glass: push out along the shortest way (so you slide, never stick). */
   private collide(obs: Obstacle[]) {

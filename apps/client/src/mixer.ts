@@ -41,6 +41,8 @@ interface Player {
   calmUntil: number;
   perf: Performer;
   bus: Bus | null;
+  /** the level and low-pass this table should have now (a new channel starts there, not at full and then easing) */
+  want: readonly [number, number];
 }
 
 export class Mixer {
@@ -49,6 +51,8 @@ export class Mixer {
   private story = 0;
   /** the table the director is playing (we're seated there): the mixer leaves it alone */
   exclude: TableSpot | null = null;
+  /** chairs follow whoever stands up out of them (as at the director's table) */
+  pushChair: (chair: number, k: number) => void = () => {};
   /** the table you're with (nearest, or the one you're facing): it's heard clearly */
   focus: TableSpot | null = null;
   private focused: Player | null = null;
@@ -64,7 +68,8 @@ export class Mixer {
       spot, cursor: 0, done: 0, sched: [], ready: new Map(), loading: new Set(), stage: '', waitFrom: 0, doing: 0,
       breaking: [], played: new Set(), resting: true, calmUntil: 0, bus: null,
       // the people at this table: by name, among its seats (one person per commenter on the floor)
-      perf: new Performer(this.crowd, spot, (n) => (spot.seats.some((st) => st.name === n) ? this.crowd.index(n) : -1)),
+      perf: new Performer(this.crowd, spot, (n) => (spot.seats.some((st) => st.name === n) ? this.crowd.index(n) : -1), (c, k) => this.pushChair(c, k)),
+      want: MIX.wander,
     }));
     this.bySpot = new Map(this.players.map((p) => [p.spot, p]));
   }
@@ -103,6 +108,15 @@ export class Mixer {
     if (p && !p.breaking.includes(turn.id) && !p.played.has(turn.id)) p.breaking.push(turn.id);
   }
 
+  /** You walked up to this table: the two nearest of its people (not the one talking) look round at you, a moment. */
+  greet(spot: TableSpot, at: THREE.Vector3) {
+    const p = this.bySpot.get(spot), now = this.audio.now();
+    if (!p) return;
+    const talking = p.sched.find((s) => s.start <= now && s.end > now)?.who ?? -1;
+    const near = spot.seats.map((st) => ({ i: this.crowd.index(st.name), d: Math.hypot(st.pos.x - at.x, st.pos.z - at.z) }))
+      .filter((x) => x.i >= 0 && x.i !== talking && !this.crowd.isWalking(x.i)).sort((a, b) => a.d - b.d).slice(0, 2);
+    near.forEach((x, k) => p.perf.glance(x.i, at, now + 1.1 + k * 0.35));
+  }
   /** each table's plans (vibe tests): who performs what, when (against the audio clock) */
   plans() { const now = this.audio.now(); return this.players.map((p, k) => [...p.perf.plans.values()].filter((x) => x.end > now - 2).map((x) => ({ k, S: x.S, A: x.A, gesture: x.gesture, stand: x.stand, ST: x.ST, E: x.E, start: +(x.start - now).toFixed(2), end: +(x.end - now).toFixed(2) }))).flat(); }
   /** each table's channel (vibe tests): level and low-pass, or null before it has spoken */
@@ -132,13 +146,17 @@ export class Mixer {
     for (const p of this.players) {
       if (p.spot === this.exclude) continue;              // the director's table: its people are the director's
       p.sched = p.sched.filter((s) => s.end > now - 0.2);
-      if (p.bus) {
-        const [lv, hz] = this.exclude ? MIX.seated : !focus ? MIX.wander : p === focus ? MIX.focus : MIX.others;
-        this.audio.setBus(p.bus, lv, hz);
-      }
+      p.want = this.exclude ? MIX.seated : !focus ? MIX.wander : p === focus ? MIX.focus : MIX.others;
+      if (p.bus) this.audio.setBus(p.bus, p.want[0], p.want[1]);
       const k = on.get(p);
-      if (k === undefined) {                             // out of earshot: let its last words finish, then calm down
-        if (!p.sched.length && !p.resting) { p.resting = true; p.calmUntil = now + 1.6; }
+      if (k === undefined) {                             // out of earshot: its last words finish, acted, then it calms down
+        if (p.sched.length) {
+          const cur = p.sched.find((s) => s.start <= now && s.end > now) ?? null;
+          p.perf.animate(p.sched, cur, now, dt);
+          p.perf.chairs();
+          continue;
+        }
+        if (!p.resting) { p.resting = true; p.calmUntil = now + 1.6; }
         if (p.calmUntil) this.calm(p, now, dt);
         continue;
       }
@@ -209,7 +227,8 @@ export class Mixer {
     if (!going) p.done = 0;                              // (it went: deleted, or hidden)
     const turn = going ?? (p.breaking.length ? turns.find((u) => u.id === p.breaking[0]) : undefined) ?? turns.find((u) => !p.played.has(u.id));
     if (!turn) {                                         // the whole thread said: a pause, then round again
-      if (turns.length) { p.played.clear(); p.done = 0; p.stage = ''; p.cursor = Math.max(p.cursor, now) + 6; }
+      // (its plans go too: a plan keeps the earliest start it has seen, so a second lap would act everything late)
+      if (turns.length) { p.played.clear(); p.perf.plans.clear(); p.done = 0; p.stage = ''; p.cursor = Math.max(p.cursor, now) + 6; }
       return;
     }
     // the table you're with asks for its voices (or, while you wander, the nearest)
@@ -217,7 +236,8 @@ export class Mixer {
     const live = p.breaking.includes(turn.id), at = turns.indexOf(turn);
     if (!turn.v) {
       if (ask || live) this.want(p, at);
-      if (this.waited(p, `voice:${turn.id}`, now) > (live ? 40 : 4)) this.next(p, turn);   // not voiced yet: the table moves on
+      // not voiced yet: the table moves on (sooner on a busy evening, when it would wait in vain)
+      if (this.waited(p, `voice:${turn.id}`, now) > (live ? 40 : (this.sync.head?.load ?? 0) > 12 ? 1.5 : 4)) this.next(p, turn);
       return;
     }
     const r = this.load(p, turn);
@@ -239,7 +259,7 @@ export class Mixer {
       return;
     }
     p.stage = '';
-    p.bus ??= this.audio.bus();
+    p.bus ??= this.audio.bus(p.want[0], p.want[1]);
     const i = here === 'here' ? this.room.who(turn.by) : -1;
     const gain = emoGain(r.side.emotion, r.side.intensity);
     // the pause before a turn: a comeback or a heated line barely waits; after a joke, a beat for the laugh

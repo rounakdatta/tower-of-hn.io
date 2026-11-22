@@ -35,7 +35,7 @@ export class Minimap {
       this.pick(e.offsetX, e.offsetY);
       this.open(false);
     });
-    document.addEventListener('pointerdown', (e) => { if (this.big && e.target !== this.cv) this.open(false); }, true);
+    document.addEventListener('pointerdown', (e) => { if (this.big && e.target !== this.cv) { this.open(false); e.stopPropagation(); } }, true);
   }
 
   private big = false;
@@ -115,11 +115,21 @@ export class Minimap {
         g.lineWidth = 1.5; g.strokeStyle = color; g.globalAlpha = 0.35 + 0.35 * (1 - pulse); g.stroke(); g.globalAlpha = 1;
       }
       g.beginPath(); g.arc(q.x, q.z, r, 0, Math.PI * 2);
-      g.fillStyle = color; g.globalAlpha = talking ? 0.95 : 0.55; g.fill(); g.globalAlpha = 1;
+      g.fillStyle = color; g.globalAlpha = talking ? 0.95 : 0.38; g.fill(); g.globalAlpha = 1;
       if (o.focus === sp) { g.lineWidth = 1.6; g.strokeStyle = 'rgba(255,255,255,0.95)'; g.stroke(); }
     }
-    // opened big: the busiest tables say what they are (a few words, so it stays a map)
+    // opened big: the busiest tables say what they are (a few words, so it stays a map), and what colours mean
     if (this.big) {
+      g.font = '600 10.5px system-ui, -apple-system, sans-serif'; g.textBaseline = 'middle'; g.textAlign = 'left';
+      const keys = [['heated', MOOD.heated.color], ['laughing', MOOD.playful.color], ['thoughtful', MOOD.thoughtful.color], ['sombre', MOOD.somber.color]] as const;
+      const widths = keys.map(([w]) => g.measureText(w).width + 18), total = widths.reduce((a, b) => a + b, 0);
+      let lx = s - total / 2;
+      const ly = s + (s - 6) * 0.62;                    // where the circle is still wide enough for the line
+      keys.forEach(([w, c], i) => {
+        g.beginPath(); g.arc(lx + 4, ly, 3.5, 0, Math.PI * 2); g.fillStyle = c; g.fill();
+        g.fillStyle = 'rgba(255,244,232,0.8)'; g.fillText(w, lx + 11, ly);
+        lx += widths[i];
+      });
       g.font = '600 11px system-ui, -apple-system, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'top';
       const named = spots.filter((x) => !x.bar).sort((a, b) => b.table.turns.length - a.table.turns.length).slice(0, 7);
       for (const sp of named) {

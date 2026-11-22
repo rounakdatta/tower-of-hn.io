@@ -68,16 +68,23 @@ const floors = new Map<number, FloorSnapshot>();
  *  0 = all of it) and when (demand lapses unless renewed). Priority bands, which the worker also reads:
  *    0-99 someone sat at the table · 100-199 someone walked onto the floor · 200-999 a floor in focus on the tower
  *    1000+ background: first words of every table first, then (only while anyone is around) whole turns */
-const demand = new Map<string, { id: number; prio: number; upto: number; at: number }>();   // key: id/upto (one ask per depth)
+const demand = new Map<string, { id: number; prio: number; upto: number; at: number; who: Map<string, number> }>();   // key: id/upto (one ask per depth)
 const DEMAND_TTL = 90_000;
 /** someone has the page open (head.json is polled every 2 s): background voicing goes deep only then */
 let lastViewerAt = 0;
 const audience = () => Date.now() - lastViewerAt < 20 * 60_000;
-function ask(id: number, prio: number, upto = 0) {
-  const key = `${id}/${upto}`, d = demand.get(key), fresh = d && Date.now() - d.at < DEMAND_TTL;
-  if (!fresh || prio <= d.prio) demand.set(key, { id, prio, upto, at: Date.now() });
-  else d.at = Date.now();
+function ask(id: number, prio: number, upto = 0, client = '') {
+  const key = `${id}/${upto}`, d = demand.get(key), now = Date.now(), fresh = d && now - d.at < DEMAND_TTL;
+  if (!fresh) { demand.set(key, { id, prio, upto, at: now, who: new Map(client ? [[client, now]] : []) }); return; }
+  if (prio < d.prio) d.prio = prio;
+  d.at = now;
+  if (client) d.who.set(client, now);
 }
+/** How many listeners are waiting on it lowers its number (sooner): eight places a listener, up to thirty. With a
+ *  hundred people on a few floors, the worker's seconds go where most ears are. */
+const crowdPrio = (d: { prio: number; who: Map<string, number> }) => d.prio - Math.min(30, 8 * Math.max(0, d.who.size - 1));
+/** listener-driven voicing still waiting (head.load): clients stop waiting on unvoiced lines when it runs long */
+let backlog = 0;
 const queued = new Map<number, string>();            // comment id -> job file name
 const stale = new Set<number>();                     // voiced with an older VOICE_VERSION: re-voice in the background
 const partial = new Set<number>();                   // playable, but the worker is still voicing the rest of it
@@ -153,7 +160,10 @@ function wanted(): [number, number, number][] {
     const o = out.get(id);
     if (!o || prio < o[0]) out.set(id, [prio, upto]);
   };
-  for (const d of demand.values()) add(d.id, d.prio, d.upto);
+  for (const d of demand.values()) {
+    for (const [c, t] of d.who) if (Date.now() - t > DEMAND_TTL) d.who.delete(c);   // listeners who left
+    add(d.id, crowdPrio(d), d.upto);
+  }
   const convo = (f: FloorSnapshot) => f.tables.filter((t) => t.turns.length >= 2);
   live.tower.forEach((sid, rank) => {
     const f = floors.get(sid);
@@ -168,7 +178,9 @@ function wanted(): [number, number, number][] {
       f.tables.filter((t) => t.turns.length === 1).slice(0, PRE.bar).forEach((t, k) => add(t.turns[0].id, 5000 + rank * 200 + 150 + k, 0));
     }
   });
-  return [...out].map(([id, [prio, upto]]) => [id, prio, upto] as [number, number, number]).sort((a, b) => a[1] - b[1]);
+  const list = [...out].map(([id, [prio, upto]]) => [id, prio, upto] as [number, number, number]).sort((a, b) => a[1] - b[1]);
+  backlog = list.reduce((n, x) => n + (x[1] < 1000 ? 1 : 0), 0);
+  return list;
 }
 
 /** audio voiced while HN still showed a moderation placeholder: the client skips it, so a listener needs the real thing */
@@ -231,6 +243,8 @@ function syncJobs() {
     queued.set(id, name);
   }
 }
+
+let headKey = '';
 
 // ---------------------------------------------------------------- HTTP: the CDN, the client, one write endpoint
 const TYPES: Record<string, string> = {
@@ -323,23 +337,24 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
         if (!f) throw new Error('not on the tower');
         lastViewerAt = Date.now();
         let turns: FloorSnapshot['tables'][number]['turns'] = [];
+        const who = clientOf(req);
         if (warm) {
           // ahead of anyone sitting down: 1 = the floor is in focus on the tower, 2 = they're standing in the room
           const convo = f.tables.filter((t) => t.turns.length >= 2);
           if (warm === 2) {
             // first words at every table before second words at any: whichever table they pick can start
-            convo.slice(0, 6).forEach((t, ti) => ask(t.turns[0].id, 100 + ti, 1));
-            convo.slice(0, 6).forEach((t, ti) => ask(t.turns[0].id, 120 + ti, 2));
-            convo.slice(0, 3).forEach((t, ti) => { ask(t.turns[0].id, 150 + ti * 3); if (t.turns[1]) ask(t.turns[1].id, 151 + ti * 3, 1); });
+            convo.slice(0, 6).forEach((t, ti) => ask(t.turns[0].id, 100 + ti, 1, who));
+            convo.slice(0, 6).forEach((t, ti) => ask(t.turns[0].id, 120 + ti, 2, who));
+            convo.slice(0, 3).forEach((t, ti) => { ask(t.turns[0].id, 150 + ti * 3, 0, who); if (t.turns[1]) ask(t.turns[1].id, 151 + ti * 3, 1, who); });
           } else {
             // the floor in focus now goes ahead of floors glanced at before (the queue holds twelve)
             for (const d of demand.values()) if (d.prio >= 200 && d.prio < 1000) d.prio = Math.min(999, d.prio + 10);
-            convo.slice(0, 3).forEach((t, ti) => ask(t.turns[0].id, 200 + ti, 1));
+            convo.slice(0, 3).forEach((t, ti) => ask(t.turns[0].id, 200 + ti, 1, who));
           }
           turns = convo.slice(0, warm === 2 ? 6 : 3).map((t) => t.turns[0]);
         } else {
           turns = f.tables[table]?.turns.slice(from, from + 24) ?? [];
-          turns.forEach((u, k) => { if (needsVoice(u.id)) ask(u.id, k); });
+          turns.forEach((u, k) => { if (needsVoice(u.id)) ask(u.id, k, 0, who); });
         }
         syncJobs();
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -368,7 +383,9 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
   }
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-    res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: queued.size, demand: demand.size, tower: live.tower.length, audience: audience() }));
+    const ears = new Set<string>();
+    for (const d of demand.values()) for (const c of d.who.keys()) ears.add(c);
+    res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: queued.size, demand: demand.size, backlog, listeners: ears.size, tower: live.tower.length, audience: audience() }));
     return;
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
@@ -394,15 +411,19 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     return;
   }
   const p = resolve(LIVE, '.' + url.pathname.slice(5));
-  if (!p.startsWith(LIVE + '/') || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+  const st = p.startsWith(LIVE + '/') ? statOr(p) : null;
+  if (!st || st.isDirectory()) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
   const isHead = url.pathname === '/live/head.json';
   if (isHead) lastViewerAt = Date.now();
-  const file = readOr503(p, res);
+  const cache = isHead ? 'public, max-age=1, stale-while-revalidate=10' : 'public, max-age=31536000, immutable';
+  // a poll that finds nothing new costs a header, not a body
+  const tag = `W/"${Math.round(st.mtimeMs).toString(36)}-${st.size.toString(36)}"`;
+  if (req.headers['if-none-match'] === tag) { res.writeHead(304, { etag: tag, 'cache-control': cache, vary: 'accept-encoding' }); res.end(); return; }
+  const file = readOr503(p, res, st.mtimeMs);
   if (!file) return;
   const out = squeeze(req, p, file, false);
   res.writeHead(200, {
-    'content-type': TYPES[extname(p)] ?? 'application/octet-stream',
-    'cache-control': isHead ? 'public, max-age=1, stale-while-revalidate=10' : 'public, max-age=31536000, immutable',
+    'content-type': TYPES[extname(p)] ?? 'application/octet-stream', 'cache-control': cache, etag: tag,
     ...(out.enc ? { 'content-encoding': out.enc } : {}), vary: 'accept-encoding',
   });
   res.end(req.method === 'HEAD' ? undefined : out.body);
@@ -434,8 +455,9 @@ function squeeze(req: import('node:http').IncomingMessage, p: string, f: { body:
 }
 
 /** A file's bytes, or a 503 nobody caches: a read error must never become an empty response cached for a year. */
-function readOr503(p: string, res: import('node:http').ServerResponse) {
-  try { return { body: readFileSync(p), mtime: statSync(p).mtimeMs }; } catch {
+function statOr(p: string) { try { return statSync(p); } catch { return null; } }
+function readOr503(p: string, res: import('node:http').ServerResponse, mtime?: number) {
+  try { return { body: readFileSync(p), mtime: mtime ?? statSync(p).mtimeMs }; } catch {
     res.writeHead(503, { 'cache-control': 'no-store', 'retry-after': '2' });
     res.end();
     return null;
@@ -713,8 +735,9 @@ for (;;) {
     const r = live.tick(Date.now());
     for (const s of r.snapshots) { floors.set(s.story.id, s); write(`f/${s.story.id}/${s.rev}.json`, s); }
     if (r.delta) write(`e/${r.delta.epoch}.json`, r.delta);
-    write('head.json', r.head);
     syncJobs();
+    const head = { ...r.head, load: backlog }, key = JSON.stringify({ ...head, at: 0 });
+    if (key !== headKey) { write('head.json', head); headKey = key; }
   } catch (e) { console.error('tick', String(e).slice(0, 200)); }      // a full disk, say: keep serving, keep trying
   heartbeat = Date.now();
   await sleep(Math.max(0, 2000 - (Date.now() - loopStart)));

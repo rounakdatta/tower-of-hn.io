@@ -114,7 +114,8 @@ export class Director {
     for (const s of this.sched) { try { s.src.stop(); } catch { /* already done */ } }
     this.sched = []; this.current = null; this.playing = false;
     this.glances = []; this.events = [];
-    this.crowd.settle();
+    // only this table's people: the other tables in earshot are acting for themselves now
+    this.crowd.settle(this.spot ? this.spot.seats.map((s) => this.ix(s.name)).filter((i) => i >= 0) : []);
     this.perf?.reset();
     this.ui.subtitle(null); this.ui.placard(null); this.ui.code(null); this.ui.waiting(null);
   }
@@ -242,7 +243,7 @@ export class Director {
           this.ui.waiting(i >= 0 ? this.crowd.headPos(i) : null);
           // a line still being voiced: after a few seconds the table moves on without it (never mid-comment)
           if (!this.waitSince) this.waitSince = now;
-          else if (!this.clipsDone && now - this.waitSince > 4 && turns.slice(this.turnIdx + 1, this.turnIdx + 4).some((u) => this.ready.has(u.id))) {
+          else if (!this.clipsDone && now - this.waitSince > ((this.sync.head?.load ?? 0) > 12 ? 2 : 4) && turns.slice(this.turnIdx + 1, this.turnIdx + 4).some((u) => this.ready.has(u.id))) {
             this.turnIdx++; this.waitSince = 0; this.ui.waiting(null);
             continue;
           } else if (this.clipsDone && now - this.waitSince > 30) {   // the rest of a comment never came: move on
