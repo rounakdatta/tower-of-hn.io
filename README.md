@@ -35,7 +35,7 @@ open http://127.0.0.1:5288
 
 - **Tower.** Drag to orbit, and hover a floor to see its story. Click to ride the elevator up.
   - Floors slide when stories trade ranks.
-  - Windows flash when a comment lands.
+  - Windows flash when a comment lands, and run coral on a floor where a row is on (its focus card says heated).
   - The beacon pulses for every new comment on the front page.
 - **Floor.** You arrive on foot, among every conversation on the floor. The table you're with (nearest, or the one you're facing) is heard clearly and subtitled; the others murmur, muffled, as a room does.
   - **Desktop:** click the floor and the mouse looks around (Esc gives it back); WASD or the arrows walk, Shift hurries. A dot in the middle aims: click someone to see their card, a table to walk over. E sits down.
