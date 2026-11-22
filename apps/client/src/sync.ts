@@ -35,12 +35,23 @@ export class LiveSync {
   private watchers = new Map<number, (f: Floor) => void>();
   onHead: (h: Head, prev: Head | null) => void = () => {};
   onDelta: (d: Delta) => void = () => {};
+  /** on the tower, not in a room: polling can be half as often */
+  relaxed = false;
 
   constructor(public base: string) {}
 
   async start() {
     await this.poll();
-    setInterval(() => this.poll().catch(() => {}), 2000);
+    // every 2 s on a floor (someone may walk in with a new comment); every 4 s on the tower (a window lighting a
+    // moment later is the same window); every 10 s from a tab in the background (often left open for hours), which
+    // still keeps a conversation you're listening to with the screen off current
+    let quiet = 0;
+    setInterval(() => {
+      ++quiet;
+      if (document.hidden ? quiet % 5 : this.relaxed && quiet % 2) return;
+      this.poll().catch(() => {});
+    }, 2000);
+    document.addEventListener('visibilitychange', () => { quiet = 0; if (!document.hidden) this.poll().catch(() => {}); });
   }
 
   private polling = false;

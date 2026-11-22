@@ -530,7 +530,9 @@ def main(var):
                 audio = audio / peak * 0.9
                 rel = f"c/{j['id']}.{j['rev']}.{k}.ogg"
                 # atomically: a clip is cached as immutable, so nobody may ever read half of one
-                sf.write(os.path.join(live, rel + ".tmp"), audio, sr, format="OGG", subtype="OPUS")
+                # Opus at ~26 kbps: the same 8 kHz of speech as libsndfile's default (~36 kbps), a quarter smaller
+                # (measured on our own clips; at 0.94 and up the top of the voice starts to go)
+                sf.write(os.path.join(live, rel + ".tmp"), audio, sr, format="OGG", subtype="OPUS", compression_level=0.92)
                 os.replace(os.path.join(live, rel + ".tmp"), os.path.join(live, rel))
                 env = envelope(audio, sr)
                 shp = shape_track(spoken, env)

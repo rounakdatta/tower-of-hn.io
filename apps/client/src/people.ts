@@ -61,7 +61,7 @@ const STAND_TALL = 2.5;           // a standing body vs a seated one (the chair 
 interface Walk { path: THREE.Vector3[]; speed: number; stride: number; face: number; onArrive?: () => void }
 interface Person { name: string; look: Look; pose: Pose; parts: { hair: number; glasses: number; beard: number; hood: number }; expr: Expr; target: Expr; walk?: Walk; fade?: number }
 
-function headGeo() { return new THREE.SphereGeometry(0.2, 32, 22); }
+function headGeo() { return new THREE.SphereGeometry(0.2, 28, 18); }
 
 /**
  * Skin has a shoulder, like film: brightness above a knee rolls off instead of clipping. A face close under a
@@ -76,20 +76,20 @@ function skinRolloff() {
 }
 
 function hairGeos(): THREE.BufferGeometry[] {
-  const cap = (r: number, theta: number) => new THREE.SphereGeometry(r, 28, 14, 0, Math.PI * 2, 0, theta);
+  const cap = (r: number, theta: number) => new THREE.SphereGeometry(r, 24, 12, 0, Math.PI * 2, 0, theta);
   const short = cap(0.213, 1.12);
   const long = mergeGeometries([cap(0.214, 1.3), (() => { const g = new THREE.CylinderGeometry(0.2, 0.17, 0.3, 24, 1, true, Math.PI * 0.62, Math.PI * 0.76); g.translate(0, -0.12, 0); return g; })()]);
-  const bun = mergeGeometries([cap(0.213, 1.12), (() => { const g = new THREE.SphereGeometry(0.085, 16, 10); g.translate(0, 0.17, -0.12); return g; })()]);
-  const beanie = mergeGeometries([cap(0.222, 1.05), (() => { const g = new THREE.TorusGeometry(0.2, 0.028, 10, 32); g.rotateX(Math.PI / 2); g.translate(0, 0.095, 0); return g; })(),
-    (() => { const g = new THREE.SphereGeometry(0.045, 10, 8); g.translate(0, 0.235, 0); return g; })()]);
+  const bun = mergeGeometries([cap(0.213, 1.12), (() => { const g = new THREE.SphereGeometry(0.085, 12, 8); g.translate(0, 0.17, -0.12); return g; })()]);
+  const beanie = mergeGeometries([cap(0.222, 1.05), (() => { const g = new THREE.TorusGeometry(0.2, 0.028, 8, 24); g.rotateX(Math.PI / 2); g.translate(0, 0.095, 0); return g; })(),
+    (() => { const g = new THREE.SphereGeometry(0.045, 8, 6); g.translate(0, 0.235, 0); return g; })()]);
   // curly: a closed, round volume set up and back, so its front edge sits above the brows (eyes always show)
-  const curly = (() => { const g = new THREE.SphereGeometry(0.25, 26, 18); g.translate(0, 0.095, -0.07); return g; })();
+  const curly = (() => { const g = new THREE.SphereGeometry(0.25, 22, 14); g.translate(0, 0.095, -0.07); return g; })();
   const placeholder = new THREE.BoxGeometry(0.001, 0.001, 0.001);
   return [placeholder, short, long, bun, beanie, curly];
 }
 
 function glassesGeo() {
-  const ring = (x: number) => { const g = new THREE.TorusGeometry(0.052, 0.009, 8, 24); g.translate(x, 0.035, 0.192); return g; };
+  const ring = (x: number) => { const g = new THREE.TorusGeometry(0.052, 0.009, 6, 16); g.translate(x, 0.035, 0.192); return g; };
   const bridge = new THREE.CylinderGeometry(0.006, 0.006, 0.05, 6); bridge.rotateZ(Math.PI / 2); bridge.translate(0, 0.045, 0.2);
   return mergeGeometries([ring(-0.062), ring(0.062), bridge]);
 }
@@ -103,11 +103,11 @@ function beardGeo() {
 function torsoGeo() {
   const pts = [[0, 0], [0.15, 0], [0.205, 0.07], [0.215, 0.2], [0.205, 0.34], [0.18, 0.44], [0.12, 0.51], [0.05, 0.535], [0, 0.54]]
     .map(([x, y]) => new THREE.Vector2(x, y));
-  return new THREE.LatheGeometry(pts, 32);
+  return new THREE.LatheGeometry(pts, 24);
 }
 
 function armGeo() {
-  const g = new THREE.CapsuleGeometry(0.046, 0.22, 6, 12);
+  const g = new THREE.CapsuleGeometry(0.046, 0.22, 4, 10);
   g.translate(0, -0.155, 0);        // pivot at the shoulder
   return g;
 }
@@ -173,9 +173,9 @@ export class Crowd {
     this.beards.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 3), 3);
     const handMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.5 });
     handMat.outputNode = skinRolloff();
-    this.hands = new THREE.InstancedMesh(new THREE.SphereGeometry(0.052, 14, 10), handMat, MAX_PEOPLE * 2);
+    this.hands = new THREE.InstancedMesh(new THREE.SphereGeometry(0.052, 10, 7), handMat, MAX_PEOPLE * 2);
     this.hands.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 6), 3);
-    const hoodGeo = new THREE.TorusGeometry(0.135, 0.055, 10, 24, Math.PI);
+    const hoodGeo = new THREE.TorusGeometry(0.135, 0.055, 8, 18, Math.PI);
     hoodGeo.rotateX(-Math.PI / 2);
     this.hoods = new THREE.InstancedMesh(hoodGeo, new THREE.MeshStandardNodeMaterial({ roughness: 0.75 }), MAX_PEOPLE);
     this.hoods.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PEOPLE * 3), 3);

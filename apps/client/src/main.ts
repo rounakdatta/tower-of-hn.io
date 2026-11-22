@@ -68,14 +68,22 @@ const uFocus = uniform(2), uBokeh = uniform(0);
 const bloomed = bloom(color, 0.62, 0.45, 0.78);
 const plainOut = color.add(bloomed).mul(vignette).mul(warm).add(grain);
 const dofOut = dof(color, scenePass.getViewZNode(), uFocus, 0.9, uBokeh).add(bloomed).mul(vignette).mul(warm).add(grain);
-pipeline.outputNode = plainOut;
-let dofOn = false;
+/** lite: no bloom, no shallow focus (a phone whose GPU can't keep up even at 1x gets these back as frame rate) */
+const liteOut = color.mul(vignette).mul(warm);
+let dofOn = false, lite = params.has('lite');
+pipeline.outputNode = lite ? liteOut : plainOut;
 /** shallow focus only at the table: film-like close-ups, no cost elsewhere */
 function setDof(on: boolean) {
   if (on === dofOn) return;
   dofOn = on;
-  pipeline.outputNode = on ? dofOut : plainOut;
+  pipeline.outputNode = lite ? liteOut : on ? dofOut : plainOut;
   pipeline.needsUpdate = true;
+}
+function goLite() {
+  if (lite) return;
+  lite = true;
+  pipeline.outputNode = liteOut; pipeline.needsUpdate = true;
+  console.info('render: lite (no bloom, no depth of field)');
 }
 
 buildSky(scene);
@@ -858,6 +866,7 @@ function frame(dt: number, draw = true) {
   renderer.toneMappingExposure += (ev - renderer.toneMappingExposure) * Math.min(1, dt * 8);
   if (recording) audio.vclock = clock;
   tower.update(clock, dt);
+  sync.relaxed = mode === 'tower';
   if (mode === 'tower' && (cam.enabled || !entered)) { cam.update(dt); tower.faceYaw = cam.theta; }
   else if (mode === 'floor' && walk.enabled) walk.update(dt);
   else rig.update(clock, dt);
@@ -959,6 +968,8 @@ if (recording) {
     tables: () => spots.filter((sp) => !sp.bar).map((sp, k) => ({ k, x: +sp.pos.x.toFixed(2), z: +sp.pos.z.toFixed(2), people: sp.seats.map((st) => st.name) })),
     lookAt: (x: number, z: number) => { walk.yaw = Math.atan2(x - walk.pos.x, z - walk.pos.z); },
     ensureAudio: () => audio.ensure(),
+    /** what a frame costs the GPU: draw calls, triangles, and what's held */
+    info: () => { const i = (renderer as unknown as { info: { render: Record<string, number>; memory: Record<string, number> } }).info; return { render: { ...i.render }, memory: { ...i.memory }, dpr: renderer.getPixelRatio(), audioRate: audio.ctx?.sampleRate ?? 0, lite }; },
     /** replying: seated, to whoever is speaking; or to someone by name */
     replyHere: () => replyHere(),
     replyTo: (name: string) => replyTo(name),
@@ -1021,7 +1032,10 @@ if (recording) {
     if (settle > 0 || interval > 250) return;          // start-up, shader compiles, a backgrounded tab
     if (interval > gap * 1.45) { slow += dt; quick = 0; } else if (interval < gap * 1.15) { quick += dt; slow = 0; }
     if (slow > 2 && dpr > 1) { dpr = Math.max(1, dpr - 0.25); renderer.setPixelRatio(dpr); slow = 0; settle = 1.5; }
-    else if (quick > 12 && dpr < DPR_CAP) { dpr = Math.min(DPR_CAP, dpr + 0.25); renderer.setPixelRatio(dpr); quick = 0; settle = 1.5; }
+    // still slow at 1x: the post effects go, then a little resolution (once: no flicking back and forth)
+    else if (slow > 3 && !lite) { goLite(); slow = 0; settle = 1.5; }
+    else if (slow > 3 && lite && dpr > 0.75) { dpr = 0.75; renderer.setPixelRatio(dpr); slow = 0; settle = 1.5; }
+    else if (quick > 12 && dpr < DPR_CAP && (!lite || dpr < 1)) { dpr = Math.min(lite ? 1 : DPR_CAP, dpr + 0.25); renderer.setPixelRatio(dpr); quick = 0; settle = 1.5; }
   });
   warmShaders();
   ui.splash(() => {

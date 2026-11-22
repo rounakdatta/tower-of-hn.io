@@ -73,7 +73,12 @@ export class AudioEngine {
     const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
     if (session) try { session.type = 'playback'; } catch { /* older Safari */ }
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
-    const ctx = (this.ctx = new AudioContext({ latencyHint: 'interactive' }));
+    // at the voices' own rate (Kokoro speaks at 24 kHz): decoded clips take half the memory, and the reverb, the
+    // spatial panners and the filters do half the work, which a phone's battery notices. (A browser that won't run
+    // at 24 kHz gets its default.)
+    let ctx: AudioContext;
+    try { ctx = new AudioContext({ latencyHint: 'interactive', sampleRate: 24000 }); } catch { ctx = new AudioContext({ latencyHint: 'interactive' }); }
+    this.ctx = ctx;
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -16; comp.knee.value = 12; comp.ratio.value = 3; comp.attack.value = 0.006; comp.release.value = 0.25;
     this.master = ctx.createGain(); this.master.gain.value = 0.9;
@@ -126,8 +131,8 @@ export class AudioEngine {
       p.catch(() => this.cache.delete(url));
       this.cache.set(url, p);
       this.order.push(url);
-      // decoded audio is ~190 KB a second at 48 kHz: keep the last 64 clips (a few minutes), not hundreds of MB
-      while (this.order.length > 64) this.cache.delete(this.order.shift()!);
+      // decoded audio is ~96 KB a second at 24 kHz: keep the last 48 clips (a few minutes, ~28 MB), not hundreds
+      while (this.order.length > 48) this.cache.delete(this.order.shift()!);
     }
     return p;
   }
