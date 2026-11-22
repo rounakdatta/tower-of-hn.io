@@ -103,6 +103,8 @@ export class Mixer {
     if (p && !p.breaking.includes(turn.id) && !p.played.has(turn.id)) p.breaking.push(turn.id);
   }
 
+  /** each table's plans (vibe tests): who performs what, when (against the audio clock) */
+  plans() { const now = this.audio.now(); return this.players.map((p, k) => [...p.perf.plans.values()].filter((x) => x.end > now - 2).map((x) => ({ k, S: x.S, A: x.A, gesture: x.gesture, stand: x.stand, ST: x.ST, E: x.E, start: +(x.start - now).toFixed(2), end: +(x.end - now).toFixed(2) }))).flat(); }
   /** each table's channel (vibe tests): level and low-pass, or null before it has spoken */
   levels() { return this.players.map((p) => (p.bus ? { level: p.bus.level, hz: p.bus.hz } : null)); }
   /** what's being said at a table right now (the line, and whether it's the table you're with), for labels */

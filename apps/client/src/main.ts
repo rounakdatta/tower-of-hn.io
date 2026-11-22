@@ -813,6 +813,7 @@ if (recording) {
     /** who is acting right now (anyone the crowd is animating), and how far: stand, arms, lean, mouth */
     acting: () => [...crowd.active].map((i) => { const p = crowd.people[i], e = p?.expr; return e ? { name: p.name, stand: +e.stand.toFixed(2), armR: +e.armR.toFixed(2), armL: +e.armL.toFixed(2), lean: +e.lean.toFixed(2), open: +e.open.toFixed(2), smile: +e.smile.toFixed(2), flush: +e.flush.toFixed(2) } : null; }).filter(Boolean),
     /** the table you're with (heard clearly), and what each nearby table is saying */
+    plans: () => mixer.plans(),
     mix: () => ({ levels: mixer.levels(), focus: mixer.focus ? spots.filter((x) => !x.bar).indexOf(mixer.focus) : -1, speaking: spots.filter((x) => !x.bar).map((sp, k) => { const l = mixer.speaking(sp); return l ? { k, by: l.turn.by, who: l.who, emotion: l.side.emotion } : null; }).filter(Boolean) }),
     /** debug: hold a face (any Expr fields) on someone, for the face sheet */
     face: (name: string, e: Record<string, number>) => { const i = crowd.index(name); if (i < 0) return false; crowd.active.add(i); Object.assign(crowd.target(i)!, e); return true; },

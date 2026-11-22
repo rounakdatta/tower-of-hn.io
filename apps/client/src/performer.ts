@@ -172,12 +172,14 @@ export class Performer {
         const gk = (at - plan.start - 0.25) / plan.gestureLen;
         if (plan.gesture && gk >= 0 && gk <= 1) pose(plan.gesture, t, gk, t.yaw, this.crowd.seed(i, 3) > 0.5);
         else if (i === speaking) {
-          // beats on loud syllables, bigger when heated
-          const g = this.gesture.get(i) ?? 0;
-          if (env > 0.7 && g < 0.15) this.gesture.set(i, 1);
-          const gv = Math.max(0, g - dt * 1.8);
+          // beats on loud syllables, bigger when heated: about one stressed syllable in two, never two at once.
+          // (the beat starts from the new value: setting 1 and then storing the decay of the old one meant no
+          // beat ever started)
+          let g = this.gesture.get(i) ?? 0;
+          if (env > 0.7 && g < 0.05 && this.crowd.seed(i, Math.floor(at * 2.3)) > 0.45) g = 1;
+          const gv = Math.max(0, g - dt * 1.6);
           this.gesture.set(i, gv);
-          const amp = 0.55 + plan.I * 0.6 + (plan.E === 'angry' ? 0.3 : 0);
+          const amp = 0.45 + plan.I * 0.5 + (plan.E === 'angry' ? 0.3 : 0);
           const right = this.crowd.seed(i, Math.floor(at * 0.5)) > 0.5;
           t.armR = (right ? gv : gv * 0.3) * amp; t.armL = (right ? gv * 0.3 : gv) * amp;
           t.spreadR = t.spreadL = gv * 0.15;
@@ -229,6 +231,8 @@ export class Performer {
           if ((plan.ST === 'question' || plan.C.includes('question')) && last && at > cur!.end - 1.3) { t.brow += 0.45; t.browAsym += 0.25 * flip; t.tilt += 0.22 * flip; }
           if (plan.laughEnd && at > plan.end - 1.1) { t.happy = 1; t.teeth = 1; t.open = Math.max(t.open, 0.35); t.blush = 0.5; }
           if (plan.E === 'angry' && env > 0.55) t.teeth = Math.max(t.teeth, 0.85);
+          // happy and excited people bounce a little on their loud syllables (seen from across the room, like a stand-up)
+          if ((plan.E === 'excited' || plan.E === 'joyful') && env > 0.62) t.bounce = Math.max(t.bounce, 0.35 + 0.4 * plan.I);
         }
         if (!performing && plan && plan.S >= 0) t.yaw = this.crowd.yawTo(i, this.crowd.headPos(plan.S, this.hTmp));   // a quoted line, said to its quoter
         continue;
