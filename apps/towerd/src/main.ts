@@ -269,7 +269,9 @@ function hotPut(p: string, body: Buffer, mtime: number) {
   const had = hot.get(p);
   if (had) { hotBytes -= had.body.length; hot.delete(p); }
   if (body.length > 2e6) return;
-  hot.set(p, { body, mtime, size: body.length });
+  const own = Buffer.allocUnsafeSlow(body.length);         // its own memory, not a view into a pooled slab
+  body.copy(own);
+  hot.set(p, { body: own, mtime, size: own.length });
   hotBytes += body.length;
   for (const [k, v] of hot) { if (hotBytes <= HOT_BYTES) break; hot.delete(k); hotBytes -= v.body.length; }
 }

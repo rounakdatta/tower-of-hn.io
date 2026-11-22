@@ -231,7 +231,8 @@
   #profile .answer { padding:7px 14px; border:0; border-radius:999px; background:var(--ink); color:#15110d; font:inherit; font-weight:700; cursor:pointer; white-space:nowrap }
   #profile .answer:hover { background:#fff }
   /* a speaker's name is a way in (their card, ready to answer that line); your own line says so */
-  #subs .who { pointer-events:auto; cursor:pointer }
+  #subs.show .who { pointer-events:auto; cursor:pointer }
+  body.reply-open #subs .who { pointer-events:none }
   #subs .who.you::after { content:'you'; font-size:.66em; font-weight:750; letter-spacing:.08em; text-transform:uppercase; color:var(--hn); margin-left:.45em; vertical-align:.18em }
   #controls kbd { font:600 10.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding:2px 5px; margin-left:6px; border-radius:4px; border:1px solid rgba(255,255,255,.25); color:var(--mute) }
   #profile .x { position:absolute; right:10px; top:8px; width:36px; height:36px; border:0; border-radius:50%; background:rgba(255,255,255,.07); color:var(--mute); font-size:20px; cursor:pointer }

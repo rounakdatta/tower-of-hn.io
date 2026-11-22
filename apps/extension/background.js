@@ -13,17 +13,23 @@ async function whoami() {
   return /<a id="me" href="user\?id=([A-Za-z0-9_-]+)"/.exec(html)?.[1] ?? '';
 }
 
-/** Already there? (A post that timed out may have landed: HN returns no comment id, so look before trying again.) */
+/** HN's HTML as plain words: tags out, every entity decoded, spaces collapsed (to compare with what you said) */
+function words(html) {
+  return html.replace(/<p>/gi, ' ').replace(/<[^>]+>/g, '')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ').trim();
+}
+/** Already there? A post that timed out may have landed (HN returns no comment id): your reply under that comment,
+ *  in the last quarter of an hour, with exactly these words. Only then is a retry skipped. */
 async function already(parent, user, text) {
   if (!user) return false;
-  const API = 'https://hacker-news.firebaseio.com/v0';
+  const API = 'https://hacker-news.firebaseio.com/v0', want = text.replace(/\s+/g, ' ').trim(), since = Date.now() / 1000 - 900;
   const kids = (await (await fetch(`${API}/item/${parent}.json`)).json())?.kids ?? [];
-  const head = text.replace(/\s+/g, ' ').trim().slice(0, 60);
-  for (const k of kids.slice(0, 60)) {
+  for (const k of kids.slice(0, 80)) {
     const it = await (await fetch(`${API}/item/${k}.json`)).json();
-    if (it?.by !== user || !it.text) continue;
-    const plain = it.text.replace(/<[^>]+>/g, ' ').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
-    if (plain.startsWith(head)) return true;
+    if (it?.by !== user || !it.text || (it.time ?? 0) < since) continue;
+    if (words(it.text) === want) return true;
   }
   return false;
 }
@@ -49,8 +55,8 @@ async function post({ parent, story, text }) {
       out = await r.text();
     }
   }
-  // success lands on the thread; anything else is HN explaining (posting too fast, a duplicate, a dead thread)
-  if (r.url.includes('item?id=') && !/posting too fast|you can't post/i.test(out)) return { ok: true };
+  // success lands on the thread (whatever the thread itself says); anything else is HN explaining why not
+  if (r.url.includes('item?id=')) return { ok: true };
   const why = /<td[^>]*>([^<]{8,160})<\/td>/.exec(out)?.[1]?.trim();
   return { ok: false, error: why || 'Hacker News didn’t take it' };
 }

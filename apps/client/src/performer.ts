@@ -76,7 +76,7 @@ export class Performer {
   /** Chairs back in, plans forgotten (we stopped watching this table). */
   reset() {
     for (const c of this.chairK.keys()) this.pushChair(c, 0);
-    this.chairK.clear(); this.plans.clear(); this.gesture.clear(); this.flash.clear(); this.tension = 0;
+    this.chairK.clear(); this.plans.clear(); this.gesture.clear(); this.flash.clear(); this.looks.clear(); this.tension = 0;
   }
 
   authorOf(id: number) {
@@ -154,10 +154,7 @@ export class Performer {
       t.nod = Math.sin(at * 0.9 + i * 1.7) * 0.03;
       t.yaw = focusHead && focus !== i ? this.crowd.yawTo(i, focusHead) : Math.sin(at * 0.3 + i) * 0.3;
       if (focusHead && focus !== i) t.nod += this.crowd.pitchTo(i, focusHead);              // eye-lines: look up at someone standing
-      const lk = this.looks.get(i);
-      if (lk && at < lk.until && i !== speaking) {                                           // someone walked up: a look round
-        this.hTmp.set(lk.x, lk.y, lk.z); t.yaw = this.crowd.yawTo(i, this.hTmp); t.nod = this.crowd.pitchTo(i, this.hTmp); t.brow = 0.25;
-      } else if (lk) this.looks.delete(i);
+
       const performing = !!plan && inTurn && i === plan.S;
       if (performing) {
         // square up to the person being answered: shoulders part of the way, the head the rest
@@ -300,6 +297,13 @@ export class Performer {
     for (const seat of this.spot.seats) {
       const i = this.ix(seat.name), t = this.crowd.target(i);
       if (!t || i < 0 || this.crowd.isWalking(i)) continue;
+      // someone looking at a point (you walking up, or answering them): it wins over whatever else they were doing
+      const lk = this.looks.get(i);
+      if (lk && at < lk.until) {
+        this.hTmp.set(lk.x, lk.y, lk.z);
+        const total = this.crowd.yawTo(i, this.hTmp);
+        t.turn = Math.max(-0.85, Math.min(0.85, total * 0.55)); t.yaw = total - t.turn; t.nod = this.crowd.pitchTo(i, this.hTmp);
+      } else if (lk) this.looks.delete(i);
       const excess = t.yaw - Math.max(-1.1, Math.min(1.1, t.yaw));
       const dart = Math.sin(Math.floor(at * 0.8 + i * 0.37) * 12.9898 + i) * 0.16;
       t.gaze = Math.max(-1, Math.min(1, t.yaw * 0.4 + excess * 1.6 + dart - (i === ci ? cheat * 2.2 : 0)));

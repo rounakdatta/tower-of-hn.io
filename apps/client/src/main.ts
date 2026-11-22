@@ -152,7 +152,8 @@ reply.onOpen = (on) => {
   if (on) { walk.release(); ui.profile(null); }
   // whoever you're answering turns to you while you do
   const by = reply.to?.by ?? replyingTo;
-  if (by) { const secs = on ? 900 : 0; if (mode === 'table') director.glanceAt(by, camera.position, secs); else mixer.glanceAt(by, camera.position, secs); }
+  if (by && on) { if (mode === 'table') director.glanceAt(by, camera.position, 900); else mixer.glanceAt(by, camera.position, 900); }
+  if (by && !on) { director.glanceAt(by, camera.position, 0); mixer.glanceAt(by, camera.position, 0); }
   replyingTo = on ? by : '';
 };
 let replyingTo = '';
@@ -611,6 +612,7 @@ addEventListener('keydown', (e) => {
   else if ((e.key === 'n' || e.key === 'N') && mode === 'table') nextTable();
   else if (e.key === 'm' || e.key === 'M') audio.setMuted(!audio.muted);
   else if ((e.key === 'r' || e.key === 'R') && !reply.open && !(e.target as HTMLElement)?.closest?.('input, textarea')) {
+    e.preventDefault();
     if (mode === 'table') replyHere();
     else if (mode === 'floor' && walk.locked) { const a = aimAt(innerWidth / 2, innerHeight / 2); if (a.kind === 'person') replyTo(crowd.people[a.i].name); }
   }

@@ -181,7 +181,7 @@ export class Live {
     const hot = new Map<number, [number, number]>();
     for (const [id, v] of this.voiced) {
       const e = v[2];
-      if (!e) continue;
+      if (!e || !this.items.has(id)) continue;          // (voiced lines of stories long gone stay on disk: skip them cheaply)
       const sid = this.storyOf(id);
       if (sid === undefined || !(sid in act)) continue;
       const w = 0.5 + (v[3] ?? 0.4), h = hot.get(sid) ?? [0, 0];
