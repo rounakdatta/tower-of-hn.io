@@ -150,7 +150,15 @@ reply.onOpen = (on) => {
     syncPause();
   }
   if (on) { walk.release(); ui.profile(null); }
+  // whoever you're answering turns to you while you do
+  const by = reply.to?.by ?? replyingTo;
+  if (by) { const secs = on ? 900 : 0; if (mode === 'table') director.glanceAt(by, camera.position, secs); else mixer.glanceAt(by, camera.position, secs); }
+  replyingTo = on ? by : '';
 };
+let replyingTo = '';
+reply.onDone = () => ui.toast(reply.me ? 'Watching Hacker News for your reply: in a minute or two you walk in by the lift and say it' : 'Add your HN username next time, and your reply walks in here');
+director.isMe = (n) => !!reply.me && n === reply.me;
+director.onWho = (n, turn) => showProfile(n, turn);
 function syncPause() { const b = document.getElementById('pause'); if (b) b.textContent = director.paused ? 'Play' : 'Pause'; }
 /** Answer `by`: their comment at the table you're at, else at the nearest table they've spoken at, the latest. */
 function replyTo(by: string, prefer?: number) {
@@ -177,6 +185,7 @@ function replyHere() {
   if (u) replyTo(u.by, u.id);
 }
 document.getElementById('answer')?.addEventListener('click', (e) => { e.stopPropagation(); replyHere(); });
+if (!matchMedia('(hover: none)').matches) { const b = document.getElementById('answer'); if (b) b.innerHTML = 'Reply <kbd>R</kbd>'; }
 // a reply to you somewhere else on Hacker News: a note (the floor you're on handles its own, below)
 const heard = new Set<number>();
 replies.onReply = (r) => {
@@ -418,7 +427,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
           if (known.has(u.id)) continue;
           mixer.breaking(sp, u);
           const me = reply.me, parent = u.replyTo !== undefined ? f.tables[k].turns.find((x) => x.id === u.replyTo) : undefined;
-          if (me && u.by === me) { ui.toast(`<b>Your reply</b> is up: you’re walking in to say it`, () => walkToTable(sp)); continue; }
+          if (me && u.by === me) { mixer.spotlight(sp, u.id); ui.toast(`<b>That’s you</b>, walking in to say it`, () => walkToTable(sp)); continue; }
           if (me && parent?.by === me && !heard.has(u.id)) {
             // someone answered you: said next at its table, and brought to your ears wherever you are on the floor
             heard.add(u.id);
@@ -528,7 +537,7 @@ director.onEnd = () => {
     after(2.9, () => enterFloor(next));
   } else nextTable();
 };
-director.onNewReply = (by) => ui.toast(`<b>${esc(by)}</b> just replied on Hacker News`);
+director.onNewReply = (by) => ui.toast(reply.me && by === reply.me ? '<b>That’s you</b>, by the lift: here it comes' : `<b>${esc(by)}</b> just replied on Hacker News`);
 
 /** Up from the table and on your feet beside it, facing it: the room plays on, this table where you left it. */
 function standUp() {
@@ -685,7 +694,7 @@ walk.onTap = (x, y) => {
 
 // ---------------------------------------------------------------- commenters: who they are
 const profiles = new Map<string, Promise<unknown>>();
-function showProfile(name: string) {
+function showProfile(name: string, prefer?: number) {
   const here = spots.filter((s) => s.table.turns.some((t) => t.by === name));
   const said = here.reduce((n, s) => n + s.table.turns.filter((t) => t.by === name).length, 0);
   let p = profiles.get(name);
@@ -702,7 +711,7 @@ function showProfile(name: string) {
   // the card leads somewhere: to their table (the nearest one they've spoken at), when that's not where you are
   const near = here.slice().sort((a, b) => Math.hypot(a.pos.x - walk.pos.x, a.pos.z - walk.pos.z) - Math.hypot(b.pos.x - walk.pos.x, b.pos.z - walk.pos.z))[0];
   const go = mode === 'floor' && near && nearTable() !== near ? () => walkToTable(near) : undefined;
-  const answer = said ? () => replyTo(name) : undefined;
+  const answer = said ? () => replyTo(name, prefer) : undefined;
   ui.profile({ name, said, tables: here.length, go, reply: answer, data: null });
   p.then((data) => ui.profile({ name, said, tables: here.length, go, reply: answer, data: (data ?? {}) as never }, true));
 }
@@ -783,7 +792,9 @@ function walkSubtitles() {
   if (!l) { ui.subtitle(null); return; }
   const look = crowd.people[l.who]?.look;
   const to = l.clip.who === l.turn.by && l.turn.replyTo ? mixer.focus!.table.turns.find((u) => u.id === l.turn.replyTo)?.by : undefined;
-  ui.subtitle({ name: l.clip.who, to, text: l.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: l.side.emotion, stance: l.side.stance, intensity: l.side.intensity });
+  const name = l.clip.who, turn = l.turn;
+  ui.subtitle({ name, to, text: l.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: l.side.emotion, stance: l.side.stance, intensity: l.side.intensity,
+    you: !!reply.me && name === reply.me, onWho: () => showProfile(name, turn.by === name ? turn.id : undefined) });
 }
 /** Each table's lamp wears its mood: a hot line (a row, laughter) flares on its first frame and settles warm; quiet
  *  moods stay quiet (cool light pools badly in a warm room); a table's history is only a faint tint. A row breaking
@@ -801,6 +812,7 @@ function lampMoods(dt: number) {
     const cur = lampNow.get(s) ?? [1, 0.9, 0.8, 0];
     let rgb: [number, number, number] = MOOD.calm.rgb, a = 0;
     const fresh = !!line && lampLine.get(s) !== line.turn;   // a new comment started here (per comment, not per clip)
+    if (fresh && reply.me && line!.turn.by === reply.me) { cur[0] = 1; cur[1] = 0.42; cur[2] = 0.1; cur[3] = 0.95; }   // there you are
     if (line) {
       const m = moodOf(line.side.emotion, line.side.stance, line.side.intensity);
       if (m !== 'calm') {
@@ -877,7 +889,7 @@ function frame(dt: number, draw = true) {
     // first person at a desk: what the dot in the middle is on, and what a click would do
     if (walk.locked && ++aimTick % 6 === 0) {
       const a = aimAt(innerWidth / 2, innerHeight / 2);
-      ui.aim(a.kind === 'person' ? `${crowd.people[a.i].name} · click to meet them` : a.kind === 'table' ? (nearTable() === a.spot ? 'Click or E to sit down' : 'Click to walk over') : '');
+      ui.aim(a.kind === 'person' ? `${crowd.people[a.i].name} · click to meet them · R to reply` : a.kind === 'table' ? (nearTable() === a.spot ? 'Click or E to sit down' : 'Click to walk over') : '');
     }
   } else if (mode === 'floor') ui.sitDown(null);
   neonTick(clock);

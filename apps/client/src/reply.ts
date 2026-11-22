@@ -56,6 +56,7 @@ export class Reply {
   }
 
   get open() { return !!this.target; }
+  get to() { return this.target; }
   get canListen() { return !!SR; }
 
   setMe(name: string) {
@@ -84,7 +85,7 @@ export class Reply {
   said: (id: number, text: string) => void = () => {};
   private quote(text: string) {
     const q = this.el.querySelector('.their');
-    if (q) q.textContent = `“${text.slice(0, 220)}${text.length > 220 ? '…' : ''}”`;
+    if (q) q.textContent = `“${text.slice(0, 260)}${text.length > 260 ? '…' : ''}”`;
   }
 
   close() {
@@ -97,28 +98,37 @@ export class Reply {
   private text() { return (this.el.querySelector('textarea') as HTMLTextAreaElement | null)?.value ?? ''; }
 
   private render(text: string) {
-    const t = this.target!;
+    const t = this.target!, tap = matchMedia('(hover: none)').matches ? 'Tap' : 'Click';
+    // honest about what the button does: with the extension it posts; without, it continues on HN's own page
+    const act = this.ext ? 'Post to Hacker News' : 'Continue on Hacker News ↗';
     const how = this.ext
       ? `Posts as you, with your own Hacker News session (the TowerOfHan extension). We never see your password.`
-      : `Opens Hacker News on that comment with your words copied: paste, and press reply there.`;
+      : `Opens Hacker News on that comment with your words copied: paste, then press reply.`;
+    const field = (label: string, ph: string) => `<div class="me"><label for="hn-me">${label}</label><input id="hn-me" type="text" value="${esc(this.me)}" placeholder="${ph}" autocomplete="username" spellcheck="false"></div>`;
     this.el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>
-      <div class="to">Reply to <b>${esc(t.by)}</b></div>
+      <div class="to">Reply to <b>${esc(t.by)}</b>${this.me ? ` · <span class="as" role="button" tabindex="0" title="Change">as ${esc(this.me)}</span>` : ''}</div>
       <p class="their">…</p>
       ${SR ? `<button class="mic" type="button" aria-label="Speak your reply"><span class="ring"></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12z" fill="currentColor"/></svg></button>
-      <div class="state">Tap to speak</div>` : `<div class="state">This browser can't hear you: type your reply</div>`}
+      <div class="state">${tap} to speak</div>` : `<div class="state">This browser can't hear you: type your reply</div>`}
       <textarea rows="4" placeholder="${SR ? 'Your words appear here, and you can fix them' : 'Your reply'}" maxlength="6000">${esc(text)}</textarea>
-      <div class="me"><label>Your HN name <input type="text" value="${esc(this.me)}" placeholder="so we can tell you when someone answers" autocomplete="username" spellcheck="false"></label></div>
-      <button class="post" type="button" ${text.trim() ? '' : 'disabled'}>Post to Hacker News</button>
-      <p class="how">${how} Your browser turns speech into text; nothing rewrites it.</p>`;
+      <button class="post" type="button" ${text.trim() ? '' : 'disabled'}>${act}</button>
+      ${this.me ? '' : field('Your HN username', 'so your reply can walk in here')}
+      <p class="how">${how} Your words, exactly: nothing rewrites them.</p>`;
     const q = (s: string) => this.el.querySelector(s) as HTMLElement;
     q('.x').onclick = () => this.close();
     const ta = q('textarea') as HTMLTextAreaElement, post = q('.post') as HTMLButtonElement;
     ta.oninput = () => { post.disabled = !ta.value.trim(); if (!this.listening) this.base = ta.value; };
-    (q('.me input') as HTMLInputElement).onchange = (e) => this.setMe((e.target as HTMLInputElement).value);
+    const me = this.el.querySelector('#hn-me') as HTMLInputElement | null;
+    if (me) me.onchange = () => this.setMe(me.value);
+    // "as you": tap to change the name (it opens the field in place)
+    const as = this.el.querySelector('.as') as HTMLElement | null;
+    if (as) as.onclick = () => { as.remove(); post.insertAdjacentHTML('afterend', field('Your HN username', 'so your reply can walk in here')); const f = this.el.querySelector('#hn-me') as HTMLInputElement; f.onchange = () => this.setMe(f.value); f.focus(); };
     post.onclick = () => this.post();
     const mic = this.el.querySelector('.mic') as HTMLElement | null;
     if (mic) mic.onclick = () => (this.listening ? this.stop() : this.listen());
     this.el.classList.add('show');
+    // at a desk, the keyboard lands on the microphone (Enter talks); a phone keeps its keyboard down until you type
+    if (matchMedia('(hover: hover)').matches) (mic ?? ta).focus({ preventScroll: true });
   }
 
   /** Start hearing you: what you say is added to the text, live; tap again (or pause) to stop. */
@@ -137,13 +147,14 @@ export class Reply {
       ta.value = this.base + tidy(fin + mid);
       (this.el.querySelector('.post') as HTMLButtonElement).disabled = !ta.value.trim();
     };
-    rec.onerror = (e) => { this.state(e.error === 'not-allowed' ? 'The microphone is blocked for this site' : e.error === 'no-speech' ? 'Didn’t catch that: tap to try again' : 'Couldn’t hear: tap to try again'); };
+    const tap = matchMedia('(hover: none)').matches ? 'tap' : 'click';
+    rec.onerror = (e) => { this.state(e.error === 'not-allowed' ? 'The microphone is blocked for this site' : e.error === 'no-speech' ? `Didn’t catch that: ${tap} to try again` : `Couldn’t hear: ${tap} to try again`); };
     rec.onend = () => { if (this.rec === rec) this.stop(); };
     this.rec = rec;
     try { rec.start(); } catch { this.state('Couldn’t start the microphone'); return; }
     this.listening = true;
     this.el.classList.add('listening');
-    this.state('Listening… tap when you’re done');
+    this.state(`Listening… ${tap} when you’re done`);
     this.onListen(true);
   }
 
@@ -153,7 +164,8 @@ export class Reply {
       this.listening = false;
       this.el.classList.remove('listening');
       this.base = this.text();
-      this.state(this.text().trim() ? 'Read it over, then post it (or tap to add more)' : 'Tap to speak');
+      const tap = matchMedia('(hover: none)').matches ? 'tap' : 'click';
+      this.state(this.text().trim() ? `Read it over, then send it (or ${tap} to add more)` : `${tap[0].toUpperCase() + tap.slice(1)} to speak`);
       this.onListen(false);
     }
   }
@@ -177,22 +189,30 @@ export class Reply {
     copy().then((ok) => this.handed(url, text, ok));
     window.open(url, '_blank', 'noopener');
   }
-  /** Over to HN: the words stay here (a copy can fail, or be overwritten by logging in), with a way to copy again. */
+  /** Over to HN: the words stay here (a copy can fail, or be overwritten by logging in), with a way to copy again,
+   *  and a done state: back here, the app says it's watching for your reply. */
   private handed(url: string, text: string, copied: boolean) {
     this.el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>
       <div class="to">Over to Hacker News</div>
-      <p class="their">${copied ? 'Your reply is copied.' : 'Copy your reply (below).'} On the page that just opened, paste it into the box and press <b>reply</b>.</p>
+      <p class="their">${copied ? 'Your reply is on the clipboard.' : 'Copy your reply below.'} Paste it in the box that opened and press <b>reply</b> (log in first if HN asks).</p>
       <textarea rows="4" readonly>${esc(text)}</textarea>
-      <button class="post copy" type="button">Copy it again</button>
-      <p class="how">${this.me ? `When it’s up, you’ll hear it here, and you’ll hear anyone who answers you.` : `Add your HN name next time and you’ll hear anyone who answers you.`} <a href="${url}" target="_blank" rel="noopener">Open it again ↗</a></p>`;
+      ${this.me ? '' : `<div class="me"><label for="hn-me">Posted as</label><input id="hn-me" type="text" placeholder="your HN username, so you can walk in and say it" autocomplete="username" spellcheck="false"></div>`}
+      <button class="post done" type="button">Done, I posted it</button>
+      <p class="how"><a class="copy" href="#">Copy it again</a> · <a href="${url}" target="_blank" rel="noopener">Open it again ↗</a></p>`;
     (this.el.querySelector('.x') as HTMLElement).onclick = () => this.close();
-    const btn = this.el.querySelector('.copy') as HTMLButtonElement, ta = this.el.querySelector('textarea') as HTMLTextAreaElement;
-    btn.onclick = () => {
-      const done = (ok: boolean) => { btn.textContent = ok ? 'Copied' : 'Select the text and copy it'; };
+    const me = this.el.querySelector('#hn-me') as HTMLInputElement | null;
+    if (me) me.onchange = () => this.setMe(me.value);
+    (this.el.querySelector('.done') as HTMLElement).onclick = () => { if (me?.value) this.setMe(me.value); this.close(); this.onDone(); };
+    const copy = this.el.querySelector('.copy') as HTMLAnchorElement, ta = this.el.querySelector('textarea') as HTMLTextAreaElement;
+    copy.onclick = (e) => {
+      e.preventDefault();
+      const done = (ok: boolean) => { copy.textContent = ok ? 'Copied' : 'Select the text and copy it'; };
       if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => done(true), () => { ta.select(); done(false); });
       else { ta.select(); done(document.execCommand?.('copy') ?? false); }
     };
   }
+  /** you're back from HN, having posted */
+  onDone: () => void = () => {};
   private posted(ok: boolean, error: string) {
     if (!ok) { this.state(error || 'Hacker News didn’t take it: try again, or post it there'); (this.el.querySelector('.post') as HTMLButtonElement).disabled = false; return; }
     this.el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button><div class="to">Posted</div>
@@ -201,7 +221,7 @@ export class Reply {
   }
 }
 
-/** speech into a sentence: a capital to start, a full stop to end (no other changes: the words are yours) */
+/** speech into a sentence: a capital to start (no other changes: the words are yours) */
 function tidy(s: string) {
   const t = s.replace(/\s+/g, ' ').trim();
   if (!t) return '';

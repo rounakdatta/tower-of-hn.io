@@ -113,6 +113,11 @@ export class Mixer {
     if (p && !p.breaking.includes(turn.id) && !p.played.has(turn.id)) p.breaking.push(turn.id);
   }
 
+  /** Someone looks at a point for a while (whoever you're answering, at you), wherever they're sitting. */
+  glanceAt(name: string, at: THREE.Vector3, secs: number) {
+    const p = this.players.find((x) => x.spot.seats.some((st) => st.name === name)), i = this.crowd.index(name);
+    if (p && i >= 0) p.perf.glance(i, at, this.audio.now() + secs);
+  }
   /** You walked up to this table: the two nearest of its people (not the one talking) look round at you, a moment. */
   greet(spot: TableSpot, at: THREE.Vector3) {
     const p = this.bySpot.get(spot), now = this.audio.now();

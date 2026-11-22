@@ -79,6 +79,14 @@ export class Director {
   others: { pos: THREE.Vector3; turns: Turn[] }[] = [];      // other tables on this floor, for the murmur
   private murmurAt = 0;
   onNewReply: (by: string) => void = () => {};
+  /** you (your HN name), so your own line is marked; a speaker's name tapped in the subtitles */
+  isMe: (name: string) => boolean = () => false;
+  onWho: (name: string, turn?: number) => void = () => {};
+  /** someone at this table looks at a point for a while (whoever you're answering, at you) */
+  glanceAt(name: string, at: THREE.Vector3, secs: number) {
+    const i = this.ix(name);
+    if (i >= 0 && this.perf) this.perf.glance(i, at, this.audio.now() + secs);
+  }
   /** the room's choreography: speakers walk over to this table before they speak (one person per commenter) */
   room: Room | null = null;
   /** the mixer plays the other tables for real: no random murmur on top */
@@ -418,7 +426,9 @@ export class Director {
     const name = s.clip.who;
     const look = this.crowd.people[s.who]?.look;
     const to = s.clip.who === s.turn.by && s.turn.replyTo ? this.spot?.table.turns.find((u) => u.id === s.turn.replyTo)?.by : undefined;
-    this.ui.subtitle({ name, to, text: s.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: s.side.emotion, stance: s.side.stance, intensity: s.side.intensity });
+    const turn = s.turn;
+    this.ui.subtitle({ name, to, text: s.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: s.side.emotion, stance: s.side.stance, intensity: s.side.intensity,
+      you: this.isMe(name), onWho: () => this.onWho(name, turn.by === name ? turn.id : undefined) });
     const link = s.side.links.find((l) => l.url === s.clip.t);
     this.ui.placard(link ? { url: link.url, domain: link.domain, at: this.crowd.headPos(s.who) } : null);
     this.ui.code(s.side.code.find((c) => c.startsWith(s.clip.t.slice(0, 40))) ?? null);

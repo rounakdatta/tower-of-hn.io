@@ -121,10 +121,12 @@ export class Minimap {
     // opened big: the busiest tables say what they are (a few words, so it stays a map), and what colours mean
     if (this.big) {
       g.font = '600 10.5px system-ui, -apple-system, sans-serif'; g.textBaseline = 'middle'; g.textAlign = 'left';
-      const keys = [['heated', MOOD.heated.color], ['laughing', MOOD.playful.color], ['thoughtful', MOOD.thoughtful.color], ['sombre', MOOD.somber.color]] as const;
+      const here = new Set(spots.filter((x) => !x.bar).map((x) => tableMood(x.table.turns).mood));
+      const keys = ([['heated', MOOD.heated.color, 'heated'], ['laughing', MOOD.playful.color, 'playful'], ['thoughtful', MOOD.thoughtful.color, 'thoughtful'], ['sombre', MOOD.somber.color, 'somber'], ['tense', MOOD.tense.color, 'tense']] as const)
+        .filter((k) => here.has(k[2] as never)).slice(0, 3);
       const widths = keys.map(([w]) => g.measureText(w).width + 18), total = widths.reduce((a, b) => a + b, 0);
       let lx = s - total / 2;
-      const ly = s + (s - 6) * 0.62;                    // where the circle is still wide enough for the line
+      const ly = s + (s - 6) * 0.5;                     // where the circle is still wide enough for the line
       keys.forEach(([w, c], i) => {
         g.beginPath(); g.arc(lx + 4, ly, 3.5, 0, Math.PI * 2); g.fillStyle = c; g.fill();
         g.fillStyle = 'rgba(255,244,232,0.8)'; g.fillText(w, lx + 11, ly);

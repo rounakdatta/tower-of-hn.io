@@ -47,6 +47,7 @@ open http://127.0.0.1:5288
 - **Table.** Space pauses, N moves to the next table, Esc stands you up, M mutes.
   - Links are held up as placards you can click.
   - When someone quotes the comment they're answering, its author speaks the quote.
+- **Reply, by voice.** On someone's card, while seated (Reply, or R), or aiming at them: speak, read your words back, fix them, and post. Your browser turns speech into text (nothing rewrites it), the room goes quiet while you talk, and nothing posts until you press Post. Posting is a hand-off today: your words are copied and HN's own reply page opens on that comment, so you paste and press reply. A companion extension (`apps/extension`, not published) would post straight from your browser with your own HN session. Add your HN name (kept in your browser) and replies to you are brought to your ears on the floor you're on, with a note for the ones elsewhere. See `docs/POSTING.md`.
 - **Lean back:** top right on the tower. It rides to the liveliest floor, plays its best tables one after another, then moves down the ranking, hands-free.
 - **Deep link:** `?story=<id>&table=<root comment id>`. The address bar updates as you sit down. Add `&from=<comment id>` to hear the opener, then jump straight to that reply.
 

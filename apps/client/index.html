@@ -204,7 +204,8 @@
   #reply.show { opacity:1; transform:none; pointer-events:auto }
   #reply .x { position:absolute; right:10px; top:8px; width:36px; height:36px; border:0; border-radius:50%; background:rgba(255,255,255,.07); color:var(--mute); font-size:20px; cursor:pointer }
   #reply .to { font-size:15px; color:var(--mute); padding:0 40px } #reply .to b { color:var(--ink) }
-  #reply .their { margin:8px 4px 14px; color:#d9cfc4; font-size:14px; line-height:1.45; text-align:left; max-height:6.2em; overflow:hidden }
+  #reply .their { margin:8px 4px 14px; color:#d9cfc4; font-size:14px; line-height:1.45; text-align:left; overflow:hidden; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical }
+  #reply .as { color:#ffd2a8; cursor:pointer } #reply .as:hover { text-decoration:underline }
   #reply .mic { position:relative; width:72px; height:72px; border-radius:50%; border:0; margin:2px auto 6px; display:grid; place-items:center; cursor:pointer;
                 background:var(--hn); color:#fff; box-shadow:0 10px 30px rgba(255,106,26,.35) }
   #reply .mic svg { width:30px; height:30px; position:relative }
@@ -215,17 +216,24 @@
   #reply textarea { width:100%; box-sizing:border-box; background:rgba(255,255,255,.06); color:var(--ink); border:1px solid var(--line); border-radius:12px;
                     padding:10px 12px; font:inherit; font-size:15px; line-height:1.45; resize:vertical; min-height:92px; text-align:left }
   #reply textarea:focus { outline:none; border-color:rgba(255,106,26,.6) }
-  #reply .me { margin:8px 0 2px; font-size:12px; color:var(--mute); text-align:left }
-  #reply .me input { margin-left:6px; width:min(240px, 60%); background:transparent; border:0; border-bottom:1px solid var(--line); color:var(--ink); font:inherit; font-size:13px; padding:3px 2px }
+  #reply .me { display:flex; align-items:baseline; gap:8px; margin:12px 0 0; font-size:12px; color:var(--mute); text-align:left }
+  #reply .me label { white-space:nowrap }
+  #reply .me input { flex:1; width:auto; min-width:0; margin:0; background:transparent; border:0; border-bottom:1px solid var(--line); color:var(--ink); font:inherit; font-size:13px; padding:3px 2px }
+  #reply .me input:focus { outline:none; border-bottom-color:rgba(255,106,26,.6) }
   #reply .post { width:100%; margin-top:12px; padding:13px 16px; border:0; border-radius:999px; background:var(--ink); color:#15110d; font-weight:750; font-size:15px; cursor:pointer }
-  #reply .post:disabled { opacity:.35; cursor:default }
+  #reply .post:disabled { opacity:1; background:transparent; border:1px solid var(--line); color:var(--mute); cursor:default }
   #reply .how { margin:10px 2px 0; font-size:11.5px; color:var(--mute); line-height:1.45 } #reply .how a { color:var(--ink) }
   @media (min-width: 900px) { #reply { left:auto; right:24px; bottom:24px; width:420px } }
   /* iOS zooms into a field set smaller than 16 px: these never are */
   @media (hover: none) { #reply textarea, #reply .me input { font-size:16px } }
   body.reply-open #sitdown, body.reply-open #hint, body.reply-open #subs, body.reply-open #controls { opacity:0; pointer-events:none }
-  #profile .answer { background:none; border:0; padding:0; font:inherit; font-weight:650; color:var(--ink); cursor:pointer; white-space:nowrap }
-  #profile .answer:hover { text-decoration:underline }
+  #profile .acts { display:flex; align-items:center; gap:14px }
+  #profile .answer { padding:7px 14px; border:0; border-radius:999px; background:var(--ink); color:#15110d; font:inherit; font-weight:700; cursor:pointer; white-space:nowrap }
+  #profile .answer:hover { background:#fff }
+  /* a speaker's name is a way in (their card, ready to answer that line); your own line says so */
+  #subs .who { pointer-events:auto; cursor:pointer }
+  #subs .who.you::after { content:'you'; font-size:.66em; font-weight:750; letter-spacing:.08em; text-transform:uppercase; color:var(--hn); margin-left:.45em; vertical-align:.18em }
+  #controls kbd { font:600 10.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding:2px 5px; margin-left:6px; border-radius:4px; border:1px solid rgba(255,255,255,.25); color:var(--mute) }
   #profile .x { position:absolute; right:10px; top:8px; width:36px; height:36px; border:0; border-radius:50%; background:rgba(255,255,255,.07); color:var(--mute); font-size:20px; cursor:pointer }
   #profile .who { display:flex; gap:14px; align-items:center; padding-right:36px }
   #profile .ava { width:64px; height:64px; flex:none }

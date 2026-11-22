@@ -152,7 +152,7 @@ export class UI {
     el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>
       <div class="who">${avatar(p.name)}<div><h2>${esc(p.name)}</h2>${d?.role ? `<div class="role">${esc(d.role)}</div>` : ''}<div class="meta">${esc(meta)}</div></div></div>
       ${brief}${about}
-      <div class="foot">${p.go ? `<button class="hear" type="button">Hear them at their table →</button>` : `<span class="here">${esc(here)}</span>`}${p.reply ? `<button class="answer" type="button">Reply</button>` : ''}<a href="https://news.ycombinator.com/user?id=${encodeURIComponent(p.name)}" target="_blank" rel="noopener">On Hacker News ↗</a></div>`;
+      <div class="foot">${p.go ? `<button class="hear" type="button">Hear them at their table →</button>` : `<span class="here">${esc(here)}</span>`}<span class="acts">${p.reply ? `<button class="answer" type="button">Reply</button>` : ''}<a href="https://news.ycombinator.com/user?id=${encodeURIComponent(p.name)}" target="_blank" rel="noopener">On Hacker News ↗</a></span></div>`;
     const answer = el.querySelector('.answer') as HTMLElement | null;
     if (answer && p.reply) { const r = p.reply; answer.onclick = (e) => { e.stopPropagation(); this.profile(null); r(); }; }
     const hear = el.querySelector('.hear') as HTMLElement | null;
@@ -277,7 +277,7 @@ export class UI {
   }
 
 
-  subtitle(s: { name: string; to?: string; text: string; color: string; emotion: string; stance?: string; intensity?: number } | null) {
+  subtitle(s: { name: string; to?: string; text: string; color: string; emotion: string; stance?: string; intensity?: number; you?: boolean; onWho?: () => void } | null) {
     const el = $('subs');
     clearTimeout(this.subTimer);
     if (!s) { this.subTimer = window.setTimeout(() => el.classList.remove('show'), 350); return; }
@@ -285,7 +285,10 @@ export class UI {
     // how it's being said, in the mood's colour (nothing for a plain line)
     const word = deliveryWord(s.emotion, s.stance, s.intensity), m = moodOf(s.emotion, s.stance, s.intensity);
     const how = word ? `<span class="how" style="color:${MOOD[m].color};border-color:${MOOD[m].color}55">${esc(word)}</span>` : '';
-    el.innerHTML = `<span class="who${this.met.has(s.name) ? ' met' : ''}" style="color:${s.color}">${esc(s.name)}${s.to && s.to !== s.name ? `<span class="to"> → ${esc(s.to)}</span>` : ''}</span>${how}<span class="said">${esc(text)}</span>`;
+    el.innerHTML = `<span class="who${this.met.has(s.name) ? ' met' : ''}${s.you ? ' you' : ''}" style="color:${s.color}">${esc(s.name)}${s.to && s.to !== s.name ? `<span class="to"> → ${esc(s.to)}</span>` : ''}</span>${how}<span class="said">${esc(text)}</span>`;
+    // the name is a way in: their card, ready to answer this very line
+    const who = el.querySelector('.who') as HTMLElement | null;
+    if (who && s.onWho) { const go = s.onWho; who.onclick = (e) => { e.stopPropagation(); go(); }; }
     el.dataset.tone = s.emotion;
     el.classList.add('show');
   }
