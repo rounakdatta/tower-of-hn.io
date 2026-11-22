@@ -396,11 +396,11 @@ async function enterFloor(sid: number, push = false, listen = false) {
       metNoted.clear(); lampLine.clear();
       const first = bestSpot(false);
       if (first && !first.bar) lampNow.set(first, [1, 0.42, 0.1, 1]);
-      const empty = !spots.some((x) => !x.bar);
+      const empty = !spots.some((x) => !x.bar), remarks = spots.some((x) => x.bar);
       // nobody here yet (a story that's just gone up): say so, and lean back moves on down the tower. Otherwise, the
       // first time only: on a phone the ghost stick teaches walking and, a few seconds in, one line says how to go
       // somewhere; at a desk, one line, until the first walk or click
-      if (empty) ui.hint('Nobody’s talking on this floor yet: new comments walk in by the lift');
+      if (empty) ui.hint(remarks ? 'Only one-liners so far: they’re at the bar' : 'Nobody’s talking on this floor yet: new comments walk in by the lift');
       else if (walkHint && !touch) ui.hint(HINT_DESK);
       else if (walkHint && touch) after(4, () => { if (mode === 'floor' && walkHint) { tapHint = true; ui.hint(HINT_TOUCH); after(8, () => { if (tapHint) { tapHint = false; ui.hint(''); } }); } });
       else ui.hint('');
