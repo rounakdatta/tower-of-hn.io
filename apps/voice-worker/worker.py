@@ -18,7 +18,7 @@ env:   VOICE_URL (default http://127.0.0.1:8788), VOICE_TOKEN, LANES (or MAX_LAN
        /voice/status), NICE, PACE, KOKORO_DIR, KOKORO_MODEL, KOKORO_PROVIDER=cuda,
        TTS_ENGINE=kokoro (default) | openai (gpt-4o-mini-tts: OPENAI_API_KEY, OPENAI_BUDGET_MIN caps spend, default 300 min)
 """
-import base64, collections, hashlib, http.client, io, json, multiprocessing, os, queue, re, signal, socket, sys, threading, time, urllib.parse, urllib.request
+import collections, gzip, hashlib, http.client, io, json, multiprocessing, os, queue, re, signal, socket, struct, sys, threading, time, urllib.parse, urllib.request
 import numpy as np
 import soundfile as sf
 
@@ -240,6 +240,13 @@ class Interruptible:
         return getattr(self.sess, k)
 
 
+def clip_frame(meta, ogg):
+    """A clip as towerd takes it, without base64 (a third smaller): a 4-byte length, the gzipped JSON (its sidecar
+    snapshot carries every clip's loudness and mouth tracks so far, and squeezes well), then the Ogg bytes."""
+    head = gzip.compress(json.dumps(meta, separators=(",", ":")).encode(), 1)
+    return struct.pack(">I", len(head)) + head + ogg
+
+
 def encode(audio, sr):
     """Ogg Opus at ~26 kbps, in memory: the same 8 kHz of speech as libsndfile's default (~36 kbps), a quarter smaller
     (measured on our own clips; at 0.94 and up the top of the voice starts to go)."""
@@ -249,15 +256,18 @@ def encode(audio, sr):
 
 
 class Towerd:
-    """towerd's voice port over one kept-alive connection (one per thread: http.client isn't shared)."""
+    """towerd's voice port over one kept-alive connection, used by one thread at a time (http.client isn't shared).
+    A lane keeps three for its life (asking and saying done, sending clips, beating): from a worker in Paris, towerd
+    is a long round trip away, and a new connection per comment paid a handshake and a cold start every time."""
 
     def __init__(self, url, token):
         u = urllib.parse.urlsplit(url)
         self.host, self.port, self.conn = u.hostname, u.port or 80, None
-        self.headers = {"content-type": "application/json", **({"authorization": f"Bearer {token}"} if token else {})}
+        self.auth = {"authorization": f"Bearer {token}"} if token else {}
 
-    def post(self, path, body, timeout=30):
+    def post(self, path, body, timeout=30, kind="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body, separators=(",", ":")).encode()
+        headers = {"content-type": kind, **self.auth}
         for attempt in (0, 1):
             try:
                 if self.conn is None:
@@ -266,7 +276,7 @@ class Towerd:
                     self.conn.connect()
                     self.conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 self.conn.sock.settimeout(timeout)
-                self.conn.request("POST", path, body=data, headers=self.headers)
+                self.conn.request("POST", path, body=data, headers=headers)
                 r = self.conn.getresponse()
                 payload = r.read()
                 return r.status, (json.loads(payload) if payload else None)
@@ -292,9 +302,9 @@ class Beat(threading.Thread):
 
     STUCK = 150
 
-    def __init__(self, url, token, lease, sess, state):
+    def __init__(self, td, lease, sess, state):
         super().__init__(daemon=True)
-        self.td, self.lease, self.sess, self.state, self.halt = Towerd(url, token), lease, sess, state, threading.Event()
+        self.td, self.lease, self.sess, self.state, self.halt = td, lease, sess, state, threading.Event()
 
     def run(self):
         while not self.halt.wait(1.0):
@@ -314,10 +324,12 @@ class Beat(threading.Thread):
                 if self.sess is not None:
                     self.sess.cancel()
                 break
-        self.td.close()
 
     def stop(self):
+        """Stop, and wait (briefly) for a beat in flight: its connection is the next comment's."""
         self.halt.set()
+        self.join(3)
+        return not self.is_alive()
 
 
 class Uploader(threading.Thread):
@@ -326,9 +338,9 @@ class Uploader(threading.Thread):
     wanted? still yours?) land in the state the lane checks between clips. At most three wait: past that the network
     sets the pace, and a stalled one trips the lane's watchdog."""
 
-    def __init__(self, url, token, state):
+    def __init__(self, td, state):
         super().__init__(daemon=True)
-        self.td, self.state, self.q = Towerd(url, token), state, queue.Queue(maxsize=3)
+        self.td, self.state, self.q = td, state, queue.Queue(maxsize=3)
         self.failed, self.last, self.total, self.sent = None, 0.0, 0.0, 0
 
     def run(self):
@@ -340,7 +352,7 @@ class Uploader(threading.Thread):
                 continue                         # drain: nothing more of this comment is sent
             t = time.time()
             try:
-                st, r = self.td.post("/voice/clip", body)
+                st, r = self.td.post("/voice/clip", body, kind="application/x-tohn-clip")
             except Exception as e:  # noqa: BLE001
                 self.failed = f"upload: {str(e)[:100]}"
                 continue
@@ -355,7 +367,6 @@ class Uploader(threading.Thread):
                 self.state["upto"] = r.get("upto", self.state["upto"])
                 if r.get("yield"):
                     self.state["yield"] = True
-        self.td.close()
 
     def send(self, body):
         self.q.put(body)
@@ -386,7 +397,7 @@ def config():
             "engine": os.environ.get("TTS_ENGINE", "kokoro")}
 
 
-def voice_job(c, kokoro, voices, oai, td, cfg, runner):
+def voice_job(c, kokoro, voices, oai, conns, runner):
     """One claimed comment: voice what's left of it, clip by clip, sending each as it's made."""
     lease, j = c["lease"], c["job"]
     t0 = time.time()
@@ -411,9 +422,10 @@ def voice_job(c, kokoro, voices, oai, td, cfg, runner):
 
     state = {"yield": False, "lost": False, "upto": j.get("upto", 0), "progress": time.time()}
     sess = kokoro.sess if kokoro is not None else None
-    beat = Beat(cfg["url"], cfg["token"], lease, sess, state)
+    td = conns["main"]
+    beat = Beat(conns["beat"], lease, sess, state)
     beat.start()
-    up = Uploader(cfg["url"], cfg["token"], state)
+    up = Uploader(conns["up"], state)
     up.start()
     outcome = "done"
     try:
@@ -448,11 +460,10 @@ def voice_job(c, kokoro, voices, oai, td, cfg, runner):
                               "env": [int(v * 255) for v in env], "shape": [int((v + 1) * 127.5) for v in shp]})
             total += d
             part = k < len(plan) - 1
-            body = {"lease": lease, "runner": runner, "k": k, "ogg": base64.b64encode(ogg).decode(), "audio_s": round(d, 3),
-                    "work_s": round(work, 3), "up_s": round(up.last, 3)}
+            meta = {"lease": lease, "runner": runner, "k": k, "audio_s": round(d, 3), "work_s": round(work, 3), "up_s": round(up.last, 3)}
             if part:
-                body["side"] = sidecar(k + 1)    # playable so far (serialized now: what's playable at this clip)
-            up.send(json.dumps(body, separators=(",", ":")).encode())
+                meta["side"] = sidecar(k + 1)    # playable so far (serialized now: what's playable at this clip)
+            up.send(clip_frame(meta, ogg))
             state["progress"] = time.time()
             if part and state["upto"] and len(clips_out) >= state["upto"]:
                 outcome = "opened"               # an opening: its first words are ready; the rest is voiced on demand
@@ -470,7 +481,8 @@ def voice_job(c, kokoro, voices, oai, td, cfg, runner):
         elif outcome == "yielded":
             td.post("/voice/release", {"lease": lease})
     finally:
-        beat.stop()
+        if not beat.stop():                      # a beat still in flight: the next comment gets a fresh connection
+            conns["beat"] = Towerd(conns["url"], conns["token"])
         if up.is_alive():
             up.finish()
     print(json.dumps({"id": j["id"], "by": j["by"], outcome: True, "emotion": emotion, "i": round(intensity, 2), "clips": len(clips_out),
@@ -483,7 +495,8 @@ def lane(n, cfg):
     if cfg["nice"]:
         os.nice(cfg["nice"])
     current = {"lease": None}
-    td = Towerd(cfg["url"], cfg["token"])
+    conns = {"main": Towerd(cfg["url"], cfg["token"]), "up": Towerd(cfg["url"], cfg["token"]), "beat": Towerd(cfg["url"], cfg["token"]),
+             "url": cfg["url"], "token": cfg["token"]}
 
     def bye(*_):
         # a rollout: give the comment back at once, so nobody waits for its lease to lapse
@@ -518,7 +531,7 @@ def lane(n, cfg):
 
     def work():
         try:
-            claim_and_voice(cfg, runner, current, kokoro, voices, oai, td)
+            claim_and_voice(cfg, runner, current, kokoro, voices, oai, conns)
         except BaseException as e:  # noqa: BLE001  (the lane dies whole, and the runner starts it again)
             print("lane", runner, repr(e)[:160], file=sys.stderr, flush=True)
             os._exit(1)
@@ -529,7 +542,8 @@ def lane(n, cfg):
         signal.pause()
 
 
-def claim_and_voice(cfg, runner, current, kokoro, voices, oai, td):
+def claim_and_voice(cfg, runner, current, kokoro, voices, oai, conns):
+    td = conns["main"]
     quiet = 0
     while True:
         try:
@@ -547,7 +561,7 @@ def claim_and_voice(cfg, runner, current, kokoro, voices, oai, td):
             continue
         current["lease"] = c["lease"]
         try:
-            voice_job(c, kokoro, voices, oai, td, cfg, runner)
+            voice_job(c, kokoro, voices, oai, conns, runner)
         except Exception as e:  # noqa: BLE001  (give it back: someone else, or this lane later, resumes it)
             print("job", c["job"]["id"], str(e)[:160], file=sys.stderr, flush=True)
             try:

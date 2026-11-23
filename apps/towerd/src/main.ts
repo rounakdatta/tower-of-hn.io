@@ -12,7 +12,7 @@
 //      VOICE_TOKEN (runners must send it, if set)
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { gzipSync, brotliCompressSync, constants as zlibc } from 'node:zlib';
+import { gzipSync, gunzipSync, brotliCompressSync, constants as zlibc } from 'node:zlib';
 import { homedir } from 'node:os';
 import Anthropic from '@anthropic-ai/sdk';
 import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, openSync, readSync, closeSync, rmdirSync, appendFileSync } from 'node:fs';
@@ -824,7 +824,7 @@ function announce(job: Job, rel: string, side: Side, part: boolean, waited = fal
 }
 
 /** Who is voicing: per runner lane, where it runs and how fast it is (audio seconds per second of work). */
-const runners = new Map<string, { node: string; cpus: number; threads: number; seen: number; clips: number; audio: number; work: number; up: number; ups: number }>();
+const runners = new Map<string, { node: string; cpus: number; threads: number; seen: number; clips: number; audio: number; work: number; up: number; ups: number; recv: number; serve: number }>();
 function voicingSummary() {
   const now = Date.now(), nodes = new Set<string>();
   let lanes = 0, audio = 0, work = 0;
@@ -835,14 +835,22 @@ function voicingSummary() {
   return { lanes, nodes: nodes.size, rtf: work ? Math.round((audio / work) * 100) / 100 : null, ...vq.stats() };
 }
 
-function readJson(req: import('node:http').IncomingMessage, limit: number): Promise<Record<string, unknown>> {
+function readBody(req: import('node:http').IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((ok, bad) => {
     const parts: Buffer[] = [];
     let n = 0;
     req.on('data', (c: Buffer) => { n += c.length; if (n > limit) { bad(new Error('too big')); req.destroy(); } else parts.push(c); });
-    req.on('end', () => { try { ok(n ? JSON.parse(Buffer.concat(parts).toString('utf8')) : {}); } catch (e) { bad(e); } });
+    req.on('end', () => ok(Buffer.concat(parts)));
     req.on('error', bad);
   });
+}
+/** A request body: JSON, or a clip as runners send it (no base64): a 4-byte length, the gzipped JSON, the Ogg bytes. */
+async function readVoice(req: import('node:http').IncomingMessage): Promise<Record<string, unknown>> {
+  const buf = await readBody(req, 4e6);
+  if (req.headers['content-type'] !== 'application/x-tohn-clip') return buf.length ? JSON.parse(buf.toString('utf8')) : {};
+  const n = buf.readUInt32BE(0);
+  if (n > buf.length - 4) throw new Error('bad clip frame');
+  return { ...JSON.parse(gunzipSync(buf.subarray(4, 4 + n)).toString('utf8')), ogg: buf.subarray(4 + n) };
 }
 
 async function voiceApi(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) {
@@ -856,15 +864,19 @@ async function voiceApi(req: import('node:http').IncomingMessage, res: import('n
   if (req.method === 'GET' && url.pathname === '/voice/status') {
     const now = Date.now(), lanes = [...runners].filter(([, r]) => now - r.seen < 60_000)
       .map(([id, r]) => ({ lane: id, node: r.node, cpus: r.cpus, threads: r.threads, clips: r.clips, rtf: r.work ? Math.round((r.audio / r.work) * 100) / 100 : null,
-        upload_ms: r.ups ? Math.round((r.up / r.ups) * 1000) : null }));
+        // a clip's trip as the runner sees it, and towerd's part of it: receiving the body, then handling it
+        upload_ms: r.ups ? Math.round((r.up / r.ups) * 1000) : null,
+        recv_ms: r.clips ? Math.round(r.recv / r.clips) : null, serve_ms: r.clips ? Math.round((r.serve / r.clips) * 10) / 10 : null }));
     return send(200, { ...voicingSummary(), tags: { kept: tagsOf.size, ...tagStats }, lanes });
   }
   if (req.method !== 'POST') return send(405);
-  const b = await readJson(req, 4e6);
+  const t0 = performance.now();
+  const b = await readVoice(req);
+  const t1 = performance.now();
   if (url.pathname === '/voice/claim') {
     const runner = String(b.runner ?? '').slice(0, 120);
     if (!runner) return send(400);
-    const r = runners.get(runner) ?? { node: '', cpus: 0, threads: 0, seen: 0, clips: 0, audio: 0, work: 0, up: 0, ups: 0 };
+    const r = runners.get(runner) ?? { node: '', cpus: 0, threads: 0, seen: 0, clips: 0, audio: 0, work: 0, up: 0, ups: 0, recv: 0, serve: 0 };
     runners.set(runner, { ...r, node: String(b.node ?? '').slice(0, 60), cpus: Number(b.cpus) || 0, threads: Number(b.threads) || 0, seen: Date.now() });
     const patience = Math.max(0, Math.min(120, Number(b.patience) || 0));
     vq.hear(runner, patience);                       // heard, even while starting up: a standby stays out of the way
@@ -895,7 +907,7 @@ async function voiceApi(req: import('node:http').IncomingMessage, res: import('n
   if (url.pathname === '/voice/beat') return send(200, vq.beat(token));
   if (url.pathname === '/voice/release') { vq.release(token); return send(200, {}); }
   if (url.pathname === '/voice/clip') {
-    const k = b.k, ogg = typeof b.ogg === 'string' ? Buffer.from(b.ogg, 'base64') : null;
+    const k = b.k, ogg = Buffer.isBuffer(b.ogg) ? b.ogg : typeof b.ogg === 'string' ? Buffer.from(b.ogg, 'base64') : null;
     if (!Number.isInteger(k) || (k as number) < 0 || (k as number) > 400 || !ogg || ogg.length < 64 || ogg.subarray(0, 4).toString('latin1') !== 'OggS') return send(400);
     putLive(`c/${e.id}.${e.job.rev}.${k}.ogg`, ogg);
     const r = runners.get(String(b.runner ?? ''));
@@ -910,6 +922,7 @@ async function voiceApi(req: import('node:http').IncomingMessage, res: import('n
       announce(e.job, rel, side, true, band(e.prio) < 2);
     }
     const now = vq.beat(token);
+    if (r) { r.recv += t1 - t0; r.serve += performance.now() - t1; }
     return now ? send(200, now) : send(409);         // taken down while this clip was on its way
   }
   if (url.pathname === '/voice/done') {
