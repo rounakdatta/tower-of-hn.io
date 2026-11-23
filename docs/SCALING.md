@@ -59,8 +59,9 @@ anywhere in the cluster. A runner is a few processes ("lanes"), each with its ow
   far; a long comment plays from its first sentence while the rest is voiced.
 - **Urgent work never waits behind background work.** When someone sits at a table and no lane is free, the least
   urgent comment being voiced yields mid-clip (ONNX `RunOptions.terminate`), one per urgent comment, never all of them.
-- **A fallback beside the data.** The control plane keeps one one-thread lane that takes a comment only after it has
-  waited 15 s while runners are around, or at once when none are. Same image and model, so the voices match.
+- **A standby beside the data.** The control plane keeps one one-thread lane that takes nothing while any runner has
+  been heard from (asking, waiting or beating) in the last 15 s, and everything once they've gone quiet (both
+  workers down). Same image and model, so the voices match.
 - **Nothing to steal.** Runners have no volume, no keys and no internet: a NetworkPolicy lets them reach towerd's voice
   port and DNS, nothing else. Tags are towerd's job (the key stays in one place).
 - `GET /voice/status` on the voice port shows every lane: its node, cores, clips and real-time factor.
@@ -82,8 +83,9 @@ anywhere in the cluster. A runner is a few processes ("lanes"), each with its ow
   miss, at most two cards are being written at once (503 + Retry-After; the client retries once), twenty model
   calls a minute.
 
-Voicing capacity: one Kokoro fp16 lane on two cores of a worker voices roughly 1–2× real time; each worker runs as
-many lanes as it has cores for (up to four), and the control plane only falls back. Until 0.5 it all ran on the
+Voicing capacity, measured 23 Nov 2026: a Kokoro fp16 lane on two cores voices 1.72× real time on the Rishra worker
+and 1.54× on the Paris one; each runs two lanes (four cores), so ~6.5× real time in all. The control plane only stands
+by (its one thread managed 0.31× under its throttling). Until 0.5 it all ran on the
 control plane, a VPS that throttles sustained multi-core load: ~0.9× real time on one core, 1.8× in rationed bursts.
 Everything on the front page is ~19 hours of speech at any moment, so the ranking still matters: people cluster.
 

@@ -45,13 +45,13 @@ export class VoiceQueue<J extends { rev: string }> {
     this.dispatch();
   }
 
-  /** The most urgent job nobody holds, for a runner that waits `patience` seconds before taking anything (a fallback
-   *  that only helps when the others are busy or gone), or null when there's nothing for it right now. */
-  private pick(patience: number, anyoneElse: boolean) {
+  /** The most urgent job nobody holds, or nothing. A patient runner is a standby (a slow fallback): it takes nothing
+   *  while any other runner has been heard from (asking, waiting or beating) in the last `patience` seconds. */
+  private pick(patience: number, runner: string) {
+    if (patience && this.othersAlive(runner, patience * 1000)) return undefined;
     let best: Entry<J> | undefined;
     for (const e of this.entries.values()) {
       if (e.lease) continue;
-      if (patience && anyoneElse && this.now() - e.since < patience * 1000) continue;
       if (!best || e.prio < best.prio || (e.prio === best.prio && e.since < best.since)) best = e;
     }
     return best;
@@ -69,17 +69,17 @@ export class VoiceQueue<J extends { rev: string }> {
     e.lease = undefined;
   }
 
-  /** Runners other than `runner` that have asked for work lately: a patient runner only waits while one is around. */
+  /** When each runner was last heard from: a standby stays idle while any other is around. */
   private seen = new Map<string, { at: number; patience: number }>();
-  private othersAlive(runner: string) {
-    for (const [r, s] of this.seen) if (r !== runner && !s.patience && this.now() - s.at < 60_000) return true;
+  private othersAlive(runner: string, within: number) {
+    for (const [r, s] of this.seen) if (r !== runner && !s.patience && this.now() - s.at < within) return true;
     return false;
   }
 
   /** Long poll: resolves with a leased job, or null after `waitMs` with nothing to do. */
   claim(runner: string, patience = 0, waitMs = 25_000): { promise: Promise<Entry<J> | null>; cancel: () => void } {
     this.seen.set(runner, { at: this.now(), patience });
-    const now = this.pick(patience, this.othersAlive(runner));
+    const now = this.pick(patience, runner);
     if (now) return { promise: Promise.resolve(this.lease(now, runner, patience)), cancel: () => {} };
     let w!: Waiter<J>;
     const promise = new Promise<Entry<J> | null>((resolve) => {
@@ -101,7 +101,7 @@ export class VoiceQueue<J extends { rev: string }> {
   dispatch() {
     for (const w of [...this.waiters].sort((a, b) => a.patience - b.patience || a.at - b.at)) {
       this.seen.set(w.runner, { at: this.now(), patience: w.patience });
-      const e = this.pick(w.patience, this.othersAlive(w.runner));
+      const e = this.pick(w.patience, w.runner);
       if (!e) continue;
       this.drop(w, this.lease(e, w.runner, w.patience));
     }
@@ -117,11 +117,13 @@ export class VoiceQueue<J extends { rev: string }> {
     const e = this.get(token);
     if (!e) return null;
     e.lease!.beat = this.now();
+    this.seen.set(e.lease!.runner, { at: this.now(), patience: e.lease!.patience });
     return { yield: this.shouldYield(e), prio: e.prio, upto: e.upto };
   }
 
-  /** A patient runner (the fallback) can't take a young job, so it is never the one asked to make room for it. */
-  private patientNow(l: Lease) { return l.patience > 0 && this.othersAlive(l.runner); }
+  /** A standby that took a job (nobody else was around) and is now joined by others: never the one asked to make
+   *  room, since it couldn't take the urgent job anyway. */
+  private patientNow(l: Lease) { return l.patience > 0 && this.othersAlive(l.runner, l.patience * 1000); }
 
   /** Give way when someone waits on something more urgent that nobody can take: the least urgent jobs being voiced
    *  yield first, one per urgent job (never every runner at once for one listener). */

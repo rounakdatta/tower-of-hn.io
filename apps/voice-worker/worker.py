@@ -13,8 +13,8 @@ A runner is LANES processes, each with its own Kokoro session on THREADS cores (
 lanes as the cores it may use). It needs no volume, no keys and no internet: only towerd's voice port.
 
 usage: worker.py
-env:   VOICE_URL (default http://127.0.0.1:8788), VOICE_TOKEN, LANES (or MAX_LANES, default 4), THREADS, PATIENCE (seconds a job must have
-       waited before this runner takes it, while other runners are around: a fallback), NODE_NAME (shown in
+env:   VOICE_URL (default http://127.0.0.1:8788), VOICE_TOKEN, LANES (or MAX_LANES, default 4), THREADS, PATIENCE (a standby:
+       it takes nothing while any other runner has been heard from in that many seconds), NODE_NAME (shown in
        /voice/status), NICE, PACE, KOKORO_DIR, KOKORO_MODEL, KOKORO_PROVIDER=cuda,
        TTS_ENGINE=kokoro (default) | openai (gpt-4o-mini-tts: OPENAI_API_KEY, OPENAI_BUDGET_MIN caps spend, default 300 min)
 """

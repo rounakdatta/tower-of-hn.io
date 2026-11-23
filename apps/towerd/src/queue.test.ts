@@ -40,23 +40,19 @@ test('a lease that stops beating lapses, and its job goes to someone else', asyn
   assert.equal((await q.claim('b').promise)?.id, 1);
 });
 
-test('a patient runner (the fallback) waits while others are around, and takes everything when they are gone', async () => {
+test('a standby (the slow fallback) takes nothing while another runner is around, and everything once they go quiet', async () => {
   const c = clockAt(), q = new VoiceQueue<J>(c.now);
-  q.claim('fast', 0, 1).cancel();                    // a fast runner has been seen
-  q.plan([[1, 10, 0]], make);
-  const slow = q.claim('slow', 15, 60_000);
-  c.t.now += 10_000; q.sweep();
+  q.plan([[1, 10, 0], [2, 5000, 0]], make);
+  const fast = (await q.claim('fast').promise)!;      // busy with job 1, beating
+  const slow = q.claim('slow', 15, 120_000);
   let got: unknown = 'pending';
   slow.promise.then((e) => { got = e?.id; });
+  for (let s = 0; s < 40; s++) { c.t.now += 1000; q.beat(fast.lease!.token); q.sweep(); }
   await new Promise((r) => setImmediate(r));
-  assert.equal(got, 'pending', 'not before 15 s');
-  c.t.now += 6_000; q.sweep();
+  assert.equal(got, 'pending', 'a busy fast runner keeps the standby idle, however long job 2 waits');
+  c.t.now += 16_000; q.sweep();                       // the fast runner went quiet (its node dropped off)
   await new Promise((r) => setImmediate(r));
-  assert.equal(got, 1, 'after 15 s it helps');
-  // nobody else for a minute: no waiting at all
-  q.plan([[1, 10, 0], [2, 10, 0]], make);
-  c.t.now += 61_000;
-  assert.equal((await q.claim('slow', 15).promise)?.id, 2);
+  assert.equal(got, 2, 'then the standby takes over');
 });
 
 test('someone waiting on something urgent makes the least urgent job yield, one per urgent job', async () => {
@@ -115,8 +111,9 @@ test('the fallback is never the one asked to make room: a fast runner yields ins
   q.plan([[1, 5000, 0], [2, 5001, 0]], make);
   const fast = (await q.claim('fast').promise)!;
   c.t.now += 16_000;
-  const slow = (await q.claim('slow', 15).promise)!;   // the fallback took an old background job
+  const slow = (await q.claim('slow', 15).promise)!;   // the fast runner had gone quiet: the standby took job 2
   assert.deepEqual([fast.id, slow.id], [1, 2]);
+  q.beat(fast.lease!.token);                          // and now it's back
   q.plan([[1, 5000, 0], [2, 5001, 0], [9, 3, 0]], make);  // someone sits down; nobody is idle
   assert.equal(q.beat(slow.lease!.token)!.yield, false, 'the fallback could not take it anyway');
   assert.equal(q.beat(fast.lease!.token)!.yield, true, 'the fast runner gives way');
