@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
-# TowerOfHan voices: Kokoro (ONNX, fp16 weights), a permanent voice per HN user. One CPU thread in the
-# background; three, within a budget, while someone listens. The models are baked in (checksummed).
+# TowerOfHan voices: Kokoro (ONNX, fp16 weights), a permanent voice per HN user. A runner: lanes of Kokoro that claim
+# comments from towerd's voice port and send the clips back (no volume, no keys, no internet). The models are baked
+# in (checksummed).
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 KOKORO_DIR=/models
 COPY apps/voice-worker/requirements.txt /app/requirements.txt
@@ -12,4 +13,4 @@ ADD --checksum=sha256:bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f
 RUN chmod 0644 /models/*
 COPY apps/voice-worker/worker.py /app/worker.py
 USER 1000:1000
-CMD ["python", "/app/worker.py", "/data"]
+CMD ["python", "/app/worker.py"]

@@ -24,11 +24,11 @@ scripts/dev.sh                 # live HN + voice worker + the client
 open http://127.0.0.1:5288
 ```
 
-**Voices.** The default is Kokoro on one CPU thread. It's free, and every HN user gets a unique, permanent blend of two built-in voices.
-- Kokoro runs a little slower than real time. So the best tables on the top floors are pre-voiced in the background, and any table you sit at jumps the queue.
+**Voices.** Kokoro, on CPUs. It's free, and every HN user gets a unique, permanent blend of two built-in voices.
+- towerd plans what to voice (any table you sit at jumps the queue; the best tables on the top floors are pre-voiced) and voice runners on any node claim it, a comment at a time, sending each clip as it's made. See `docs/SCALING.md`.
 - For character-actor delivery: `TTS_ENGINE=openai OPENAI_API_KEY=sk-... scripts/dev.sh`. That uses gpt-4o-mini-tts, with a persistent persona per person plus the comment's emotion. Spend is capped by `OPENAI_BUDGET_MIN` (default 300 minutes ≈ $4.50).
 - Speech runs at 1.12× (`PACE`), with brisk turn-taking.
-- Every comment is tagged for emotion, stance, intensity and cues (question, joke, sarcasm, insult, praise, uncertain, story…) by Claude Haiku. The tagger takes any Anthropic-compatible endpoint (`AUTH2API_URL`, key in `AUTH2API_KEY`), then falls back to `GEMINI_API_KEY`, then to a heuristic.
+- Every comment is tagged for emotion, stance, intensity and cues (question, joke, sarcasm, insult, praise, uncertain, story…) by Claude Haiku, in towerd, a table at a time. It takes `ANTHROPIC_API_KEY`, or any Anthropic-compatible endpoint (`AUTH2API_URL`, key in `AUTH2API_KEY`); without one, runners judge from the words.
 - Bumping `VOICE_VERSION` re-voices everything in the background. The old audio keeps playing until each replacement lands.
 
 ## Using it
@@ -104,20 +104,20 @@ The client renders headlessly on a software GPU (`?record` makes time determinis
 
 ## Production
 
-It runs on the homelab (`homelab.setup/kubernetes/apps/towerofhan`) as one pod with two containers sharing `/data`:
-- `towerofhan-web` (towerd, which also serves the built client)
-- `towerofhan-voice` (Kokoro, on one CPU thread)
+It runs on the homelab (`homelab.setup/kubernetes/apps/towerofhan`):
+- `towerofhan` on the control plane: `towerofhan-web` (towerd, which also serves the built client) and a fallback voice lane, sharing `/data`
+- `towerofhan-runner`, one per worker node: `towerofhan-voice` lanes that voice what towerd hands out on its in-cluster voice port
 
 Both images are private, in GHCR. `docs/DEPLOY.md` covers the costs and the reasoning.
 
-- **Release.** Push an annotated tag `vX.Y.Z` on its own; CI builds and pushes both images at that version. Then bump both image tags in homelab.setup's `values.yaml` (tag AND digest), deploy that branch with `deploy-stuff.yml --ref`, check it, and merge.
+- **Release.** Push an annotated tag `vX.Y.Z` on its own; CI builds and pushes both images at that version. Then bump the three image tags in homelab.setup's `values.yaml` (tag AND digest; the voice image is used twice), deploy that branch with `deploy-stuff.yml --ref`, check it, and merge.
 - **Housekeeping is automatic.**
   - Deltas, old floor revisions and audio past `RETENTION_DAYS` are pruned.
   - Stories two days off the front page are forgotten.
   - A comment HN deletes or kills loses its audio.
 - **Opt-out.** Add the HN username to `/data/optout.txt` (one per line; read every minute), or to `OPTOUT`. Their comments leave every table and their audio is deleted; replies to them still play.
 - **Tagging.** Claude Haiku through the in-cluster auth2api by default; set `ANTHROPIC_API_KEY` to use the Anthropic API directly.
-- **Health.** `/livez` is liveness. `/status` reports counts: items, voiced, queued, demand.
+- **Health.** `/livez` is liveness. `/status` reports counts: items, voiced, queued, demand, and voicing (lanes, nodes, real-time factor). `GET :8788/voice/status` lists every lane.
 
 ## Status
 

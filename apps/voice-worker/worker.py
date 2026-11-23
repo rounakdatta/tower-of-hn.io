@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""TowerOfHan voice worker (local first cut).
+"""TowerOfHan voice runner.
 
-Watches <var>/jobs for comment jobs written by towerd, and for each comment:
-  1. tags delivery per sentence-chunk context (one LLM call per table batch; heuristic fallback),
-  2. voices it with Kokoro in a voice that belongs to that person forever (a deterministic
-     blend of two built-in voices), one clip per sentence-chunk (<= ~12 s) so playback can
-     start after the first sentence; a quote of the parent is voiced by the parent,
-  3. writes clips (Ogg Opus) + a sidecar (text, emotion, per-clip loudness + mouth-shape
-     tracks at 30 fps) under <var>/live/c/, and appends a line to <var>/voiced.jsonl.
+towerd (beside the data) plans what to voice; runners on any node voice it. A runner claims one comment at a time over
+towerd's internal port (a long poll), voices it with Kokoro in a voice that belongs to that person forever (a
+deterministic blend of two built-in voices), one clip per sentence-chunk (<= ~12 s) so playback can start after the
+first sentence (a quote of the parent is voiced by the parent), and sends each clip (Ogg Opus, with per-clip loudness
+and mouth-shape tracks at 30 fps) the moment it's made: towerd writes it, and the floor hears of it at once.
+While voicing it beats once a second; if someone is waiting on something more urgent that nobody else can take,
+towerd says yield and it gives way mid-clip (the comment resumes later from its last clip, in the same voice).
 
-One CPU thread on purpose: this box throttles sustained multi-core load.
-usage: worker.py <var dir>
-env:   TTS_ENGINE=kokoro (default, local CPU) | openai (gpt-4o-mini-tts, needs OPENAI_API_KEY;
-       each person gets a persistent persona prompt; OPENAI_BUDGET_MIN caps spend, default 300 minutes)
+A runner is LANES processes, each with its own Kokoro session on THREADS cores (default: two cores a lane, as many
+lanes as the cores it may use). It needs no volume, no keys and no internet: only towerd's voice port.
+
+usage: worker.py
+env:   VOICE_URL (default http://127.0.0.1:8788), VOICE_TOKEN, LANES (or MAX_LANES, default 4), THREADS, PATIENCE (seconds a job must have
+       waited before this runner takes it, while other runners are around: a fallback), NODE_NAME (shown in
+       /voice/status), NICE, PACE, KOKORO_DIR, KOKORO_MODEL, KOKORO_PROVIDER=cuda,
+       TTS_ENGINE=kokoro (default) | openai (gpt-4o-mini-tts: OPENAI_API_KEY, OPENAI_BUDGET_MIN caps spend, default 300 min)
 """
-import hashlib, json, os, re, signal, sys, threading, time, urllib.request
+import base64, collections, hashlib, http.client, io, json, multiprocessing, os, re, signal, socket, sys, threading, time, urllib.parse, urllib.request
 import numpy as np
 import soundfile as sf
 
@@ -36,13 +40,18 @@ def h32(s, salt=""):
 
 
 class Voices:
-    """A person's voice: a fixed blend of two same-gender Kokoro voices, derived from their name."""
+    """A person's voice: a fixed blend of two same-gender Kokoro voices, derived from their name. A blend is half a MB,
+    so only the most recent people are kept (a table's worth and more); anyone else is blended again, the same."""
+
+    KEEP = 64
 
     def __init__(self, kokoro):
-        self.k, self.cache = kokoro, {}
+        self.k, self.cache = kokoro, collections.OrderedDict()
 
     def of(self, user):
-        if user not in self.cache:
+        if user in self.cache:
+            self.cache.move_to_end(user)
+        else:
             pool = FEMALE if h32(user, "g") % 2 else MALE
             a = pool[h32(user, "a") % len(pool)]
             rest = [v for v in pool if v != a]
@@ -52,6 +61,8 @@ class Voices:
             lang = "en-gb" if a.startswith("b") else "en-us"
             pace = (0.96 + (h32(user, "p") % 1000) / 1000 * 0.1) * SPEECH_PACE
             self.cache[user] = (style.astype(np.float32), lang, pace, f"{a}+{b}@{w:.2f}")
+            while len(self.cache) > self.KEEP:
+                self.cache.popitem(last=False)
         return self.cache[user]
 
 
@@ -130,91 +141,6 @@ def heuristic_tag(text):
     return "mundane", "inform", intensity, cues
 
 
-def llm_tags(batch, key):
-    """One call for a table's batch: delivery, stance, intensity and cues per comment, judged in context."""
-    lines = []
-    for j in batch:
-        said = " ".join(s.get("text", "") for s in j["segments"] if s["kind"] in ("say", "quote"))[:600]
-        to = j.get("parentBy")
-        who = f'{j["by"]} replying back to {to} (who had answered {j["by"]})' if j.get("back") and to else f'{j["by"]} replying to {to or "the story"}'
-        ctx = f' [answering: "{j["parentSaid"][:200]}"]' if j.get("parentSaid") else ""
-        lines.append(f'{j["id"]} | {who}{ctx}: {said}')
-    prompt = ("Consecutive comments from one Hacker News thread, about to be performed by actors seated at a table. For each comment, "
-              f"judge: e = how the actor should deliver it (one of: {', '.join(EMOTIONS)}); "
-              f"s = its stance toward what it replies to (one of: {', '.join(STANCES)}); "
-              "i = intensity from 0.0 (flat, neutral) to 1.0 (heated, emphatic, shouting); "
-              f"c = any cues that apply (from: {', '.join(CUES)}). "
-              "Read each comment against what it answers. "
-              "retort is a comeback: hitting back at someone who challenged, dismissed or criticised them, pointed or cutting "
-              "(most often a reply back in a back-and-forth); a calm, friendly reply back is not a retort. "
-              "joyful is happy, amused, delighted; excited is enthusiastic, eager, can't-wait; sad is disappointed, wistful, grieving; "
-              "tender is warm, kind, consoling; nervous is worried or unsure; surprised is astonished. "
-              "Dry snark is stern or mundane with the sarcasm cue; a correction is stern; musing is contemplative; jokes are joyful. "
-              "Use angry only when the writing is genuinely heated (insults, outrage, exasperation), and then give a high intensity. "
-              "Most comments are calm: keep intensity low unless the words really carry feeling. "
-              'Reply with JSON only: {"<id>": {"e": "...", "s": "...", "i": 0.0, "c": []}, ...}\n\n' + "\n".join(lines))
-    parsed = claude_json(prompt)
-    if parsed is not None:
-        return parse_tags(parsed)
-    if not key:
-        return {}
-    body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2}}
-    for model in ("gemini-3.5-flash-lite", "gemini-2.5-flash-lite"):
-        try:
-            req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                                         data=json.dumps(body).encode(), headers={"x-goog-api-key": key, "content-type": "application/json"})
-            j = json.load(urllib.request.urlopen(req, timeout=60))
-            return parse_tags(json.loads(j["candidates"][0]["content"]["parts"][0]["text"]))
-        except Exception as e:  # noqa: BLE001
-            print("tagger", model, str(e)[:160], file=sys.stderr, flush=True)
-    return {}
-
-
-def claude_json(prompt):
-    """Claude Haiku for the tags: the Anthropic API when ANTHROPIC_API_KEY is set (production), else the
-    in-cluster auth2api gateway (development); None if neither is available."""
-    key, url = os.environ.get("ANTHROPIC_API_KEY", ""), "https://api.anthropic.com"
-    if not key:
-        url = os.environ.get("AUTH2API_URL", "http://auth2api.apps.svc.cluster.local:8317")
-        key = os.environ.get("AUTH2API_KEY", "")
-        kf = os.path.expanduser("~/.cache/tohn-auth2api.key")
-        if not key and os.path.exists(kf):
-            key = open(kf).read().strip()
-    if not key:
-        return None
-    url += "/v1/messages"
-    # a short classification: no thinking (cheaper, faster; Haiku 5.5 thinks by default otherwise)
-    body = {"model": os.environ.get("TAG_MODEL", "claude-haiku-5-5"), "max_tokens": 1500, "thinking": {"type": "disabled"},
-            "messages": [{"role": "user", "content": prompt}]}
-    try:
-        req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={
-            "x-api-key": key, "content-type": "application/json", "anthropic-version": "2023-06-01"})
-        j = json.load(urllib.request.urlopen(req, timeout=25))
-        text = "".join(c.get("text", "") for c in j.get("content", []) if c.get("type") == "text")
-        return json.loads(text[text.index("{"): text.rindex("}") + 1])
-    except Exception as e:  # noqa: BLE001
-        print("tagger claude", str(e)[:160], file=sys.stderr, flush=True)
-        return None
-
-
-def parse_tags(raw):
-    out = {}
-    for k, v in raw.items():
-        if not (isinstance(v, dict) and v.get("e") in EMOTIONS):
-            continue
-        try:
-            cid = int(k)
-        except (TypeError, ValueError):
-            continue
-        try:
-            inten = max(0.0, min(1.0, float(v.get("i", 0.4))))
-        except (TypeError, ValueError):
-            inten = 0.4
-        cues = [c for c in (v.get("c") or []) if c in CUES]
-        out[cid] = (v["e"], v.get("s") if v.get("s") in STANCES else "inform", inten, cues)
-    return out
-
-
 def sentences(text):
     t = re.sub(r"\b(e\.g|i\.e|vs|etc|cf|Mr|Ms|Dr)\.", lambda m: m.group(0).replace(".", "․"), text)
     return [p.replace("․", ".").strip() for p in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(\"'])", t) if p.strip()]
@@ -289,43 +215,6 @@ def shape_track(text, env):
     return out
 
 
-def resume(live, j, n_plan):
-    """A comment that yielded (or whose worker died) part-way carries on from its newest snapshot: the same
-    tags and the same clips, so a listener who already heard the start hears the rest in the same voice."""
-    for n in range(n_plan - 1, 0, -1):
-        try:
-            snap = json.load(open(os.path.join(live, f"c/{j['id']}.{j['rev']}.p{n}.json")))
-        except Exception:  # noqa: BLE001  (none, or unreadable)
-            continue
-        if snap.get("next") and all(os.path.exists(os.path.join(live, c["u"])) for c in snap["clips"]):
-            return snap
-    return None
-
-
-def job_id(name):
-    """<6-digit priority>-<comment id>.json"""
-    try:
-        return int(name.split("-", 1)[1].split(".", 1)[0])
-    except (IndexError, ValueError):
-        return None
-
-
-def klass(prio):
-    """How urgent a job is, by towerd's priority bands: 0 someone sat at the table, 1 someone walked onto the
-    floor, 2 a floor in focus on the tower, 3 background (openings first, then depth)."""
-    return 0 if prio < 100 else 1 if prio < 200 else 2 if prio < 1000 else 3
-
-
-def urgent(jobs_dir, own=None, mine=10 ** 6):
-    """Is someone waiting on something more urgent than this job? Between clips, a job gives way to a more urgent
-    band. The comment being voiced doesn't count: towerd renames its job when a listener sits down."""
-    pending = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json") and job_id(n) != own)
-    try:
-        return bool(pending) and klass(int(pending[0].split("-", 1)[0])) < klass(mine)
-    except ValueError:
-        return False
-
-
 class Interruptible:
     """The ONNX session, cancellable from another thread: a clip being voiced for nobody in particular gives way at
     once to someone waiting (it used to finish first, up to ~14 s on one thread). The job keeps its file and resumes
@@ -351,237 +240,306 @@ class Interruptible:
         return getattr(self.sess, k)
 
 
-def voice_watching(k, jobs_dir, j, fn):
-    """Run fn() (one clip of job j on Kokoro session k) while watching for someone more urgent; None if cancelled."""
-    stop = threading.Event()
+def encode(audio, sr):
+    """Ogg Opus at ~26 kbps, in memory: the same 8 kHz of speech as libsndfile's default (~36 kbps), a quarter smaller
+    (measured on our own clips; at 0.94 and up the top of the voice starts to go)."""
+    buf = io.BytesIO()
+    sf.write(buf, audio, sr, format="OGG", subtype="OPUS", compression_level=0.92)
+    return buf.getvalue()
 
-    def watch():
-        while not stop.wait(0.25):
-            if urgent(jobs_dir, own=j["id"], mine=j.get("prio", 10 ** 6)):
-                k.sess.cancel()
-                return
-    t = threading.Thread(target=watch, daemon=True)
-    t.start()
+
+class Towerd:
+    """towerd's voice port over one kept-alive connection (one per thread: http.client isn't shared)."""
+
+    def __init__(self, url, token):
+        u = urllib.parse.urlsplit(url)
+        self.host, self.port, self.conn = u.hostname, u.port or 80, None
+        self.headers = {"content-type": "application/json", **({"authorization": f"Bearer {token}"} if token else {})}
+
+    def post(self, path, body, timeout=30):
+        data = json.dumps(body, separators=(",", ":")).encode()
+        for attempt in (0, 1):
+            try:
+                if self.conn is None:
+                    self.conn = http.client.HTTPConnection(self.host, self.port, timeout=timeout)
+                if self.conn.sock is None:       # new, or closed by the server after its last answer
+                    self.conn.connect()
+                    self.conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self.conn.sock.settimeout(timeout)
+                self.conn.request("POST", path, body=data, headers=self.headers)
+                r = self.conn.getresponse()
+                payload = r.read()
+                return r.status, (json.loads(payload) if payload else None)
+            except (OSError, http.client.HTTPException, ValueError):
+                self.close()                     # a kept-alive connection the server closed: once more, fresh
+                if attempt:
+                    raise
+
+    def close(self):
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except OSError:
+                pass
+        self.conn = None
+
+
+class Beat(threading.Thread):
+    """While a comment is being voiced: renew its lease once a second, learn if more of it is wanted (an opening that
+    someone sat down for), and give way mid-clip when towerd says someone more urgent is waiting. Its own connection,
+    per comment. A lane that makes no clip for STUCK seconds is wedged: it stops renewing and the lane starts over
+    (the lease lapses and the comment resumes elsewhere)."""
+
+    STUCK = 150
+
+    def __init__(self, url, token, lease, sess, state):
+        super().__init__(daemon=True)
+        self.td, self.lease, self.sess, self.state, self.halt = Towerd(url, token), lease, sess, state, threading.Event()
+
+    def run(self):
+        while not self.halt.wait(1.0):
+            if time.time() - self.state["progress"] > self.STUCK:
+                print(json.dumps({"stuck": self.lease[:8], "after_s": self.STUCK}), file=sys.stderr, flush=True)
+                os._exit(3)
+            try:
+                st, r = self.td.post("/voice/beat", {"lease": self.lease}, timeout=10)
+            except Exception:  # noqa: BLE001  (a missed beat or two: the lease outlives them)
+                continue
+            if st == 409:
+                self.state["lost"] = True
+            elif st == 200 and r:
+                self.state["upto"] = r.get("upto", self.state["upto"])
+                self.state["yield"] = bool(r.get("yield"))
+            if self.state["lost"] or self.state["yield"]:
+                if self.sess is not None:
+                    self.sess.cancel()
+                break
+        self.td.close()
+
+    def stop(self):
+        self.halt.set()
+
+
+def cpus_allowed():
+    """The cores this container may use: its CPU limit if it has one, else the ones it may run on."""
     try:
-        return fn()
-    except Exception:  # noqa: BLE001
-        if k.sess.cancelled:
-            return None
-        raise
+        quota, period = open("/sys/fs/cgroup/cpu.max").read().split()
+        if quota != "max":
+            return max(1, int(int(quota) / int(period)))
+    except (OSError, ValueError):
+        pass
+    return len(os.sched_getaffinity(0))
+
+
+def config():
+    cpus = cpus_allowed()
+    threads = max(1, min(cpus, int(os.environ.get("THREADS", "2"))))
+    lanes = int(os.environ.get("LANES", "0")) or max(1, min(int(os.environ.get("MAX_LANES", "4")), cpus // threads))
+    return {"url": os.environ.get("VOICE_URL", "http://127.0.0.1:8788"), "token": os.environ.get("VOICE_TOKEN", ""),
+            "cpus": cpus, "threads": threads, "lanes": lanes, "patience": float(os.environ.get("PATIENCE", "0")),
+            "node": os.environ.get("NODE_NAME", "") or socket.gethostname(), "nice": int(os.environ.get("NICE", "0")),
+            "engine": os.environ.get("TTS_ENGINE", "kokoro")}
+
+
+def voice_job(c, kokoro, voices, oai, td, cfg, runner):
+    """One claimed comment: voice what's left of it, clip by clip, sending each as it's made."""
+    lease, j = c["lease"], c["job"]
+    t0 = time.time()
+    plan = plan_clips(j)
+    tags, prev = c.get("tags"), c.get("resume")
+    if prev:
+        emotion, stance, intensity, cues = prev["emotion"], prev["stance"], prev["intensity"], prev["cues"]
+        clips_out, total, start = list(prev["clips"]), float(prev["dur"]), int(prev["next"])
+    else:
+        if tags:
+            emotion, stance, intensity, cues = tags["e"], tags["s"], float(tags["i"]), list(tags["c"])
+        else:
+            emotion, stance, intensity, cues = heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
+        clips_out, total, start = [], 0.0, 0
+
+    def sidecar(nxt=None):
+        return {"id": j["id"], "rev": j["rev"], "by": j["by"], "emotion": emotion, "stance": stance,
+                "intensity": round(intensity, 2), "cues": cues, "dur": round(total, 3), "clips": clips_out,
+                "links": [s for s in j["segments"] if s["kind"] == "link"],
+                "code": [s["code"] for s in j["segments"] if s["kind"] == "code"],
+                **({"partial": True, "of": len(plan), "next": nxt} if nxt is not None else {})}
+
+    state = {"yield": False, "lost": False, "upto": j.get("upto", 0), "progress": time.time()}
+    sess = kokoro.sess if kokoro is not None else None
+    beat = Beat(cfg["url"], cfg["token"], lease, sess, state)
+    beat.start()
+    outcome = "done"
+    try:
+        for k, (spoken, shown, who) in enumerate(plan):
+            if k < start:
+                continue
+            if state["lost"] or state["yield"]:
+                outcome = "lost" if state["lost"] else "yielded"
+                break
+            c0 = time.time()
+            try:
+                if oai:
+                    audio, sr = oai.create(spoken, who, emotion)
+                else:
+                    style, lang, pace, _ = voices.of(who)
+                    speed = pace * SPEED.get(emotion, 1.0) * (0.97 if who != j["by"] else 1.0)
+                    audio, sr = kokoro.create(spoken, voice=style, speed=speed, lang=lang, sentence_pause=0.16, clause_pause=0.07)
+            except Exception as e:  # noqa: BLE001
+                if sess is not None and sess.cancelled:  # towerd said give way (or it's no longer ours)
+                    outcome = "lost" if state["lost"] else "yielded"
+                    break
+                print("tts failed", j["id"], str(e)[:120], file=sys.stderr, flush=True)
+                continue
+            work = time.time() - c0
+            audio = np.asarray(audio, dtype=np.float32)
+            audio = audio / float(np.abs(audio).max() or 1) * 0.9
+            ogg = encode(audio, sr)
+            env = envelope(audio, sr)
+            shp = shape_track(spoken, env)
+            d = len(audio) / sr
+            clips_out.append({"u": f"c/{j['id']}.{j['rev']}.{k}.ogg", "d": round(d, 3), "t": shown, "who": who,
+                              "env": [int(v * 255) for v in env], "shape": [int((v + 1) * 127.5) for v in shp]})
+            total += d
+            part = k < len(plan) - 1
+            body = {"lease": lease, "runner": runner, "k": k, "ogg": base64.b64encode(ogg).decode(), "audio_s": round(d, 3), "work_s": round(work, 3)}
+            if part:
+                body["side"] = sidecar(k + 1)    # playable so far
+            st, r = td.post("/voice/clip", body)
+            state["progress"] = time.time()
+            if st == 409:
+                outcome = "lost"
+                break
+            if st != 200:
+                raise RuntimeError(f"clip refused: {st} {r}")
+            state["upto"] = r.get("upto", state["upto"])
+            if r.get("yield"):
+                state["yield"] = True
+            if part and state["upto"] and len(clips_out) >= state["upto"]:
+                # an opening: its first words are ready for whoever sits down; the rest is voiced on demand
+                td.post("/voice/done", {"lease": lease, "opened": True})
+                outcome = "opened"
+                break
+        else:
+            st, r = td.post("/voice/done", {"lease": lease, "side": sidecar()})
+            outcome = "done" if st == 200 else f"done refused {st}"
+        if outcome == "yielded":
+            td.post("/voice/release", {"lease": lease})
     finally:
-        stop.set()
+        beat.stop()
+    print(json.dumps({"id": j["id"], "by": j["by"], outcome: True, "emotion": emotion, "i": round(intensity, 2), "clips": len(clips_out),
+                      "audio_s": round(total, 1), "wall_s": round(time.time() - t0, 1), "prio": j.get("prio"), "lane": runner}), flush=True)
 
 
-class Burst:
-    """Listeners get the fast session (FAST_THREADS cores), background work the one-thread one. This VPS takes CPU
-    back under sustained multi-core load (steal for every process on it), so bursts are budgeted: at most
-    FAST_BUDGET seconds of fast work in any ten minutes."""
+def lane(n, cfg):
+    """One lane: its own Kokoro session (and its own espeak: processes, not threads), claiming and voicing forever."""
+    if cfg["nice"]:
+        os.nice(cfg["nice"])
+    current = {"lease": None}
+    td = Towerd(cfg["url"], cfg["token"])
 
-    def __init__(self, budget):
-        self.budget, self.spans = budget, []
-
-    def ok(self):
-        now = time.time()
-        self.spans = [(a, b) for a, b in self.spans if b > now - 600]
-        return sum(b - max(a, now - 600) for a, b in self.spans) < self.budget
-
-    def spent(self, a, b):
-        self.spans.append((a, b))
-
-
-def main(var):
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # PID 1 in a container; every write is atomic
-    import onnxruntime as ort
-    if os.environ.get("NICE"):
-        os.nice(int(os.environ["NICE"]))      # yield the CPU to the node's other work
-    from kokoro_onnx import Kokoro
-    jobs_dir, live, log = os.path.join(var, "jobs"), os.path.join(var, "live"), os.path.join(var, "voiced.jsonl")
-    os.makedirs(os.path.join(live, "c"), exist_ok=True)
-    engine = os.environ.get("TTS_ENGINE", "kokoro")
-    kokoro = voices = None
-    if engine == "kokoro":
+    def bye(*_):
+        # a rollout: give the comment back at once, so nobody waits for its lease to lapse
+        if current["lease"]:
+            try:
+                Towerd(cfg["url"], cfg["token"]).post("/voice/release", {"lease": current["lease"]}, timeout=2)
+            except Exception:  # noqa: BLE001
+                pass
+        os._exit(0)
+    signal.signal(signal.SIGTERM, bye)
+    kokoro = voices = oai = None
+    if cfg["engine"] == "openai":
+        oai = OpenAITTS(os.environ["OPENAI_API_KEY"], float(os.environ.get("OPENAI_BUDGET_MIN", "300")) / cfg["lanes"])   # the cap is the runner's
+    else:
+        import onnxruntime as ort
+        from kokoro_onnx import Kokoro
         models = os.path.expanduser(os.environ.get("KOKORO_DIR", "~/.cache/tohn-models"))
-        # KOKORO_MODEL: kokoro-v1.0.fp16.onnx (default). Measured here on one core: 0.94x real time vs 0.77x for
-        # the fp32 original, its weights rounded to half precision (as Kokoro runs on GPUs); int8 drifts further.
-        # KOKORO_PROVIDER=cuda runs the same model, and so the same voices, on a GPU (onnxruntime-gpu)
+        # kokoro-v1.0.fp16.onnx: the original's weights rounded to half precision (as Kokoro runs on GPUs). On a CPU
+        # core it measured 0.94x real time vs 0.77x for fp32, and every runner uses the same model, so a comment
+        # resumed on another node sounds the same. KOKORO_PROVIDER=cuda runs it on a GPU (onnxruntime-gpu).
         model = os.environ.get("KOKORO_MODEL", "kokoro-v1.0.fp16.onnx")
         providers = (["CUDAExecutionProvider"] if os.environ.get("KOKORO_PROVIDER") == "cuda" else []) + ["CPUExecutionProvider"]
-
-        def session(threads):
-            so = ort.SessionOptions()
-            so.intra_op_num_threads = threads
-            so.inter_op_num_threads = 1
-            so.add_session_config_entry("session.intra_op.allow_spinning", "0")   # idle threads sleep, not spin
-            k = Kokoro.from_session(ort.InferenceSession(f"{models}/{model}", so, providers=providers), f"{models}/voices-v1.0.bin")
-            k.sess = Interruptible(k.sess, ort)
-            return k
-        kokoro = session(1)
-        # listeners get three cores (1.81x real time here), so a table never waits on its next line
-        fast_n = int(os.environ.get("FAST_THREADS", "3"))
-        fast = session(fast_n) if fast_n > 1 else None
-        print("kokoro", model, providers[0], "fast threads", fast_n, flush=True)
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = cfg["threads"]
+        so.inter_op_num_threads = 1
+        so.add_session_config_entry("session.intra_op.allow_spinning", "0")   # idle threads sleep, not spin
+        kokoro = Kokoro.from_session(ort.InferenceSession(f"{models}/{model}", so, providers=providers), f"{models}/voices-v1.0.bin")
+        kokoro.sess = Interruptible(kokoro.sess, ort)
         voices = Voices(kokoro)
-    burst = Burst(float(os.environ.get("FAST_BUDGET", "300")))
-    oai = OpenAITTS(os.environ["OPENAI_API_KEY"], float(os.environ.get("OPENAI_BUDGET_MIN", "300"))) if engine == "openai" else None
-    key = os.environ.get("GEMINI_API_KEY", "")
-    last_llm = 0.0
-    print("worker ready", engine, flush=True)
-    while True:
-        names = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json")) if os.path.isdir(jobs_dir) else []
-        if not names:
-            time.sleep(0.5)
-            continue
+    runner = f"{cfg['node']}/{socket.gethostname()}/{n}"
+    print(json.dumps({"lane": runner, "ready": True, "threads": cfg["threads"], "engine": cfg["engine"]}), flush=True)
+
+    def work():
         try:
-            first = json.load(open(os.path.join(jobs_dir, names[0])))
-        except Exception:  # noqa: BLE001  (half-written; next loop)
-            time.sleep(0.2)
+            claim_and_voice(cfg, runner, current, kokoro, voices, oai, td)
+        except BaseException as e:  # noqa: BLE001  (the lane dies whole, and the runner starts it again)
+            print("lane", runner, repr(e)[:160], file=sys.stderr, flush=True)
+            os._exit(1)
+    # the voicing runs in a thread: this one stays free for signals (a handler can't run while the main thread is
+    # inside ONNX), so a rollout gives the comment back at once
+    threading.Thread(target=work, daemon=True).start()
+    while True:
+        signal.pause()
+
+
+def claim_and_voice(cfg, runner, current, kokoro, voices, oai, td):
+    quiet = 0
+    while True:
+        try:
+            st, c = td.post("/voice/claim", {"runner": runner, "node": cfg["node"], "cpus": cfg["cpus"], "threads": cfg["threads"],
+                                             "patience": cfg["patience"]}, timeout=45)
+        except Exception as e:  # noqa: BLE001  (towerd restarting, or the node's network blinking)
+            quiet = min(quiet + 1, 6)
+            print("claim", str(e)[:120], file=sys.stderr, flush=True)
+            time.sleep(2 ** quiet / 2)
             continue
-        # batch: up to 8 waiting jobs from the same table, for one tagging call with context
-        batch = []
-        for n in names[:40]:
+        quiet = 0
+        if st != 200 or not c or c.get("again"):
+            if st not in (200, 204):
+                time.sleep(2)
+            continue
+        current["lease"] = c["lease"]
+        try:
+            voice_job(c, kokoro, voices, oai, td, cfg, runner)
+        except Exception as e:  # noqa: BLE001  (give it back: someone else, or this lane later, resumes it)
+            print("job", c["job"]["id"], str(e)[:160], file=sys.stderr, flush=True)
             try:
-                j = json.load(open(os.path.join(jobs_dir, n)))
+                td.post("/voice/release", {"lease": c["lease"]}, timeout=5)
             except Exception:  # noqa: BLE001
-                continue
-            if j["story"] == first["story"]:
-                j["_file"] = n
-                batch.append(j)
-            if len(batch) >= 8:
-                break
-        # a comment that yielded part-way keeps its tags (resume() reads them back): tag only the rest
-        fresh = [j for j in batch if not resume(live, j, len(plan_clips(j)))]
-        tags = {}
-        if fresh:
-            wait = 1 - (time.time() - last_llm)
-            if wait > 0:
-                time.sleep(wait)
-            tags = llm_tags(fresh, key)
-            last_llm = time.time()
-        for bi, j in enumerate(batch):
-            # the batch exists to tag a table's comments in one call; voicing always takes the most urgent job
-            # next, so a listener at another table never waits behind the rest of this one
-            if bi:
-                pending = sorted(n for n in os.listdir(jobs_dir) if n.endswith(".json"))
-                if pending and not any(job_id(pending[0]) == b["id"] for b in batch[bi:]):
-                    break
-            t0 = time.time()
-            final = f"c/{j['id']}.{j['rev']}.json"
-            if os.path.exists(os.path.join(live, final)):
-                # voiced already (a job queued again, or a crash before the log line): say so again, don't redo it
-                try:
-                    done = json.load(open(os.path.join(live, final)))
-                except Exception:  # noqa: BLE001  (unreadable: voice it again below)
-                    done = None
-                if done is not None:
-                    with open(log, "a") as f:
-                        f.write(json.dumps({"id": j["id"], "by": j["by"], "path": final, "dur": round(done.get("dur", 0), 2),
-                                            "of": len(plan_clips(j)), "voices": sorted({c["who"] for c in done.get("clips", [])}),
-                                            "e": done.get("emotion"), "i": done.get("intensity")}) + "\n")
-                    try:
-                        os.remove(os.path.join(jobs_dir, j["_file"]))
-                    except FileNotFoundError:
-                        pass
-                    continue
-            emotion, stance, intensity, cues = tags.get(j["id"]) or heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
-            clips_out, total, dropped, opened, start = [], 0.0, False, False, 0
-            plan = plan_clips(j)
-            prev = resume(live, j, len(plan))
-            if prev:
-                emotion, stance, intensity, cues = prev["emotion"], prev["stance"], prev["intensity"], prev["cues"]
-                clips_out, total, start = list(prev["clips"]), float(prev["dur"]), int(prev["next"])
-
-            def sidecar(nxt=None):
-                return {"id": j["id"], "rev": j["rev"], "by": j["by"], "emotion": emotion, "stance": stance,
-                        "intensity": round(intensity, 2), "cues": cues, "dur": round(total, 3), "clips": clips_out,
-                        "links": [s for s in j["segments"] if s["kind"] == "link"],
-                        "code": [s["code"] for s in j["segments"] if s["kind"] == "code"],
-                        **({"partial": True, "of": len(plan), "next": nxt} if nxt is not None else {})}
-
-            for k, (spoken, shown, who) in enumerate(plan):
-                if k < start:
-                    continue
-                # background work (pre-warm, re-voicing) yields between clips to anyone actually listening: a long
-                # comment can take a minute, and a table waiting on one line shouldn't. Its job file stays; it
-                # resumes from its last snapshot later.
-                if k > start and urgent(jobs_dir, own=j["id"], mine=j.get("prio", 10 ** 6)):
-                    dropped = True
-                    break
-                try:
-                    if oai:
-                        audio, sr = oai.create(spoken, who, emotion)
-                    else:
-                        style, lang, pace, _ = voices.of(who)
-                        speed = pace * SPEED.get(emotion, 1.0) * (0.97 if who != j["by"] else 1.0)
-                        quick = fast is not None and klass(j.get("prio", 10 ** 6)) < 3 and burst.ok()
-                        c0 = time.time()
-                        k_ = fast if quick else kokoro
-                        out = voice_watching(k_, jobs_dir, j, lambda: k_.create(spoken, voice=style, speed=speed, lang=lang, sentence_pause=0.16, clause_pause=0.07))
-                        if quick:
-                            burst.spent(c0, time.time())
-                        if out is None:                  # someone more urgent arrived mid-clip: they go first
-                            dropped = True
-                            break
-                        audio, sr = out
-                except Exception as e:  # noqa: BLE001
-                    print("tts failed", j["id"], str(e)[:120], file=sys.stderr, flush=True)
-                    continue
-                audio = np.asarray(audio, dtype=np.float32)
-                peak = float(np.abs(audio).max() or 1)
-                audio = audio / peak * 0.9
-                rel = f"c/{j['id']}.{j['rev']}.{k}.ogg"
-                # atomically: a clip is cached as immutable, so nobody may ever read half of one
-                # Opus at ~26 kbps: the same 8 kHz of speech as libsndfile's default (~36 kbps), a quarter smaller
-                # (measured on our own clips; at 0.94 and up the top of the voice starts to go)
-                sf.write(os.path.join(live, rel + ".tmp"), audio, sr, format="OGG", subtype="OPUS", compression_level=0.92)
-                os.replace(os.path.join(live, rel + ".tmp"), os.path.join(live, rel))
-                env = envelope(audio, sr)
-                shp = shape_track(spoken, env)
-                d = len(audio) / sr
-                clips_out.append({"u": rel, "d": round(d, 3), "t": shown, "who": who,
-                                  "env": [int(v * 255) for v in env], "shape": [int((v + 1) * 127.5) for v in shp]})
-                total += d
-                if k < len(plan) - 1:
-                    # playable so far: an immutable snapshot per clip count, so caches never need busting
-                    prel = f"c/{j['id']}.{j['rev']}.p{len(clips_out)}.json"
-                    with open(os.path.join(live, prel + ".tmp"), "w") as f:
-                        json.dump(sidecar(k + 1), f)
-                    os.replace(os.path.join(live, prel + ".tmp"), os.path.join(live, prel))
-                    with open(log, "a") as f:
-                        f.write(json.dumps({"id": j["id"], "by": j["by"], "path": prel, "dur": round(total, 2), "partial": True,
-                                            "of": len(plan), "voices": sorted({c["who"] for c in clips_out}),
-                                            "e": emotion, "i": round(intensity, 2)}) + "\n")
-                    if j.get("upto") and len(clips_out) >= j["upto"]:
-                        opened = True
-                        break
-            if opened:
-                # an opening: its first words are ready for whoever sits down; the rest is voiced on demand
-                try:
-                    os.remove(os.path.join(jobs_dir, j["_file"]))
-                except FileNotFoundError:
-                    pass
-                print(json.dumps({"id": j["id"], "opened": len(clips_out), "wall_s": round(time.time() - t0, 1)}), flush=True)
-                continue
-            if dropped:
-                print(json.dumps({"id": j["id"], "yielded": True, "after_clips": len(clips_out)}), flush=True)
-                break
-            side = sidecar()
-            rel = final
-            tmp = os.path.join(live, rel + ".tmp")
-            with open(tmp, "w") as f:
-                json.dump(side, f)
-            os.replace(tmp, os.path.join(live, rel))
-            with open(log, "a") as f:
-                f.write(json.dumps({"id": j["id"], "by": j["by"], "path": rel, "dur": round(total, 2),
-                                    "of": len(plan), "voices": sorted({c["who"] for c in clips_out}),
-                                    "e": emotion, "i": round(intensity, 2)}) + "\n")
-            try:
-                os.remove(os.path.join(jobs_dir, j["_file"]))
-            except FileNotFoundError:
                 pass
-            print(json.dumps({"id": j["id"], "by": j["by"], "emotion": emotion, "stance": stance, "i": round(intensity, 2), "cues": cues, "clips": len(clips_out),
-                              "audio_s": round(total, 1), "wall_s": round(time.time() - t0, 1),
-                              "voice": voices.of(j["by"])[3] if voices else persona(j["by"])[0]}), flush=True)
+            time.sleep(1)
+        finally:
+            current["lease"] = None
+
+
+def main():
+    cfg = config()
+    print(json.dumps({"runner": cfg["node"], "lanes": cfg["lanes"], "threads": cfg["threads"], "cpus": cfg["cpus"],
+                      "patience": cfg["patience"], "towerd": cfg["url"]}), flush=True)
+    ctx = multiprocessing.get_context("spawn")
+    procs = {}
+
+    def start(n):
+        p = ctx.Process(target=lane, args=(n, cfg), daemon=True)
+        p.start()
+        procs[n] = (p, time.time())
+
+    def bye(*_):
+        for p, _ in procs.values():
+            p.terminate()
+        for p, _ in procs.values():
+            p.join(5)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, bye)
+    for n in range(cfg["lanes"]):
+        start(n)
+    while True:
+        time.sleep(5)
+        for n, (p, since) in list(procs.items()):
+            if not p.is_alive():
+                print(json.dumps({"lane": n, "exited": p.exitcode, "after_s": round(time.time() - since)}), file=sys.stderr, flush=True)
+                time.sleep(2)
+                start(n)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main()

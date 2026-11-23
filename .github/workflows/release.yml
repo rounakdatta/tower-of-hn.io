@@ -18,8 +18,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Core tests
-        run: node --test packages/core/src/*.test.ts
+      - name: Core and voice queue tests
+        run: node --test packages/core/src/*.test.ts apps/towerd/src/*.test.ts
       - name: Client builds
         working-directory: apps/client
         run: npm ci --no-audit --no-fund && npx vite build

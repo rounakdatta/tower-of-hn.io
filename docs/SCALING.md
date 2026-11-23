@@ -1,18 +1,19 @@
 # How TowerOfHan scales
 
 The short answer: listeners cost almost nothing; *distinct comments listened to* cost voice time. A hundred people
-on the same three floors cost about what ten do. The only scarce thing is the voice worker, and everything below is
-arranged so its seconds go where the most ears are.
+on the same three floors cost about what ten do. The only scarce thing is voicing, so it runs on every node that has
+cores to spare, and everything below is arranged so its seconds go where the most ears are.
 
 ## The shape
 
 ```
-HN Firebase API ──► towerd (one Node process: ingest, files, two small POST endpoints)
+HN Firebase API ──► towerd (one Node process: ingest, files, the voice queue, two small POST endpoints)
                       │ writes var/live/: head.json (when it changes), e/<n>.json, f/<story>/<rev>.json,
                       │                    c/<id>.<rev>.p<n>.json + .ogg clips (all immutable but head)
-                      │ writes var/jobs/: what to voice next, ranked
-                      ▼
-                    voice worker (Kokoro on CPU) ──► clips + sidecars ──► voiced.jsonl ──► towerd
+                      │ plans what to voice next, ranked, and tags it (Claude Haiku, a table at a time)
+                      ▼ voice port :8788 (in-cluster only)
+            runners on every worker node ── claim a comment (long poll) · beat · send each clip · done
+            (Kokoro lanes, two cores each)    towerd writes the clip, the floor hears of it on the next tick
 browsers ──► GET static files (CDN-cacheable)  ·  POST /want (voice this table)  ·  GET /profile/<name>
 ```
 
@@ -47,6 +48,23 @@ What fixed the thousand-listener tail:
 
 Bandwidth runs out before CPU; a CDN removes both (below).
 
+## Voicing on every node
+
+towerd stays the only writer of `/data` (a node-local volume on the control plane); runners are stateless and can run
+anywhere in the cluster. A runner is a few processes ("lanes"), each with its own Kokoro session on two cores.
+- **Claim with a lease.** A lane long-polls `/voice/claim` and gets the most urgent comment nobody holds, with its tags
+  and, if someone started it before, where they stopped. It beats once a second; a lease that stops beating (a node
+  dropped off) lapses after 20 s, and the comment resumes elsewhere from its last finished clip, in the same voice.
+- **Clips as they're made.** Each clip goes to towerd the moment it's voiced, with a snapshot of what's playable so
+  far; a long comment plays from its first sentence while the rest is voiced.
+- **Urgent work never waits behind background work.** When someone sits at a table and no lane is free, the least
+  urgent comment being voiced yields mid-clip (ONNX `RunOptions.terminate`), one per urgent comment, never all of them.
+- **A fallback beside the data.** The control plane keeps one one-thread lane that takes a comment only after it has
+  waited 15 s while runners are around, or at once when none are. Same image and model, so the voices match.
+- **Nothing to steal.** Runners have no volume, no keys and no internet: a NetworkPolicy lets them reach towerd's voice
+  port and DNS, nothing else. Tags are towerd's job (the key stays in one place).
+- `GET /voice/status` on the voice port shows every lane: its node, cores, clips and real-time factor.
+
 ## What protects the scarce part (voicing)
 
 - **Demand, not volume.** The worker voices what someone asked for (a table you sit at: 0–99; a floor you're on:
@@ -59,14 +77,15 @@ Bandwidth runs out before CPU; a CDN removes both (below).
 - **Graceful when behind.** `head.json` carries `load` (listener-driven comments still waiting). When it runs long,
   tables stop waiting on unvoiced lines (1.5–2 s instead of 4) and play what's ready, so the room never stalls.
 - **Interruptible background work.** A clip being voiced in the background is cancelled mid-inference when a
-  listener's request arrives (ONNX `RunOptions.terminate`).
+  listener's request arrives and no lane is free (ONNX `RunOptions.terminate`).
 - **Bounded endpoints.** `/want`: per client 1/s (burst 20) and 60/s overall (burst 240). `/profile`: cached three days; on a
   miss, at most two cards are being written at once (503 + Retry-After; the client retries once), twenty model
   calls a minute.
 
-Voicing capacity, today: Kokoro fp16 at ~1.5–1.8× real time on three cores in bursts (300 s per 10 min) plus one
-background core. That is roughly 30 hours of speech a day, against ~19 hours of everything on the front page at
-any moment. So not everything can be voiced, which is why the ranking matters, and why it works: people cluster.
+Voicing capacity: one Kokoro fp16 lane on two cores of a worker voices roughly 1–2× real time; each worker runs as
+many lanes as it has cores for (up to four), and the control plane only falls back. Until 0.5 it all ran on the
+control plane, a VPS that throttles sustained multi-core load: ~0.9× real time on one core, 1.8× in rationed bursts.
+Everything on the front page is ~19 hours of speech at any moment, so the ranking still matters: people cluster.
 
 ## A public launch, with the same lean box
 
@@ -78,10 +97,9 @@ any moment. So not everything can be voiced, which is why the ranking matters, a
    - towerd already trusts `CF-Connecting-IP` only from Cloudflare's ranges, so per-client limits keep working.
 2. **Then the origin's load is flat**: head.json at ~1/s per POP, immutable files once each, plus /want and /profile.
 3. **Voicing** is the knob. In order of cost:
-   - keep one CPU worker (as now) and let the ranking and `load` do their work;
-   - a second CPU worker needs an atomic job claim (rename the job file before voicing) and ~660 MB more RAM;
-   - a GPU worker (Kokoro is 50–100× real time on a small GPU) makes "everything on the front page, voiced" possible:
-     a serverless GPU only while anyone is listening.
+   - more runners: any node that joins the cluster gets one (one per worker node), with lanes for its cores;
+   - a GPU runner (Kokoro is 50–100× real time on a small GPU; `KOKORO_PROVIDER=cuda`) makes "everything on the
+     front page, voiced" possible: it only needs to reach the voice port.
 4. **Tags and cards** use Claude Haiku through auth2api (the subscription): tags are one call per batch of up to
    eight voiced comments, so they scale with voicing, not listeners. With real traffic, set `ANTHROPIC_API_KEY`
    (both towerd and the worker prefer it) so the subscription isn't shared with a launch.

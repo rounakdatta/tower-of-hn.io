@@ -1,22 +1,26 @@
 // towerd: the local stand-in for the edge + CDN.
 //   - follows the HN firehose into the shared Live state (packages/core)
 //   - writes head.json / e/<n>.json / f/<story>/<rev>.json under var/live
-//   - queues voicing jobs for the Python worker (prewarm the best tables, and any table someone sits at)
+//   - plans voicing (prewarm the best tables, and any table someone sits at) and hands it to voice runners on any
+//     node over an internal port (VOICE_PORT): they claim a job, send each clip as it's voiced, towerd writes it
 //   - serves var/live over HTTP with production-like cache headers
 //   - in production also serves the built client, and keeps var/ tidy (old deltas, floor revisions, audio)
 // usage: node src/main.ts
 // env: PORT, VAR, STATIC (the client's dist), RETENTION_DAYS (audio, default 14), OPTOUT (comma-separated HN
 //      users never voiced; also var/optout.txt, one per line, re-read every minute),
-//      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_VERSION
+//      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_VERSION, VOICE_PORT (default 8788),
+//      VOICE_TOKEN (runners must send it, if set)
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { gzipSync, brotliCompressSync, constants as zlibc } from 'node:zlib';
 import { homedir } from 'node:os';
 import Anthropic from '@anthropic-ai/sdk';
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, openSync, readSync, closeSync, rmdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, openSync, readSync, closeSync, rmdirSync, appendFileSync } from 'node:fs';
 import { dirname, join, extname, resolve } from 'node:path';
 import { Live, type Item, type FloorSnapshot } from '../../../packages/core/src/live.ts';
 import { speakable } from '../../../packages/core/src/speakable.ts';
+import { VoiceQueue, band, type Entry } from './queue.ts';
+import { tagPrompt, parseTags, type Tag } from './tags.ts';
 
 const HN = 'https://hacker-news.firebaseio.com/v0';
 const UA = { 'User-Agent': 'towerofhan-towerd/0.1' };
@@ -25,7 +29,7 @@ const VAR = resolve(process.env.VAR ?? join(import.meta.dirname, '../../../var')
 const LIVE = join(VAR, 'live'), JOBS = join(VAR, 'jobs'), VOICED = join(VAR, 'voiced.jsonl');
 const FLOORS = 30;
 const PRE = { floors: Number(process.env.PREWARM_FLOORS ?? 6), tables: Number(process.env.PREWARM_TABLES ?? 4), turns: Number(process.env.PREWARM_TURNS ?? 14), bar: Number(process.env.PREWARM_BAR ?? 6) };
-const MAX_QUEUED = 12;
+const MAX_QUEUED = 48;                               // the most urgent of what's wanted, for runners to claim
 /** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
 const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v2';
 const STATIC = resolve(process.env.STATIC ?? join(import.meta.dirname, '../../client/dist'));
@@ -93,7 +97,9 @@ const crowdPrio = (d: { prio: number; who: Map<string, number> }) => {
 };
 /** listener-driven voicing still waiting (head.load): clients stop waiting on unvoiced lines when it runs long */
 let backlog = 0;
-const queued = new Map<number, string>();            // comment id -> job file name
+type Job = NonNullable<ReturnType<typeof jobFor>>;
+/** what runners may claim (in memory: towerd plans it every couple of seconds; runners hold leases) */
+const vq = new VoiceQueue<Job>();
 const stale = new Set<number>();                     // voiced with an older VOICE_VERSION: re-voice in the background
 const partial = new Set<number>();                   // playable, but the worker is still voicing the rest of it
 /** clips voiced so far of a partial comment (a whole one counts as all of them): openings are measured in clips */
@@ -146,7 +152,6 @@ function readVoiced() {
       live.markVoiced(v.id, v.path, v.dur, v.e, v.i);
       partial.delete(v.id); clipsOf.set(v.id, Infinity);
       stale.delete(v.id);
-      queued.delete(v.id);
       for (const u of [0, 1, 2]) demand.delete(`${v.id}/${u}`);
     } catch { /* partial line */ }
   }
@@ -230,26 +235,12 @@ function jobFor(id: number, prio: number, upto = 0) {
   };
 }
 
+/** The queue becomes what's wanted now: jobs nobody wants any more (a listener left, demand lapsed) leave it, so
+ *  runners voice what's needed now; a runner waiting for work gets the new most urgent job at once. */
 function syncJobs() {
-  const target = wanted().slice(0, MAX_QUEUED);
-  // jobs nobody wants any more (a listener left, demand lapsed) leave the queue, so the worker voices what's needed now
-  const keep = new Set(target.map(([id]) => id));
-  for (const [id, name] of queued) {
-    if (keep.has(id)) continue;
-    try { unlinkSync(join(JOBS, name)); } catch { /* the worker has it already */ }
-    queued.delete(id);
-  }
-  for (const [id, prio, upto] of target) {
-    const name = `${String(prio).padStart(6, '0')}-${id}${upto ? `.o${upto}` : ''}.json`;
-    const cur = queued.get(id);
-    if (cur === name) continue;
-    const job = jobFor(id, prio, upto);
-    if (!job) continue;
-    if (cur && existsSync(join(JOBS, cur))) { try { unlinkSync(join(JOBS, cur)); } catch { /* worker took it */ } }
-    writeFileSync(join(JOBS, name + '.tmp'), JSON.stringify(job));
-    renameSync(join(JOBS, name + '.tmp'), join(JOBS, name));
-    queued.set(id, name);
-  }
+  vq.plan(wanted().slice(0, MAX_QUEUED), jobFor, revOf);
+  for (const k of tagsOf.keys()) if (!vq.entries.has(Number(k.split('.')[0]))) tagsOf.delete(k);
+  prefetchTags();
 }
 
 let headKey = '';
@@ -418,7 +409,7 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     const ears = new Set<string>();
     for (const d of demand.values()) for (const c of d.who.keys()) ears.add(c);
-    res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: queued.size, demand: demand.size, backlog, listeners: ears.size, tower: live.tower.length, audience: audience() }));
+    res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: vq.entries.size, demand: demand.size, backlog, listeners: ears.size, tower: live.tower.length, audience: audience(), voicing: voicingSummary() }));
     return;
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
@@ -520,6 +511,7 @@ function remember(id: number, path: string, by?: string, of?: number, voices?: s
 
 /** Remove a comment's audio, every version of it (HN deleted or killed it, or its author opted out). */
 function unvoice(id: number) {
+  vq.revoke(id);                                     // whoever is voicing it stops: their uploads are refused
   const v = live.voiced.get(id), k = known.get(id);
   if (!v && !k) return;
   if (v) live.voiced.delete(id);
@@ -703,6 +695,210 @@ async function buildProfile(name: string) {
   return data;
 }
 
+// ---------------------------------------------------------------- voice runners (an internal port: never the ingress)
+// Voice runners (apps/voice-worker) on any node: they claim a job (a long poll), beat while voicing it, send each clip
+// as it is voiced (towerd writes it and the floor hears of it at once) and say when they're done. towerd stays the
+// only writer of /data, so a runner needs no volume, no keys and no internet: only this port.
+const VOICE_PORT = Number(process.env.VOICE_PORT ?? 8788);
+const VOICE_TOKEN = process.env.VOICE_TOKEN ?? '';
+setInterval(() => vq.sweep(), 1000).unref();
+setInterval(() => {                                  // runner lanes come and go with their pods' names
+  vq.forget();
+  for (const [r, x] of runners) if (Date.now() - x.seen > 3_600_000) runners.delete(r);
+}, 60_000).unref();
+
+/** how to perform each queued comment, by `${id}.${rev}` (null: no model to ask; the runner judges from the words) */
+const tagsOf = new Map<string, Tag | null>();
+const tagging = new Map<string, Promise<void>>();
+const tagBudget: Bucket = { n: 30, at: Date.now() };              // model calls: about thirty a minute at most
+let tagPauseUntil = 0;                               // the model failed (or the budget ran out): don't ask, or wait, until then
+const tagKey = (e: Entry<Job>) => `${e.id}.${e.job.rev}`;
+/** One call for a comment and up to seven more from its thread (in context, as they'll be performed). */
+function tagBatch(first: Entry<Job>): Promise<void> {
+  const batch = [first, ...[...vq.entries.values()]
+    .filter((x) => x !== first && x.job.story === first.job.story && !tagsOf.has(tagKey(x)) && !tagging.has(tagKey(x)))
+    .sort((a, b) => a.prio - b.prio).slice(0, 7)];
+  const p = (async () => {
+    const c = anthropic();
+    if (!c) { for (const x of batch) tagsOf.set(tagKey(x), null); return; }
+    if (!take(tagBudget, 0.5, 30)) { tagPauseUntil = Date.now() + 5_000; return; }   // busy: runners judge from the words meanwhile
+    const msg = await c.messages.create({ model: process.env.TAG_MODEL ?? 'claude-haiku-5-5', max_tokens: 1500, thinking: { type: 'disabled' },
+      messages: [{ role: 'user', content: tagPrompt(batch.map((x) => x.job)) }] });
+    let text = '';
+    for (const b of msg.content) if (b.type === 'text') text += b.text;
+    const got = parseTags(text);
+    for (const x of batch) tagsOf.set(tagKey(x), got.get(x.id) ?? null);
+  })().catch((e) => { tagPauseUntil = Date.now() + 30_000; console.error('tags', String(e).slice(0, 160)); })
+    .finally(() => { for (const x of batch) tagging.delete(tagKey(x)); setImmediate(prefetchTags); });
+  for (const x of batch) tagging.set(tagKey(x), p);
+  return p;
+}
+/** Tags ahead of need, one call at a time, most urgent first: a runner that claims a job rarely waits for them. */
+function prefetchTags() {
+  if (tagging.size || Date.now() < tagPauseUntil) return;
+  let next: Entry<Job> | undefined;
+  for (const x of vq.entries.values()) if (!tagsOf.has(tagKey(x)) && (!next || x.prio < next.prio)) next = x;
+  if (next) tagBatch(next);
+}
+/** A seat or a floor someone is on waits at most a couple of seconds for its tags (then the words decide); background
+ *  work can wait for the model. */
+async function tagsFor(e: Entry<Job>) {
+  const k = tagKey(e);
+  if (!tagsOf.has(k) && Date.now() >= tagPauseUntil) await Promise.race([tagging.get(k) ?? tagBatch(e), sleep(band(e.prio) < 2 ? 2_500 : 15_000)]);
+  return tagsOf.get(k) ?? null;
+}
+
+/** A comment that was given back (it yielded, or its runner died) part-way carries on from its newest snapshot: the
+ *  same tags and clips, so a listener who heard the start hears the rest in the same voice. */
+function resumeOf(job: Job) {
+  const n0 = clipsOf.get(job.id);
+  if (!n0 || !Number.isFinite(n0)) return null;
+  for (let n = Math.min(n0, 400); n >= 1; n--) {
+    try {
+      const snap = JSON.parse(readFileSync(join(LIVE, `c/${job.id}.${job.rev}.p${n}.json`), 'utf8'));
+      if (snap.next && snap.clips.every((c: { u: string }) => existsSync(join(LIVE, c.u)))) return snap;
+    } catch { /* not this one */ }
+  }
+  return null;
+}
+
+/** Still worth voicing as planned: not taken down, nobody opted out, the text unchanged. */
+function stillWanted(job: Job) {
+  const it = live.items.get(job.id);
+  return !!it && !it.dead && !it.deleted && !!it.by && !live.optOut.has(it.by) && revOf(job.id) === job.rev;
+}
+
+type Side = { id: number; rev: string; by: string; dur: number; of?: number; emotion?: string; intensity?: number; clips: { u: string; d: number; who: string }[] };
+/** A runner's sidecar, checked: it is this comment's, and every clip it lists is one of this comment's, already here. */
+function sideOk(side: Side | undefined, job: Job): side is Side {
+  const clip = new RegExp(`^c/${job.id}\\.${job.rev}\\.\\d{1,3}\\.ogg$`);
+  return !!side && side.id === job.id && side.rev === job.rev && side.by === job.by && Number.isFinite(side.dur)
+    && Array.isArray(side.clips) && side.clips.length <= 400                     // (none: nothing in it can be said)
+    && side.clips.every((c) => c && typeof c.u === 'string' && clip.test(c.u) && Number.isFinite(c.d) && typeof c.who === 'string' && existsSync(join(LIVE, c.u)));
+}
+function putLive(rel: string, body: Buffer) {
+  const p = join(LIVE, rel);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p + '.tmp', body);
+  renameSync(p + '.tmp', p);
+  try { hotPut(p, body, statSync(p).mtimeMs); } catch { /* served from disk then */ }
+}
+/** voiced.jsonl is the record (read back at start-up); the floor hears of it on the next tick */
+function announce(job: Job, rel: string, side: Side, part: boolean) {
+  appendFileSync(VOICED, JSON.stringify({ id: job.id, by: job.by, path: rel, dur: Math.round(side.dur * 100) / 100, ...(part ? { partial: true } : {}),
+    of: part ? side.of : side.clips.length, voices: [...new Set(side.clips.map((c) => c.who))].sort(), e: side.emotion, i: side.intensity }) + '\n');
+  readVoiced();
+}
+
+/** Who is voicing: per runner lane, where it runs and how fast it is (audio seconds per second of work). */
+const runners = new Map<string, { node: string; cpus: number; threads: number; seen: number; clips: number; audio: number; work: number }>();
+function voicingSummary() {
+  const now = Date.now(), nodes = new Set<string>();
+  let lanes = 0, audio = 0, work = 0;
+  for (const r of runners.values()) {
+    if (now - r.seen > 60_000) continue;
+    lanes++; nodes.add(r.node); audio += r.audio; work += r.work;
+  }
+  return { lanes, nodes: nodes.size, rtf: work ? Math.round((audio / work) * 100) / 100 : null, ...vq.stats() };
+}
+
+function readJson(req: import('node:http').IncomingMessage, limit: number): Promise<Record<string, unknown>> {
+  return new Promise((ok, bad) => {
+    const parts: Buffer[] = [];
+    let n = 0;
+    req.on('data', (c: Buffer) => { n += c.length; if (n > limit) { bad(new Error('too big')); req.destroy(); } else parts.push(c); });
+    req.on('end', () => { try { ok(n ? JSON.parse(Buffer.concat(parts).toString('utf8')) : {}); } catch (e) { bad(e); } });
+    req.on('error', bad);
+  });
+}
+
+async function voiceApi(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) {
+  const url = new URL(req.url ?? '/', 'http://x');
+  const send = (code: number, body?: unknown) => {
+    if (res.writableEnded || res.destroyed) return;
+    res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(body === undefined ? undefined : JSON.stringify(body));
+  };
+  if (VOICE_TOKEN && req.headers.authorization !== `Bearer ${VOICE_TOKEN}`) return send(401);
+  if (req.method === 'GET' && url.pathname === '/voice/status') {
+    const now = Date.now(), lanes = [...runners].filter(([, r]) => now - r.seen < 60_000)
+      .map(([id, r]) => ({ lane: id, node: r.node, cpus: r.cpus, threads: r.threads, clips: r.clips, rtf: r.work ? Math.round((r.audio / r.work) * 100) / 100 : null }));
+    return send(200, { ...voicingSummary(), lanes });
+  }
+  if (req.method !== 'POST') return send(405);
+  const b = await readJson(req, 4e6);
+  if (url.pathname === '/voice/claim') {
+    const runner = String(b.runner ?? '').slice(0, 120);
+    if (!runner) return send(400);
+    const r = runners.get(runner) ?? { node: '', cpus: 0, threads: 0, seen: 0, clips: 0, audio: 0, work: 0 };
+    runners.set(runner, { ...r, node: String(b.node ?? '').slice(0, 60), cpus: Number(b.cpus) || 0, threads: Number(b.threads) || 0, seen: Date.now() });
+    if (booting || !floors.size) { await sleep(2000); return send(204); }
+    const c = vq.claim(runner, Math.max(0, Math.min(120, Number(b.patience) || 0)), 25_000);
+    let gone = false;
+    res.on('close', () => { if (!res.writableEnded) { gone = true; c.cancel(); } });
+    const e = await c.promise;
+    if (!e) return send(204);
+    const token = e.lease!.token;
+    if (gone) { vq.release(token); return; }
+    const final = `c/${e.id}.${e.job.rev}.json`;
+    if (existsSync(join(LIVE, final))) {
+      // voiced already (say, towerd restarted before it was announced): say so again, don't redo it
+      try { announce(e.job, final, JSON.parse(readFileSync(join(LIVE, final), 'utf8')), false); } catch { /* unreadable: voiced again below */ }
+      if (live.voiced.get(e.id)?.[0] === final) { vq.finish(token); return send(200, { again: true }); }
+    }
+    if (!stillWanted(e.job)) { vq.revoke(e.id); return send(200, { again: true }); }   // taken down or edited since it was planned
+    const resume = resumeOf(e.job);
+    const tags = resume ? null : await tagsFor(e);
+    if (gone || !vq.get(token)) { vq.release(token); return send(204); }
+    return send(200, { lease: token, job: e.job, tags, resume, leaseMs: vq.leaseMs });
+  }
+  const token = String(b.lease ?? ''), e = vq.get(token);
+  if (!e) return send(409);
+  if (!stillWanted(e.job)) { vq.revoke(e.id); return send(409); }   // taken down, opted out or edited: stop
+  if (url.pathname === '/voice/beat') return send(200, vq.beat(token));
+  if (url.pathname === '/voice/release') { vq.release(token); return send(200, {}); }
+  if (url.pathname === '/voice/clip') {
+    const k = b.k, ogg = typeof b.ogg === 'string' ? Buffer.from(b.ogg, 'base64') : null;
+    if (!Number.isInteger(k) || (k as number) < 0 || (k as number) > 400 || !ogg || ogg.length < 64 || ogg.subarray(0, 4).toString('latin1') !== 'OggS') return send(400);
+    putLive(`c/${e.id}.${e.job.rev}.${k}.ogg`, ogg);
+    const r = runners.get(String(b.runner ?? ''));
+    if (r && Number(b.audio_s) > 0 && Number(b.work_s) > 0) { r.clips++; r.audio += Number(b.audio_s); r.work += Number(b.work_s); r.seen = Date.now(); }
+    const side = b.side as Side | undefined;
+    if (side) {
+      // playable so far: an immutable snapshot per clip count, so caches never need busting
+      if (!sideOk(side, e.job)) return send(400);
+      const rel = `c/${e.id}.${e.job.rev}.p${side.clips.length}.json`;
+      putLive(rel, Buffer.from(JSON.stringify(side)));
+      announce(e.job, rel, side, true);
+    }
+    const now = vq.beat(token);
+    return now ? send(200, now) : send(409);         // taken down while this clip was on its way
+  }
+  if (url.pathname === '/voice/done') {
+    if (!b.opened) {
+      const side = b.side as Side | undefined;
+      if (!sideOk(side, e.job)) return send(400);
+      const rel = `c/${e.id}.${e.job.rev}.json`;
+      putLive(rel, Buffer.from(JSON.stringify(side)));
+      announce(e.job, rel, side, false);
+    }
+    tagsOf.delete(tagKey(e));
+    vq.finish(token);
+    return send(200, {});
+  }
+  send(404);
+}
+if (VOICE_PORT) {
+  const vs = createServer((req, res) => {
+    voiceApi(req, res).catch((e) => {
+      console.error('voice', String(e).slice(0, 160));
+      if (!res.headersSent && !res.destroyed) { res.writeHead(400); res.end(); }
+    });
+  });
+  vs.keepAliveTimeout = 65_000; vs.headersTimeout = 70_000; vs.requestTimeout = 60_000;   // long polls, kept-alive runners
+  vs.listen(VOICE_PORT, () => console.log(`voice runners on :${VOICE_PORT}${VOICE_TOKEN ? ' (token)' : ''}`));
+}
+
 // ---------------------------------------------------------------- bootstrap, then follow the firehose
 const t0 = Date.now();
 async function forever<T>(what: string, f: () => Promise<T>): Promise<T> {
@@ -722,7 +918,8 @@ readOptOut();
 readVoiced();
 booting = false;
 // clear stale job files from a previous run; they are re-planned from current state
-for (const n of readdirSync(JOBS)) if (n.endsWith('.json')) { try { unlinkSync(join(JOBS, n)); } catch { /* the worker took it */ } }
+// job files from before voice runners (0.4.6 and older): the queue lives in memory now
+for (const n of readdirSync(JOBS)) if (n.endsWith('.json')) { try { unlinkSync(join(JOBS, n)); } catch { /* gone already */ } }
 let maxitem = await forever('maxitem', () => get<number>('maxitem'));
 console.log(JSON.stringify({ bootstrap: { items: live.items.size, voiced: live.voiced.size, skipped, seconds: (Date.now() - t0) / 1000 } }));
 
