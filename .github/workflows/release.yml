@@ -57,5 +57,7 @@ jobs:
           push: true
           tags: ghcr.io/rounakdatta/${{ matrix.image }}:${{ steps.v.outputs.version }}
           build-args: VERSION=${{ steps.v.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          # in the registry, not GitHub's cache: that one is scoped to a ref, and every release is a new tag, so each
+          # build started cold and every layer came out new (a worker on a slow link pulled the whole image again)
+          cache-from: type=registry,ref=ghcr.io/rounakdatta/${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/rounakdatta/${{ matrix.image }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
