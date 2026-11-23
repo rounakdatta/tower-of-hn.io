@@ -1,0 +1,110 @@
+{
+ "story": {
+  "id": 50547374,
+  "title": "Unauthenticated remote code execution in Nginx",
+  "url": "https://www.wiz.io/blog/nginx-http2-rce-vulnerabilities",
+  "by": "speedping",
+  "score": 678,
+  "comments": 268
+ },
+ "turns": [
+  {
+   "by": "tgma",
+   "voice": "miles_en",
+   "emotion": "stern",
+   "dur": 29.54,
+   "text": "[stern] As much as everyone is getting allergic to Rust migrations that sometimes make little sense, keeping network-facing daemons in C is just asking for it at this point. It's time to start seriously migrating to web servers like (link: xinproxy.com) or ferron or whatnot. Link: xinproxy.com."
+  },
+  {
+   "by": "tkz1312",
+   "voice": "serena_en",
+   "emotion": "contemplative",
+   "dur": 52.1,
+   "text": "[contemplative] I now run all my network facing C code via fil-c. I have limited needs (S.S.H., static file server), but for those it works very well. I personally am more in favour of making existing battle tested C safer via fil-c or formal verification, than I am of rewriting the world in rust. New code means new bugs, and losing the many years of accumulated bug fixes and hardening present in many critical pieces of our infra by rewriting in rust is not a desirable tradeoff. The new world we live in where fv has become many orders of magnitude cheaper also makes rust seem much less attractive."
+  },
+  {
+   "by": "tgma",
+   "voice": "miles_en",
+   "emotion": "mundane",
+   "dur": 6.06,
+   "text": "Fil-C is also a great solution, albeit with different performance trade-offs."
+  },
+  {
+   "by": "gspr",
+   "voice": "reid_en",
+   "emotion": "excited",
+   "dur": 12.4,
+   "text": "[excited] This sounds like a fantastic solution, especially for non-high-volume stuff. Would you consider writing down your setup and experiences? I'm sure it'll be a hit on this site!"
+  },
+  {
+   "by": "Creamsicle47",
+   "voice": "kyle_en",
+   "emotion": "contemplative",
+   "dur": 21.08,
+   "text": "[contemplative] I've reached the same conclusion myself. Many of the recent exploits seem like edge-cases that the author acknowledged 10-20 years ago but didn't predict that tools would eventually be able to chain together 100k network requests in order to trigger a buffer overflow."
+  },
+  {
+   "by": "drnick1",
+   "voice": "edmund_en",
+   "emotion": "stern",
+   "dur": 11.74,
+   "text": "[stern] Engine-x and C have been around for decades. Migrating to new, poorly tested (in the real world) software does not seem an improvement at all."
+  },
+  {
+   "by": "jrosenth0",
+   "voice": "marcus_en",
+   "emotion": "mundane",
+   "dur": 6.55,
+   "text": "is xinproxy open source? the website only has binaries and I couldn't find anything on github"
+  },
+  {
+   "by": "tgma",
+   "voice": "miles_en",
+   "emotion": "mundane",
+   "dur": 3.98,
+   "text": "Ferron is opensource. xin isn't yet."
+  },
+  {
+   "by": "pclmulqdq",
+   "voice": "jasper_en",
+   "emotion": "contemplative",
+   "dur": 12.86,
+   "text": "[contemplative] Software doesn\u2019t generally get checked for bugs until it has users. These new web servers mostly have that going for them rather than the language."
+  },
+  {
+   "by": "tgma",
+   "voice": "miles_en",
+   "emotion": "stern",
+   "dur": 68.6,
+   "text": "[stern] It is true that mileage is a good proxy for finding bugs, but this is isomorphic to the fundamental differences between testing v. verification. You can prove absence of classes of bugs with verification. Obviously there can be other logic bugs in newer software. No question. The issue is the memory-corruption bugs in socket-facing daemons can have catastrophic consequences, especially in light of chaining kernel vulnerabilities which defeats the privilege drop that engine-x does. So I'd say it is about a more holistic risk-analysis not just handwaving \"all code can have bugs, duh!\""
+  },
+  {
+   "by": "uecker",
+   "voice": "grant_en",
+   "emotion": "stern",
+   "dur": 33.05,
+   "text": "[stern] A more holistic risk-analysis would also need to consider the fact that a high-performance webserver written in Rust may also have memory safety issue due to use of \"unsafe\" features or unsafe dependencies, may be affected by memory safety issues in the standard library, may also have catastrophic logic errors, may be more affect by supply chain risks due to the use of a language-level package manager, and may have a larger patch gap."
+  },
+  {
+   "by": "ViewTrick1002",
+   "voice": "diana_en",
+   "emotion": "stern",
+   "dur": 23.38,
+   "text": "[stern] Which is like complaining that Python is written in C. That is a far smaller surface as seen by research into incorporating rust in Android leading to none of the high profile vulnerabilities C and C plus plus led to previously."
+  },
+  {
+   "by": "uecker",
+   "voice": "grant_en",
+   "emotion": "stern",
+   "dur": 3.79,
+   "text": "[stern] By research you mean blog posts by Google?"
+  },
+  {
+   "by": "ViewTrick1002",
+   "voice": "diana_en",
+   "emotion": "stern",
+   "dur": 17.28,
+   "text": "[stern] What specifically distinguishes the empirical research presented in Google\u2019s blog posts, for example the one linked below, from your definition of research? Link: blog.google."
+  }
+ ]
+}

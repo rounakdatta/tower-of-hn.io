@@ -46,3 +46,12 @@ dist/
 
 # Kokoro model cache
 tts-service/models/
+
+# v2
+node_modules/
+dist/
+spikes/*/data/
+spikes/*/out/
+spikes/live-out/
+var/
+apps/client/dist/

@@ -1,0 +1,37 @@
+[
+ {
+  "id": 50547794,
+  "by": "K0nserv",
+  "parent": 50547374,
+  "time": "2026-11-18T15:50:24.000Z",
+  "text": "Just another set of unfortunate examples of programmers who are bad at C, definitely not a C problem.\n\nEDIT: Okay, this comment was snarky and not in good spirit. To be serious, I think we are increasingly seeing that the notion that humans can write non-trivial amounts of C correctly is false. Especially in the face of AI-assisted vulnearbility hunting these programs a crumbling. This is not an indictment of humans, it's a sign that C is not equipped to meet this moment."
+ },
+ {
+  "id": 50548186,
+  "by": "marvinborner",
+  "parent": 50547794,
+  "time": "2026-11-18T16:20:23.000Z",
+  "text": "The patch (or, one of them) seems very much like a bug that can happen independently of the programming language\n\nhttps://github.com/nginx/nginx/commit/e27f5fa84fe6e98505e70bc543b748747dad0a3b"
+ },
+ {
+  "id": 50548278,
+  "by": "K0nserv",
+  "parent": 50548186,
+  "time": "2026-11-18T16:26:24.000Z",
+  "text": "This fixes the integer underflow for CVE-2026-123007, and it's true that the underflow can happen in any language, notwithstanding whether it's UB or not. The issue is what happens as a consequence of this underflow, in this case: out of bounds copy, which is specific to C."
+ },
+ {
+  "id": 50548742,
+  "by": "nh2",
+  "parent": 50548278,
+  "time": "2026-11-18T16:58:56.000Z",
+  "text": "Some languages make it significantly easier than C to just forbid integer overflow/underflow entirely.\n\nGiven that on modern CPUs, cycles are quite fast, and memory latency is quite high, always-checked integer operations sound like an extremely good idea."
+ },
+ {
+  "id": 50548856,
+  "by": "K0nserv",
+  "parent": 50548742,
+  "time": "2026-11-18T17:07:18.000Z",
+  "text": "Sure, I usually use `overflow-checks = true` in Rust for this reason. However, it is still true that the overflow is not what caused the issue here. In Rust it would've paniced on the out of bounds copy, even with `overflow-checks = false`."
+ }
+]

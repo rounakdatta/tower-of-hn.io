@@ -1,0 +1,10 @@
+.git
+**/node_modules
+**/__pycache__
+var
+spikes
+research
+docs
+apps/client/dist
+apps/client/tools
+*.pyc

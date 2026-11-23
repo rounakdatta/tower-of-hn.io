@@ -1,0 +1,8 @@
+{
+  "name": "@towerofhan/towerd",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.12.0"
+  }
+}
