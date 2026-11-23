@@ -106,7 +106,7 @@ test('finished jobs leave the queue; revoked ones refuse their runner', async ()
   assert.deepEqual(q.stats(), { queued: 0, held: 0, waiting: 0 });
 });
 
-test('the fallback is never the one asked to make room: a fast runner yields instead', async () => {
+test('a standby gives back what it holds once the fast runners return; they yield to a seat', async () => {
   const c = clockAt(), q = new VoiceQueue<J>(c.now);
   q.plan([[1, 5000, 0], [2, 5001, 0]], make);
   const fast = (await q.claim('fast').promise)!;
@@ -114,9 +114,18 @@ test('the fallback is never the one asked to make room: a fast runner yields ins
   const slow = (await q.claim('slow', 15).promise)!;   // the fast runner had gone quiet: the standby took job 2
   assert.deepEqual([fast.id, slow.id], [1, 2]);
   q.beat(fast.lease!.token);                          // and now it's back
+  assert.equal(q.beat(slow.lease!.token)!.yield, true, 'the standby hands its job back to the faster runners');
   q.plan([[1, 5000, 0], [2, 5001, 0], [9, 3, 0]], make);  // someone sits down; nobody is idle
-  assert.equal(q.beat(slow.lease!.token)!.yield, false, 'the fallback could not take it anyway');
-  assert.equal(q.beat(fast.lease!.token)!.yield, true, 'the fast runner gives way');
+  assert.equal(q.beat(fast.lease!.token)!.yield, true, 'the fast runner gives way to the seat');
+});
+
+test('a standby heard from at start-up (towerd still booting) leaves the first jobs to the fast runners', async () => {
+  const c = clockAt(), q = new VoiceQueue<J>(c.now);
+  q.hear('fast', 0);                                  // asked while towerd was still starting
+  q.plan([[1, 10, 0]], make);
+  const s = q.claim('slow', 15, 1_000);
+  assert.equal(await s.promise, null, 'the standby gets nothing');
+  assert.equal((await q.claim('fast').promise)?.id, 1);
 });
 
 test('a seat its listener left becomes background work: it no longer outranks anyone', async () => {

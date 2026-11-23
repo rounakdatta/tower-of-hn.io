@@ -239,7 +239,9 @@ function jobFor(id: number, prio: number, upto = 0) {
  *  runners voice what's needed now; a runner waiting for work gets the new most urgent job at once. */
 function syncJobs() {
   vq.plan(wanted().slice(0, MAX_QUEUED), jobFor, revOf);
-  for (const k of tagsOf.keys()) if (!vq.entries.has(Number(k.split('.')[0]))) tagsOf.delete(k);
+  // taken down, edited, or its author (or the one it quotes) opted out since it was queued: gone before anyone voices
+  // it, or sends it to the model
+  for (const e of [...vq.entries.values()]) if (!stillWanted(e.job)) vq.revoke(e.id);
   prefetchTags();
 }
 
@@ -707,30 +709,53 @@ setInterval(() => {                                  // runner lanes come and go
   for (const [r, x] of runners) if (Date.now() - x.seen > 3_600_000) runners.delete(r);
 }, 60_000).unref();
 
-/** how to perform each queued comment, by `${id}.${rev}` (null: no model to ask; the runner judges from the words) */
+/** How to perform each comment, by `${id}.${rev}` (null: no model to ask; the runner judges from the words). The most
+ *  recent few thousand are kept, queued or not: a table's later turns are tagged ahead, with its opening, so whoever
+ *  sits down there never waits on the model. */
 const tagsOf = new Map<string, Tag | null>();
+const TAGS_KEPT = 5000;
+function keepTag(k: string, t: Tag | null) {
+  tagsOf.delete(k); tagsOf.set(k, t);
+  if (tagsOf.size > TAGS_KEPT) tagsOf.delete(tagsOf.keys().next().value!);
+}
 const tagging = new Map<string, Promise<void>>();
 const tagBudget: Bucket = { n: 30, at: Date.now() };              // model calls: about thirty a minute at most
 let tagPauseUntil = 0;                               // the model failed (or the budget ran out): don't ask, or wait, until then
-const tagKey = (e: Entry<Job>) => `${e.id}.${e.job.rev}`;
-/** One call for a comment and up to seven more from its thread (in context, as they'll be performed). */
-function tagBatch(first: Entry<Job>): Promise<void> {
-  const batch = [first, ...[...vq.entries.values()]
-    .filter((x) => x !== first && x.job.story === first.job.story && !tagsOf.has(tagKey(x)) && !tagging.has(tagKey(x)))
-    .sort((a, b) => a.prio - b.prio).slice(0, 7)];
+const tagStats = { calls: 0, comments: 0, failed: 0, claims: 0, waited: 0 };    // for /voice/status: is anyone waiting on the model?
+const keyOf = (j: Job) => `${j.id}.${j.rev}`;
+const tagKey = (e: Entry<Job>) => keyOf(e.job);
+/** One call, in context, for a comment and more of its thread (up to `cap` in all): other queued comments (most
+ *  urgent first, at most half), then the turns that follow it at its table, which nobody has asked for yet. A seat's
+ *  call is kept small, so it comes back sooner. */
+function tagBatch(first: Job, cap = 12): Promise<void> {
+  const batch: Job[] = [first], have = new Set([keyOf(first)]);
+  const add = (j: Job | undefined) => {
+    if (!j || have.has(keyOf(j)) || tagsOf.has(keyOf(j)) || tagging.has(keyOf(j)) || !stillWanted(j)) return;
+    have.add(keyOf(j)); batch.push(j);
+  };
+  for (const x of [...vq.entries.values()].sort((a, b) => a.prio - b.prio)) {
+    if (batch.length >= cap / 2) break;
+    if (x.job.story === first.story) add(x.job);
+  }
+  const turns = floors.get(first.story)?.tables.find((t) => t.turns.some((u) => u.id === first.id))?.turns ?? [];
+  for (const u of turns.slice(turns.findIndex((u) => u.id === first.id) + 1)) {
+    if (batch.length >= cap) break;
+    if (needsVoice(u.id)) add(jobFor(u.id, 9999, 0));
+  }
   const p = (async () => {
     const c = anthropic();
-    if (!c) { for (const x of batch) tagsOf.set(tagKey(x), null); return; }
+    if (!c) { for (const j of batch) keepTag(keyOf(j), null); return; }
     if (!take(tagBudget, 0.5, 30)) { tagPauseUntil = Date.now() + 5_000; return; }   // busy: runners judge from the words meanwhile
-    const msg = await c.messages.create({ model: process.env.TAG_MODEL ?? 'claude-haiku-5-5', max_tokens: 1500, thinking: { type: 'disabled' },
-      messages: [{ role: 'user', content: tagPrompt(batch.map((x) => x.job)) }] });
+    tagStats.calls++; tagStats.comments += batch.length;
+    const msg = await c.messages.create({ model: process.env.TAG_MODEL ?? 'claude-haiku-5-5', max_tokens: 2000, thinking: { type: 'disabled' },
+      messages: [{ role: 'user', content: tagPrompt(batch) }] });
     let text = '';
     for (const b of msg.content) if (b.type === 'text') text += b.text;
     const got = parseTags(text);
-    for (const x of batch) tagsOf.set(tagKey(x), got.get(x.id) ?? null);
-  })().catch((e) => { tagPauseUntil = Date.now() + 30_000; console.error('tags', String(e).slice(0, 160)); })
-    .finally(() => { for (const x of batch) tagging.delete(tagKey(x)); setImmediate(prefetchTags); });
-  for (const x of batch) tagging.set(tagKey(x), p);
+    for (const j of batch) keepTag(keyOf(j), got.get(j.id) ?? null);
+  })().catch((e) => { tagStats.failed++; tagPauseUntil = Date.now() + 30_000; console.error('tags', String(e).slice(0, 160)); })
+    .finally(() => { for (const j of batch) tagging.delete(keyOf(j)); setImmediate(prefetchTags); });
+  for (const j of batch) tagging.set(keyOf(j), p);
   return p;
 }
 /** Tags ahead of need, one call at a time, most urgent first: a runner that claims a job rarely waits for them. */
@@ -738,13 +763,18 @@ function prefetchTags() {
   if (tagging.size || Date.now() < tagPauseUntil) return;
   let next: Entry<Job> | undefined;
   for (const x of vq.entries.values()) if (!tagsOf.has(tagKey(x)) && (!next || x.prio < next.prio)) next = x;
-  if (next) tagBatch(next);
+  if (next) tagBatch(next.job);
 }
 /** A seat or a floor someone is on waits at most a couple of seconds for its tags (then the words decide); background
  *  work can wait for the model. */
 async function tagsFor(e: Entry<Job>) {
   const k = tagKey(e);
-  if (!tagsOf.has(k) && Date.now() >= tagPauseUntil) await Promise.race([tagging.get(k) ?? tagBatch(e), sleep(band(e.prio) < 2 ? 2_500 : 15_000)]);
+  tagStats.claims++;
+  if (!tagsOf.has(k) && Date.now() >= tagPauseUntil) {
+    tagStats.waited++;
+    const seat = band(e.prio) < 2;
+    await Promise.race([tagging.get(k) ?? tagBatch(e.job, seat ? 6 : 12), sleep(seat ? 2_500 : 15_000)]);
+  }
   return tagsOf.get(k) ?? null;
 }
 
@@ -783,15 +813,18 @@ function putLive(rel: string, body: Buffer) {
   renameSync(p + '.tmp', p);
   try { hotPut(p, body, statSync(p).mtimeMs); } catch { /* served from disk then */ }
 }
-/** voiced.jsonl is the record (read back at start-up); the floor hears of it on the next tick */
-function announce(job: Job, rel: string, side: Side, part: boolean) {
+/** voiced.jsonl is the record (read back at start-up). The floor hears of it on the next tick, or, when someone is
+ *  waiting on it (a seat, a floor someone stands on), within a moment: a second sooner on average. Background clips
+ *  wait for the tick, so a busy hour of voicing doesn't rewrite floor files many times a second. */
+function announce(job: Job, rel: string, side: Side, part: boolean, waited = false) {
   appendFileSync(VOICED, JSON.stringify({ id: job.id, by: job.by, path: rel, dur: Math.round(side.dur * 100) / 100, ...(part ? { partial: true } : {}),
     of: part ? side.of : side.clips.length, voices: [...new Set(side.clips.map((c) => c.who))].sort(), e: side.emotion, i: side.intensity }) + '\n');
   readVoiced();
+  if (waited) publishSoon();
 }
 
 /** Who is voicing: per runner lane, where it runs and how fast it is (audio seconds per second of work). */
-const runners = new Map<string, { node: string; cpus: number; threads: number; seen: number; clips: number; audio: number; work: number }>();
+const runners = new Map<string, { node: string; cpus: number; threads: number; seen: number; clips: number; audio: number; work: number; up: number; ups: number }>();
 function voicingSummary() {
   const now = Date.now(), nodes = new Set<string>();
   let lanes = 0, audio = 0, work = 0;
@@ -822,18 +855,21 @@ async function voiceApi(req: import('node:http').IncomingMessage, res: import('n
   if (VOICE_TOKEN && req.headers.authorization !== `Bearer ${VOICE_TOKEN}`) return send(401);
   if (req.method === 'GET' && url.pathname === '/voice/status') {
     const now = Date.now(), lanes = [...runners].filter(([, r]) => now - r.seen < 60_000)
-      .map(([id, r]) => ({ lane: id, node: r.node, cpus: r.cpus, threads: r.threads, clips: r.clips, rtf: r.work ? Math.round((r.audio / r.work) * 100) / 100 : null }));
-    return send(200, { ...voicingSummary(), lanes });
+      .map(([id, r]) => ({ lane: id, node: r.node, cpus: r.cpus, threads: r.threads, clips: r.clips, rtf: r.work ? Math.round((r.audio / r.work) * 100) / 100 : null,
+        upload_ms: r.ups ? Math.round((r.up / r.ups) * 1000) : null }));
+    return send(200, { ...voicingSummary(), tags: { kept: tagsOf.size, ...tagStats }, lanes });
   }
   if (req.method !== 'POST') return send(405);
   const b = await readJson(req, 4e6);
   if (url.pathname === '/voice/claim') {
     const runner = String(b.runner ?? '').slice(0, 120);
     if (!runner) return send(400);
-    const r = runners.get(runner) ?? { node: '', cpus: 0, threads: 0, seen: 0, clips: 0, audio: 0, work: 0 };
+    const r = runners.get(runner) ?? { node: '', cpus: 0, threads: 0, seen: 0, clips: 0, audio: 0, work: 0, up: 0, ups: 0 };
     runners.set(runner, { ...r, node: String(b.node ?? '').slice(0, 60), cpus: Number(b.cpus) || 0, threads: Number(b.threads) || 0, seen: Date.now() });
+    const patience = Math.max(0, Math.min(120, Number(b.patience) || 0));
+    vq.hear(runner, patience);                       // heard, even while starting up: a standby stays out of the way
     if (booting || !floors.size) { await sleep(2000); return send(204); }
-    const c = vq.claim(runner, Math.max(0, Math.min(120, Number(b.patience) || 0)), 25_000);
+    const c = vq.claim(runner, patience, 25_000);
     let gone = false;
     res.on('close', () => { if (!res.writableEnded) { gone = true; c.cancel(); } });
     const e = await c.promise;
@@ -849,6 +885,7 @@ async function voiceApi(req: import('node:http').IncomingMessage, res: import('n
     if (!stillWanted(e.job)) { vq.revoke(e.id); return send(200, { again: true }); }   // taken down or edited since it was planned
     const resume = resumeOf(e.job);
     const tags = resume ? null : await tagsFor(e);
+    vq.hear(runner, patience);                       // waiting on the model, it was still here
     if (gone || !vq.get(token)) { vq.release(token); return send(204); }
     return send(200, { lease: token, job: e.job, tags, resume, leaseMs: vq.leaseMs });
   }
@@ -863,13 +900,14 @@ async function voiceApi(req: import('node:http').IncomingMessage, res: import('n
     putLive(`c/${e.id}.${e.job.rev}.${k}.ogg`, ogg);
     const r = runners.get(String(b.runner ?? ''));
     if (r && Number(b.audio_s) > 0 && Number(b.work_s) > 0) { r.clips++; r.audio += Number(b.audio_s); r.work += Number(b.work_s); r.seen = Date.now(); }
+    if (r && Number(b.up_s) > 0) { r.up += Number(b.up_s); r.ups++; }       // the previous clip's trip here, as the runner timed it
     const side = b.side as Side | undefined;
     if (side) {
       // playable so far: an immutable snapshot per clip count, so caches never need busting
       if (!sideOk(side, e.job)) return send(400);
       const rel = `c/${e.id}.${e.job.rev}.p${side.clips.length}.json`;
       putLive(rel, Buffer.from(JSON.stringify(side)));
-      announce(e.job, rel, side, true);
+      announce(e.job, rel, side, true, band(e.prio) < 2);
     }
     const now = vq.beat(token);
     return now ? send(200, now) : send(409);         // taken down while this clip was on its way
@@ -880,7 +918,7 @@ async function voiceApi(req: import('node:http').IncomingMessage, res: import('n
       if (!sideOk(side, e.job)) return send(400);
       const rel = `c/${e.id}.${e.job.rev}.json`;
       putLive(rel, Buffer.from(JSON.stringify(side)));
-      announce(e.job, rel, side, false);
+      announce(e.job, rel, side, false, band(e.prio) < 2);
     }
     tagsOf.delete(tagKey(e));
     vq.finish(token);
@@ -897,6 +935,26 @@ if (VOICE_PORT) {
   });
   vs.keepAliveTimeout = 65_000; vs.headersTimeout = 70_000; vs.requestTimeout = 60_000;   // long polls, kept-alive runners
   vs.listen(VOICE_PORT, () => console.log(`voice runners on :${VOICE_PORT}${VOICE_TOKEN ? ' (token)' : ''}`));
+}
+
+/** What changed, written out: floors that changed (as snapshots, or patches in the delta), the delta, the queue, the
+ *  head. Every loop, and a moment after a clip lands (at most every 150 ms, after the bootstrap). */
+function publish() {
+  const r = live.tick(Date.now());
+  for (const s of r.snapshots) { floors.set(s.story.id, s); write(`f/${s.story.id}/${s.rev}.json`, s); }
+  if (r.delta) write(`e/${r.delta.epoch}.json`, r.delta);
+  syncJobs();
+  const head = { ...r.head, load: backlog }, key = JSON.stringify({ ...head, at: 0 });
+  if (key !== headKey) { write('head.json', head); headKey = key; }
+}
+let publishTimer: ReturnType<typeof setTimeout> | null = null, publishedAt = 0;
+function publishSoon() {
+  if (booting || publishTimer) return;
+  const wait = Math.max(150, publishedAt + 500 - Date.now());       // at most twice a second
+  publishTimer = setTimeout(() => {
+    publishTimer = null; publishedAt = Date.now();
+    try { publish(); } catch (e) { console.error('publish', String(e).slice(0, 160)); }
+  }, wait);
 }
 
 // ---------------------------------------------------------------- bootstrap, then follow the firehose
@@ -970,12 +1028,7 @@ for (;;) {
       lastPrune = Date.now(); pruning = true;
       prune().catch((e) => console.error('prune', String(e).slice(0, 200))).finally(() => { pruning = false; });
     }
-    const r = live.tick(Date.now());
-    for (const s of r.snapshots) { floors.set(s.story.id, s); write(`f/${s.story.id}/${s.rev}.json`, s); }
-    if (r.delta) write(`e/${r.delta.epoch}.json`, r.delta);
-    syncJobs();
-    const head = { ...r.head, load: backlog }, key = JSON.stringify({ ...head, at: 0 });
-    if (key !== headKey) { write('head.json', head); headKey = key; }
+    publish();
   } catch (e) { console.error('tick', String(e).slice(0, 200)); }      // a full disk, say: keep serving, keep trying
   heartbeat = Date.now();
   await sleep(Math.max(0, 2000 - (Date.now() - loopStart)));

@@ -18,7 +18,7 @@ env:   VOICE_URL (default http://127.0.0.1:8788), VOICE_TOKEN, LANES (or MAX_LAN
        /voice/status), NICE, PACE, KOKORO_DIR, KOKORO_MODEL, KOKORO_PROVIDER=cuda,
        TTS_ENGINE=kokoro (default) | openai (gpt-4o-mini-tts: OPENAI_API_KEY, OPENAI_BUDGET_MIN caps spend, default 300 min)
 """
-import base64, collections, hashlib, http.client, io, json, multiprocessing, os, re, signal, socket, sys, threading, time, urllib.parse, urllib.request
+import base64, collections, hashlib, http.client, io, json, multiprocessing, os, queue, re, signal, socket, sys, threading, time, urllib.parse, urllib.request
 import numpy as np
 import soundfile as sf
 
@@ -257,7 +257,7 @@ class Towerd:
         self.headers = {"content-type": "application/json", **({"authorization": f"Bearer {token}"} if token else {})}
 
     def post(self, path, body, timeout=30):
-        data = json.dumps(body, separators=(",", ":")).encode()
+        data = body if isinstance(body, bytes) else json.dumps(body, separators=(",", ":")).encode()
         for attempt in (0, 1):
             try:
                 if self.conn is None:
@@ -320,6 +320,51 @@ class Beat(threading.Thread):
         self.halt.set()
 
 
+class Uploader(threading.Thread):
+    """Sends a comment's clips, in order, while the lane voices the next ones: a lane never waits on the network
+    between clips (towerd is a round trip away, a fifth of a second from Paris). towerd's answers (give way? more of it
+    wanted? still yours?) land in the state the lane checks between clips. At most three wait: past that the network
+    sets the pace, and a stalled one trips the lane's watchdog."""
+
+    def __init__(self, url, token, state):
+        super().__init__(daemon=True)
+        self.td, self.state, self.q = Towerd(url, token), state, queue.Queue(maxsize=3)
+        self.failed, self.last, self.total, self.sent = None, 0.0, 0.0, 0
+
+    def run(self):
+        while True:
+            body = self.q.get()
+            if body is None:
+                break
+            if self.failed or self.state["lost"]:
+                continue                         # drain: nothing more of this comment is sent
+            t = time.time()
+            try:
+                st, r = self.td.post("/voice/clip", body)
+            except Exception as e:  # noqa: BLE001
+                self.failed = f"upload: {str(e)[:100]}"
+                continue
+            self.last = time.time() - t
+            self.total += self.last
+            self.sent += 1
+            if st == 409:
+                self.state["lost"] = True
+            elif st != 200 or not r:
+                self.failed = f"clip refused: {st} {r}"
+            else:
+                self.state["upto"] = r.get("upto", self.state["upto"])
+                if r.get("yield"):
+                    self.state["yield"] = True
+        self.td.close()
+
+    def send(self, body):
+        self.q.put(body)
+
+    def finish(self):
+        self.q.put(None)
+        self.join()
+
+
 def cpus_allowed():
     """The cores this container may use: its CPU limit if it has one, else the ones it may run on."""
     try:
@@ -368,12 +413,14 @@ def voice_job(c, kokoro, voices, oai, td, cfg, runner):
     sess = kokoro.sess if kokoro is not None else None
     beat = Beat(cfg["url"], cfg["token"], lease, sess, state)
     beat.start()
+    up = Uploader(cfg["url"], cfg["token"], state)
+    up.start()
     outcome = "done"
     try:
         for k, (spoken, shown, who) in enumerate(plan):
             if k < start:
                 continue
-            if state["lost"] or state["yield"]:
+            if state["lost"] or state["yield"] or up.failed:
                 outcome = "lost" if state["lost"] else "yielded"
                 break
             c0 = time.time()
@@ -401,33 +448,34 @@ def voice_job(c, kokoro, voices, oai, td, cfg, runner):
                               "env": [int(v * 255) for v in env], "shape": [int((v + 1) * 127.5) for v in shp]})
             total += d
             part = k < len(plan) - 1
-            body = {"lease": lease, "runner": runner, "k": k, "ogg": base64.b64encode(ogg).decode(), "audio_s": round(d, 3), "work_s": round(work, 3)}
+            body = {"lease": lease, "runner": runner, "k": k, "ogg": base64.b64encode(ogg).decode(), "audio_s": round(d, 3),
+                    "work_s": round(work, 3), "up_s": round(up.last, 3)}
             if part:
-                body["side"] = sidecar(k + 1)    # playable so far
-            st, r = td.post("/voice/clip", body)
+                body["side"] = sidecar(k + 1)    # playable so far (serialized now: what's playable at this clip)
+            up.send(json.dumps(body, separators=(",", ":")).encode())
             state["progress"] = time.time()
-            if st == 409:
-                outcome = "lost"
-                break
-            if st != 200:
-                raise RuntimeError(f"clip refused: {st} {r}")
-            state["upto"] = r.get("upto", state["upto"])
-            if r.get("yield"):
-                state["yield"] = True
             if part and state["upto"] and len(clips_out) >= state["upto"]:
-                # an opening: its first words are ready for whoever sits down; the rest is voiced on demand
-                td.post("/voice/done", {"lease": lease, "opened": True})
-                outcome = "opened"
+                outcome = "opened"               # an opening: its first words are ready; the rest is voiced on demand
                 break
-        else:
+        up.finish()                              # every clip is at towerd (or refused) before anything is said of the whole
+        if up.failed:
+            raise RuntimeError(up.failed)        # the caller gives the comment back
+        if state["lost"]:
+            outcome = "lost"
+        elif outcome == "opened":
+            td.post("/voice/done", {"lease": lease, "opened": True})
+        elif outcome == "done":
             st, r = td.post("/voice/done", {"lease": lease, "side": sidecar()})
             outcome = "done" if st == 200 else f"done refused {st}"
-        if outcome == "yielded":
+        elif outcome == "yielded":
             td.post("/voice/release", {"lease": lease})
     finally:
         beat.stop()
+        if up.is_alive():
+            up.finish()
     print(json.dumps({"id": j["id"], "by": j["by"], outcome: True, "emotion": emotion, "i": round(intensity, 2), "clips": len(clips_out),
-                      "audio_s": round(total, 1), "wall_s": round(time.time() - t0, 1), "prio": j.get("prio"), "lane": runner}), flush=True)
+                      "audio_s": round(total, 1), "wall_s": round(time.time() - t0, 1), "upload_ms": round(1000 * up.total / max(1, up.sent)),
+                      "prio": j.get("prio"), "lane": runner}), flush=True)
 
 
 def lane(n, cfg):

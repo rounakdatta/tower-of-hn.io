@@ -71,6 +71,8 @@ export class VoiceQueue<J extends { rev: string }> {
 
   /** When each runner was last heard from: a standby stays idle while any other is around. */
   private seen = new Map<string, { at: number; patience: number }>();
+  /** A runner made itself heard (asked for work, even while towerd was still starting; finished waiting on tags). */
+  hear(runner: string, patience: number) { this.seen.set(runner, { at: this.now(), patience }); }
   private othersAlive(runner: string, within: number) {
     for (const [r, s] of this.seen) if (r !== runner && !s.patience && this.now() - s.at < within) return true;
     return false;
@@ -121,14 +123,14 @@ export class VoiceQueue<J extends { rev: string }> {
     return { yield: this.shouldYield(e), prio: e.prio, upto: e.upto };
   }
 
-  /** A standby that took a job (nobody else was around) and is now joined by others: never the one asked to make
-   *  room, since it couldn't take the urgent job anyway. */
+  /** A standby holding a job (it took it while nobody else was around) now joined by faster runners. */
   private patientNow(l: Lease) { return l.patience > 0 && this.othersAlive(l.runner, l.patience * 1000); }
 
   /** Give way when someone waits on something more urgent that nobody can take: the least urgent jobs being voiced
-   *  yield first, one per urgent job (never every runner at once for one listener). */
+   *  yield first, one per urgent job (never every runner at once for one listener). A standby gives back whatever it
+   *  holds as soon as the others are around again: they voice it several times faster, from where it stopped. */
   private shouldYield(e: Entry<J>) {
-    if (this.patientNow(e.lease!)) return false;
+    if (this.patientNow(e.lease!)) return true;
     const mine = band(e.prio);
     let better = 0, top: Band = 3;
     for (const x of this.entries.values()) {
