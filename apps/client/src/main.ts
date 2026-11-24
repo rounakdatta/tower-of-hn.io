@@ -839,7 +839,7 @@ async function awake() {
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') awake(); });
 
 // ---------------------------------------------------------------- the neon sign
-// it catches when you come in, stutters, holds; now and then its orange "Of" buzzes. Steady if motion is reduced.
+// it catches when you come in, stutters, holds; now and then its orange "of" buzzes. Steady if motion is reduced.
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const neon = { at: -1, buzzAt: 9, n: 0 };
 function neonTick(now: number) {
