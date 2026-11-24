@@ -1,6 +1,6 @@
 // Spoken forms: a comment's text as someone who knows the subject would read it aloud. "$1.2T" is "1.2 trillion
-// dollars", "e.g." is "for example", "~5%" is "about 5%", and a link is where it goes ("a GitHub link", "the New
-// York Times", "nin dot fan"), never its path.
+// dollars", "e.g." is "for example", "~5%" is "about 5%", and a link is where it goes ("a GitHub link", "N-Y Post dot
+// com", "nin dot fan"), never its path. docs/SPEECH.md has the design and the evidence.
 //
 // Why the text, not the engine: Kokoro reads through espeak-ng, and kokoro-onnx hands it plain text (no SSML, no
 // lexicon). espeak reads a written form literally ("dollar one point two T") and takes a dot inside a name for a
