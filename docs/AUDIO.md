@@ -67,8 +67,8 @@ same rule decides what to keep, and an R2 lifecycle rule drops the rest.
 
 - **Look:** `curl -s towerofhan.apps.svc.cluster.local:8787/status | jq .audio`
   - `policy`; `held` (null, `disk` or `full`); `free_pct` of the volume's filesystem
-  - from the last pass: `versions`, `mb` on disk, `tower_mb` (playable now), `kept_mb`, `drop` and `drop_mb`, `marked`
-    (to go at the next pass)
+  - from the last pass: `at`, `versions`, `mb` on disk, `tower_mb` (playable now), `kept_mb`, `drop` and `drop_mb`,
+    `marked` (to go at the next pass), and `ms` it took (in slices: the server answers in between)
   - since start: `dropped`, and `gets`: clip requests served from `memory` or `disk`, `missing` (a listener asked
     for audio that's gone) and by the clip's `age`
   - logs: one `{"audio": …}` line per pass, and one whenever a hold starts or ends.

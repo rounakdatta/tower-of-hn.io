@@ -651,6 +651,7 @@ const reach = new Map<string, number>();
 const audio = { marked: new Set<string>(), full: false, dropped: 0, last: {} as Record<string, number | boolean> };
 async function keepPlayable(versions: Version[], now: number, dir: string, gone: (f: string) => void, logged: number) {
   held();                                                // a fresh reading of the disk
+  const t0 = performance.now();
   const real = AUDIO_POLICY === 'tower', MB = 1_048_576, mb = (b: number) => Math.round(b / MB);
   // the disk nearly full: whatever nobody can play goes now, grace or not
   const r = sweep(versions, { now, grace: freePct < AUDIO.freeMin ? 0 : AUDIO.grace, maxBytes: AUDIO.maxBytes, marked: audio.marked });
@@ -692,8 +693,8 @@ async function keepPlayable(versions: Version[], now: number, dir: string, gone:
     }
   }
   const bytes = (f: (v: Version) => boolean) => versions.reduce((n, v) => n + (f(v) ? v.bytes : 0), 0);
-  audio.last = { versions: versions.length, mb: mb(bytes(() => true)), tower_mb: mb(bytes((v) => v.tower)), kept_mb: mb(r.bytes),
-    drop: r.drop.length, drop_mb: mb(r.drop.reduce((n, v) => n + v.bytes, 0)), marked: r.marked.size, full: r.full };
+  audio.last = { at: now, versions: versions.length, mb: mb(bytes(() => true)), tower_mb: mb(bytes((v) => v.tower)), kept_mb: mb(r.bytes),
+    drop: r.drop.length, drop_mb: mb(r.drop.reduce((n, v) => n + v.bytes, 0)), marked: r.marked.size, full: r.full, ms: Math.round(performance.now() - t0) };
   console.log(JSON.stringify({ audio: { ...audio.last, dry: !real } }));
 }
 
