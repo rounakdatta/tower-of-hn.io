@@ -106,3 +106,24 @@ test('the head says how heated each floor is, from how its voiced comments are d
   const out = live.tick(3000);
   assert.ok((out.head.heat?.[100] ?? 0) > 0.6, JSON.stringify(out.head.heat));
 });
+
+test('a story that comes back to the tower is rebuilt: what changed while it was off reaches its floor', () => {
+  const live = new Live({ snapshotEvery: 1 });
+  const other = { id: 200, type: 'story', title: 'Other', score: 5, descendants: 0, kids: [] };
+  for (const it of [story, other, c(101, 100, 'a'), c(104, 100, 'c')]) live.upsert(it);
+  live.markVoiced(101, 'c/101.aaaaaaaa.json', 3);
+  live.setTower([100, 200]);
+  const first = live.tick(1000).head.floors[100];
+  live.setTower([200]);                                     // it slips off the front page
+  live.tick(3000);
+  live.voiced.delete(101);                                  // its audio is deleted meanwhile (towerd's store)
+  live.upsert(c(105, 100, 'd'));                            // and someone replies
+  live.upsert({ ...story, kids: [101, 104, 105] });
+  live.tick(5000);
+  live.setTower([200, 100]);                                // it comes back
+  const out = live.tick(7000);
+  assert.notEqual(out.head.floors[100], first);
+  const turns = out.snapshots.find((f) => f.story.id === 100)!.tables.flatMap((t) => t.turns);
+  assert.equal(turns.find((u) => u.id === 101)?.v, undefined, 'no audio that is gone');
+  assert.ok(turns.some((u) => u.id === 105), 'the reply made while it was off');
+});

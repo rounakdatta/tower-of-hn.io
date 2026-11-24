@@ -8,10 +8,10 @@
  * is a cache nobody can hit (on 24 Nov 2026, 78% of the audio stored), so it goes.
  */
 
-/** One version of a voiced comment, c/<id>.<rev>: its files (sidecar, snapshots, clips), their bytes, the last time
- *  a floor could play it (0: not since this process started, and no floor on disk names it), and whether a floor on
- *  the tower plays it now. */
-export type Version = { stem: string; files: string[]; bytes: number; reach: number; tower: boolean };
+/** One version of a voiced comment, c/<id>.<rev>: its files (sidecar, snapshots, clips), their bytes, when its newest
+ *  file was written, the last time a floor could play it (0: not since this process started, and no floor on disk
+ *  names it), and whether a floor on the tower plays it now. */
+export type Version = { stem: string; files: string[]; bytes: number; mtime: number; reach: number; tower: boolean };
 
 /** c/<id>.<rev>.<k>.ogg, c/<id>.<rev>.p<n>.json, c/<id>.<rev>.json -> c/<id>.<rev>; anything else -> null */
 export function versionOf(name: string): string | null {
@@ -20,21 +20,24 @@ export function versionOf(name: string): string | null {
 }
 
 /**
- * What goes this pass. A version nobody could play for longer than `grace` is marked, and deleted if it was marked
- * the pass before too: nothing just voiced, or not yet on a floor rebuilt after a restart, is caught in between. If
- * the rest is still over `maxBytes`, the versions unplayable longest go at once; what the tower plays now never does.
+ * What goes this pass. A version nobody could play for longer than `grace` (counted from when it was last playable,
+ * or voiced if that is later: a clip just in is not on a floor yet) is marked, and deleted if it was marked the pass
+ * before too: nothing on a floor rebuilt after a restart is caught in between. If the rest is still over `maxBytes`,
+ * the marked and then the longest unplayable go at once; what the tower plays now never does.
  * `full`: over the cap even so (towerd then voices nothing new until it isn't).
  */
 export function sweep(versions: Version[], o: { now: number; grace: number; maxBytes: number; marked: Set<string> }) {
   const drop: Version[] = [], keep: Version[] = [], marked = new Set<string>();
+  const last = (v: Version) => Math.max(v.reach, v.mtime);
   for (const v of versions) {
-    if (v.tower || o.now - v.reach <= o.grace) keep.push(v);
+    if (v.tower || o.now - last(v) <= o.grace) keep.push(v);
     else if (o.marked.has(v.stem)) drop.push(v);
     else { marked.add(v.stem); keep.push(v); }
   }
   let bytes = keep.reduce((n, v) => n + v.bytes, 0);
   if (bytes > o.maxBytes) {
-    for (const v of keep.filter((v) => !v.tower).sort((a, b) => a.reach - b.reach)) {
+    const order = (a: Version, b: Version) => Number(!marked.has(a.stem)) - Number(!marked.has(b.stem)) || last(a) - last(b);
+    for (const v of keep.filter((v) => !v.tower).sort(order)) {
       if (bytes <= o.maxBytes) break;
       drop.push(v); marked.delete(v.stem); bytes -= v.bytes;
     }

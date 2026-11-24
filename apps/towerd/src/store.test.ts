@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { versionOf, sweep, liveLines, type Version } from './store.ts';
 
 const H = 3_600_000, now = 100 * 24 * H, grace = 24 * H;
-const v = (stem: string, reach: number, bytes = 100, tower = false): Version => ({ stem, files: [`${stem.slice(2)}.0.ogg`], bytes, reach, tower });
+const v = (stem: string, reach: number, bytes = 100, tower = false, mtime = 0): Version => ({ stem, files: [`${stem.slice(2)}.0.ogg`], bytes, mtime, reach, tower });
 
 test('a version is every file of one voiced comment, and nothing else', () => {
   assert.equal(versionOf('50626967.871ee672.0.ogg'), 'c/50626967.871ee672');
@@ -44,6 +44,12 @@ test('over the cap: the longest unplayable go at once, never what the tower play
   assert.deepEqual(tight.drop.map((x) => x.stem), ['c/3.cccccccc', 'c/2.bbbbbbbb']);
   assert.equal(tight.bytes, 500);
   assert.equal(tight.full, true, 'the tower alone is over it: voice nothing new');
+  // a version voiced a moment ago, not yet on a floor (reach 0), is in its grace: it goes after one unplayable for hours
+  const fresh = v('c/5.eeeeeeee', 0, 300, false, now - 60_000);
+  assert.deepEqual(sweep([fresh, older], { now, grace, maxBytes: 300, marked: new Set() }).drop.map((x) => x.stem), ['c/3.cccccccc']);
+  // and whatever was marked unplayable goes before anything still in its grace
+  const gone = v('c/6.ffffffff', now - 3 * grace, 300);
+  assert.deepEqual(sweep([recent, gone], { now: now + 1, grace, maxBytes: 300, marked: new Set() }).drop.map((x) => x.stem), ['c/6.ffffffff']);
 });
 
 test('the voiced log keeps its live lines in order, however they were written, and never a torn one', () => {

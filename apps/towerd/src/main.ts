@@ -42,6 +42,7 @@ const AUDIO_POLICY = ['tower', 'tower-dry'].includes(process.env.AUDIO_POLICY ??
 const AUDIO = { grace: Math.max(1, Number(process.env.AUDIO_GRACE_HOURS) || 24) * 3_600_000,
   maxBytes: Math.max(64, Number(process.env.AUDIO_MAX_MB) || 1024) * 1_048_576, freeMin: Number(process.env.DISK_FREE_MIN_PCT) || 15 };
 const PRUNE_MS = Math.max(10, Number(process.env.PRUNE_EVERY_S) || 600) * 1000;   // housekeeping (tests run it faster)
+console.log(JSON.stringify({ audio: { policy: AUDIO_POLICY, asked: process.env.AUDIO_POLICY ?? null, grace_h: AUDIO.grace / 3_600_000, max_mb: AUDIO.maxBytes / 1_048_576, free_min_pct: AUDIO.freeMin, retention_days: RETENTION_DAYS } }));
 for (const d of [LIVE, JOBS]) mkdirSync(d, { recursive: true });
 
 // ---------------------------------------------------------------- HN access
@@ -277,8 +278,8 @@ function hotPut(p: string, body: Buffer, mtime: number) {
   for (const [k, v] of hot) { if (hotBytes <= HOT_BYTES) break; hot.delete(k); hotBytes -= v.body.length; }
 }
 function hotDrop(p: string) { const had = hot.get(p); if (had) { hotBytes -= had.body.length; hot.delete(p); } }
-/** Clip requests since start: served from memory or from disk, missing (a listener wanted audio that is gone: what
- *  the store must never cause), and how old the clip was (what its grace has to cover). */
+/** Clip requests since start: served from memory or from disk, and how old the clip was (what its grace has to
+ *  cover); missing: any audio file asked for that is gone, sidecars included (what the store must never cause). */
 const clipGets = { memory: 0, disk: 0, missing: 0, age: { h1: 0, h6: 0, d1: 0, d2: 0, older: 0 } };
 
 // ---------------------------------------------------------------- HTTP: the CDN, the client, one write endpoint
@@ -456,7 +457,7 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
   let h = hot.get(p);
   if (!h) {
     const st = statOr(p);
-    if (!st || st.isDirectory()) { if (clip) clipGets.missing++; res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+    if (!st || st.isDirectory()) { if (url.pathname.startsWith('/live/c/')) clipGets.missing++; res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
     const f = readOr503(p, res, st.mtimeMs);
     if (!f) return;
     hotPut(p, f.body, f.mtime);
@@ -610,8 +611,8 @@ async function prune() {
   const logged = bounded ? statOr(VOICED)?.size ?? 0 : 0;        // the voiced log up to here names only files listed below
   for (const n of readdirSync(dir)) {
     await breathe();
-    let age = 0, size = 0;
-    try { const st = statSync(join(dir, n)); age = now - st.mtimeMs; size = st.size; } catch { continue; }
+    let age = 0, size = 0, mtime = 0;
+    try { const st = statSync(join(dir, n)); mtime = st.mtimeMs; age = now - mtime; size = st.size; } catch { continue; }
     const id = parseInt(n), snap = /\.p\d+\.json$/.test(n);
     if (!(snap && live.voiced.get(id)?.[0] === `c/${n}`) && (age > RETENTION_DAYS * 86400_000 || (snap && age > 86400_000))) {
       if (!snap && n.endsWith('.json')) {
@@ -625,11 +626,13 @@ async function prune() {
     const stem = bounded ? versionOf(n) : null;
     if (!stem) continue;
     let v = versions.get(stem);
-    if (!v) versions.set(stem, (v = { stem, files: [], bytes: 0, reach: reach.get(stem) ?? 0, tower: playing.has(stem) }));
-    v.files.push(n); v.bytes += size;
+    if (!v) versions.set(stem, (v = { stem, files: [], bytes: 0, mtime: 0, reach: reach.get(stem) ?? 0, tower: playing.has(stem) }));
+    v.files.push(n); v.bytes += size; v.mtime = Math.max(v.mtime, mtime);
   }
   // (not before the tower's floors are built, the first pass after a start: until then nothing looks playable)
-  if (bounded && playing.size) await keepPlayable([...versions.values()], now, dir, gone, logged);
+  if (bounded && playing.size) {
+    try { await keepPlayable([...versions.values()], now, dir, gone, logged); } catch (e) { console.error('audio', String(e).slice(0, 200)); }
+  }
   // stories off the front page for two days: forgotten, comments and all
   let forgot = 0;
   const onTower = new Set(live.tower);
@@ -657,8 +660,10 @@ async function keepPlayable(versions: Version[], now: number, dir: string, gone:
   if (real) {
     let n = 0;
     for (const v of r.drop) {
-      if (++n % 200 === 0) await new Promise((ok) => setImmediate(ok));   // the first pass deletes thousands: in slices
-      for (const f of v.files) { gone(join(dir, f)); dropped.add(`c/${f}`); }
+      for (const f of v.files) {
+        gone(join(dir, f)); dropped.add(`c/${f}`);
+        if (++n % 200 === 0) await new Promise((ok) => setImmediate(ok));   // the first pass deletes thousands: in slices
+      }
       const id = parseInt(v.stem.slice(2)), cur = live.voiced.get(id), k = known.get(id);
       if (cur && stemOf(String(cur[0])) === v.stem) { live.voiced.delete(id); partial.delete(id); stale.delete(id); clipsOf.delete(id); }
       if (k) { k.stems.delete(v.stem); if (!k.stems.size) known.delete(id); }

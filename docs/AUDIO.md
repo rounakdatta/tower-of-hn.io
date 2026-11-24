@@ -10,9 +10,11 @@ loads only the floors in `head.floors`, and `?story=` works only for a story on 
 as long as a floor can still play it.
 
 - **While its story is on the tower**, whatever its age.
-- **For `AUDIO_GRACE_HOURS` (24) after** the last time a floor played it. A story that slips off the front page can
-  come back within hours, and an edited comment's previous version may still be mid-play. After a restart, a story
-  that had already left is dated by its newest floor file, which lives on the same disk.
+- **For `AUDIO_GRACE_HOURS` (24) after** the last time a floor played it (or after it was voiced, if that is later:
+  a clip just in isn't on a floor yet). A story that slips off the front page can come back within hours, and an
+  edited comment's previous version may still be mid-play. After a restart, a story that had already left is dated
+  by its newest floor file, which lives on the same disk. A story that comes back gets its floor rebuilt, without
+  any audio deleted meanwhile, and that audio is voiced again on demand.
 - **Then it goes**, at the second housekeeping pass in a row (they run 10 min apart) that finds it unplayable. So
   nothing just voiced, or not yet on a floor rebuilt after a restart, is ever caught in between.
 - `RETENTION_DAYS` (7) still deletes anything older, as before.
