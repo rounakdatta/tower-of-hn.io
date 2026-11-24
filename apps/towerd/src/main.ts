@@ -9,18 +9,22 @@
 // env: PORT, VAR, STATIC (the client's dist), RETENTION_DAYS (audio, default 14), OPTOUT (comma-separated HN
 //      users never voiced; also var/optout.txt, one per line, re-read every minute),
 //      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_VERSION, VOICE_PORT (default 8788),
-//      VOICE_TOKEN (runners must send it, if set)
+//      VOICE_TOKEN (runners must send it, if set), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
+//      deletes it after RETENTION_DAYS; tower keeps only what a floor can still play, AUDIO_GRACE_HOURS (24) after,
+//      at most AUDIO_MAX_MB (1024), and voices nothing new below DISK_FREE_MIN_PCT (15) free; tower-dry only says
+//      what tower would do), PRUNE_EVERY_S (housekeeping, 600)
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync, brotliCompressSync, constants as zlibc } from 'node:zlib';
 import { homedir } from 'node:os';
 import Anthropic from '@anthropic-ai/sdk';
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, openSync, readSync, closeSync, rmdirSync, appendFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, statfsSync, openSync, readSync, closeSync, rmdirSync, appendFileSync } from 'node:fs';
 import { dirname, join, extname, resolve } from 'node:path';
 import { Live, type Item, type FloorSnapshot } from '../../../packages/core/src/live.ts';
 import { speakable } from '../../../packages/core/src/speakable.ts';
 import { VoiceQueue, band, type Entry } from './queue.ts';
 import { tagPrompt, parseTags, type Tag } from './tags.ts';
+import { versionOf, sweep, liveLines, type Version } from './store.ts';
 
 const HN = 'https://hacker-news.firebaseio.com/v0';
 const UA = { 'User-Agent': 'towerofhn-towerd/0.1' };
@@ -34,6 +38,10 @@ const MAX_QUEUED = 48;                               // the most urgent of what'
 const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v2';
 const STATIC = resolve(process.env.STATIC ?? join(import.meta.dirname, '../../client/dist'));
 const RETENTION_DAYS = Math.max(1, Number(process.env.RETENTION_DAYS) || 14);
+const AUDIO_POLICY = ['tower', 'tower-dry'].includes(process.env.AUDIO_POLICY ?? '') ? process.env.AUDIO_POLICY! : 'age';
+const AUDIO = { grace: Math.max(1, Number(process.env.AUDIO_GRACE_HOURS) || 24) * 3_600_000,
+  maxBytes: Math.max(64, Number(process.env.AUDIO_MAX_MB) || 1024) * 1_048_576, freeMin: Number(process.env.DISK_FREE_MIN_PCT) || 15 };
+const PRUNE_MS = Math.max(10, Number(process.env.PRUNE_EVERY_S) || 600) * 1000;   // housekeeping (tests run it faster)
 for (const d of [LIVE, JOBS]) mkdirSync(d, { recursive: true });
 
 // ---------------------------------------------------------------- HN access
@@ -269,6 +277,9 @@ function hotPut(p: string, body: Buffer, mtime: number) {
   for (const [k, v] of hot) { if (hotBytes <= HOT_BYTES) break; hot.delete(k); hotBytes -= v.body.length; }
 }
 function hotDrop(p: string) { const had = hot.get(p); if (had) { hotBytes -= had.body.length; hot.delete(p); } }
+/** Clip requests since start: served from memory or from disk, missing (a listener wanted audio that is gone: what
+ *  the store must never cause), and how old the clip was (what its grace has to cover). */
+const clipGets = { memory: 0, disk: 0, missing: 0, age: { h1: 0, h6: 0, d1: 0, d2: 0, older: 0 } };
 
 // ---------------------------------------------------------------- HTTP: the CDN, the client, one write endpoint
 const TYPES: Record<string, string> = {
@@ -411,7 +422,9 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     const ears = new Set<string>();
     for (const d of demand.values()) for (const c of d.who.keys()) ears.add(c);
-    res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: vq.entries.size, demand: demand.size, backlog, listeners: ears.size, tower: live.tower.length, audience: audience(), voicing: voicingSummary() }));
+    held();
+    res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: vq.entries.size, demand: demand.size, backlog, listeners: ears.size, tower: live.tower.length, audience: audience(), voicing: voicingSummary(),
+      audio: { policy: AUDIO_POLICY, held: heldFor || null, free_pct: Math.round(freePct * 10) / 10, ...audio.last, dropped: audio.dropped, gets: clipGets } }));
     return;
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
@@ -438,17 +451,19 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
   }
   const p = resolve(LIVE, '.' + url.pathname.slice(5));
   if (!p.startsWith(LIVE + '/')) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
-  const isHead = url.pathname === '/live/head.json';
+  const isHead = url.pathname === '/live/head.json', clip = p.endsWith('.ogg');
   if (isHead) lastViewerAt = Date.now();
   let h = hot.get(p);
   if (!h) {
     const st = statOr(p);
-    if (!st || st.isDirectory()) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+    if (!st || st.isDirectory()) { if (clip) clipGets.missing++; res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
     const f = readOr503(p, res, st.mtimeMs);
     if (!f) return;
     hotPut(p, f.body, f.mtime);
     h = { body: f.body, mtime: f.mtime, size: f.body.length };
-  } else { hot.delete(p); hot.set(p, h); }               // recently used
+    if (clip) clipGets.disk++;
+  } else { hot.delete(p); hot.set(p, h); if (clip) clipGets.memory++; }   // recently used
+  if (clip) { const a = Date.now() - h.mtime; clipGets.age[a < 3_600_000 ? 'h1' : a < 6 * 3_600_000 ? 'h6' : a < 86_400_000 ? 'd1' : a < 2 * 86_400_000 ? 'd2' : 'older']++; }
   const cache = isHead ? 'public, max-age=1, stale-while-revalidate=10' : 'public, max-age=31536000, immutable';
   // a poll that finds nothing new costs a header, not a body
   const tag = `W/"${Math.round(h.mtime).toString(36)}-${h.size.toString(36)}"`;
@@ -559,12 +574,28 @@ async function prune() {
   const epochs = readdirSync(join(LIVE, 'e')).map((n) => parseInt(n)).filter(Number.isFinite);
   const latest = epochs.reduce((a, b) => Math.max(a, b), 0);
   for (const n of readdirSync(join(LIVE, 'e'))) if (parseInt(n) < latest - 600) gone(join(LIVE, 'e', n));
+  // the audio a floor can play (AUDIO_POLICY tower): the tower's now, and what the last floor of a story that left it
+  // named, as of that floor (on disk, so it outlives a restart)
+  const bounded = AUDIO_POLICY !== 'age', playing = new Set<string>();
+  if (bounded) for (const sid of live.tower) for (const t of floors.get(sid)?.tables ?? []) for (const u of t.turns) if (u.v) playing.add(stemOf(String(u.v[0])));
+  for (const s of playing) reach.set(s, now);
   // floor revisions: keep the newest few per story (a client may be fetching the previous one); drop old stories
   const head = existsSync(join(LIVE, 'head.json')) ? JSON.parse(readFileSync(join(LIVE, 'head.json'), 'utf8')) : { floors: {} };
   for (const sid of readdirSync(join(LIVE, 'f'))) {
     const dir = join(LIVE, 'f', sid);
     const revs = readdirSync(dir).filter((n) => /^\d+\.json$/.test(n)).map((n) => parseInt(n)).sort((a, b) => b - a);
     const onTower = head.floors?.[sid] !== undefined;
+    if (bounded && !onTower && revs.length) {
+      await new Promise((ok) => setImmediate(ok));     // a floor is ~75 KB of JSON: one at a time
+      try {
+        const p = join(dir, `${revs[0]}.json`), at = statSync(p).mtimeMs;
+        if (now - at <= AUDIO.grace) {
+          for (const t of JSON.parse(readFileSync(p, 'utf8')).tables ?? []) for (const u of t.turns ?? []) {
+            if (u.v) { const s = stemOf(String(u.v[0])); if ((reach.get(s) ?? 0) < at) reach.set(s, at); }
+          }
+        }
+      } catch { /* unreadable: its audio ages out */ }
+    }
     for (const [k, r] of revs.entries()) {
       await breathe();
       if ((onTower && k < 4) || r === head.floors?.[sid]) continue;
@@ -574,22 +605,31 @@ async function prune() {
     try { if (!readdirSync(dir).length) rmdirSync(dir); } catch { /* not empty after all */ }
   }
   // audio: older than RETENTION_DAYS goes (it is voiced again if it is ever wanted), partial snapshots after a day
-  const dir = join(LIVE, 'c');
+  // (unless still what its floor plays: kept until finished)
+  const dir = join(LIVE, 'c'), versions = new Map<string, Version>();
+  const logged = bounded ? statOr(VOICED)?.size ?? 0 : 0;        // the voiced log up to here names only files listed below
   for (const n of readdirSync(dir)) {
     await breathe();
-    let age = 0;
-    try { age = now - statSync(join(dir, n)).mtimeMs; } catch { continue; }
+    let age = 0, size = 0;
+    try { const st = statSync(join(dir, n)); age = now - st.mtimeMs; size = st.size; } catch { continue; }
     const id = parseInt(n), snap = /\.p\d+\.json$/.test(n);
-    if (snap && live.voiced.get(id)?.[0] === `c/${n}`) continue;   // still what its floor plays: kept until finished
-    if (age > RETENTION_DAYS * 86400_000 || (snap && age > 86400_000)) {
+    if (!(snap && live.voiced.get(id)?.[0] === `c/${n}`) && (age > RETENTION_DAYS * 86400_000 || (snap && age > 86400_000))) {
       if (!snap && n.endsWith('.json')) {
         if (live.voiced.get(id)?.[0] === `c/${n}`) live.voiced.delete(id);
         const k = known.get(id);
         if (k) { k.stems.delete(`c/${n.replace(/\.json$/, '')}`); if (!k.stems.size) known.delete(id); }   // voices kept with the id
       }
       gone(join(dir, n));
+      continue;
     }
+    const stem = bounded ? versionOf(n) : null;
+    if (!stem) continue;
+    let v = versions.get(stem);
+    if (!v) versions.set(stem, (v = { stem, files: [], bytes: 0, reach: reach.get(stem) ?? 0, tower: playing.has(stem) }));
+    v.files.push(n); v.bytes += size;
   }
+  // (not before the tower's floors are built, the first pass after a start: until then nothing looks playable)
+  if (bounded && playing.size) await keepPlayable([...versions.values()], now, dir, gone, logged);
   // stories off the front page for two days: forgotten, comments and all
   let forgot = 0;
   const onTower = new Set(live.tower);
@@ -602,6 +642,69 @@ async function prune() {
 }
 const offSince = new Map<number, number>();
 const tries = new Map<number, number>();
+
+/** AUDIO_POLICY tower (store.ts): version -> the last time a floor could play it; what the last pass found */
+const reach = new Map<string, number>();
+const audio = { marked: new Set<string>(), full: false, dropped: 0, last: {} as Record<string, number | boolean> };
+async function keepPlayable(versions: Version[], now: number, dir: string, gone: (f: string) => void, logged: number) {
+  held();                                                // a fresh reading of the disk
+  const real = AUDIO_POLICY === 'tower', MB = 1_048_576, mb = (b: number) => Math.round(b / MB);
+  // the disk nearly full: whatever nobody can play goes now, grace or not
+  const r = sweep(versions, { now, grace: freePct < AUDIO.freeMin ? 0 : AUDIO.grace, maxBytes: AUDIO.maxBytes, marked: audio.marked });
+  // (tower-dry deletes nothing, so what it would delete stays marked: each pass reports all of it)
+  audio.marked = real ? r.marked : new Set([...r.marked, ...r.drop.map((v) => v.stem)]); audio.full = r.full;
+  const dropped = new Set<string>();
+  if (real) {
+    let n = 0;
+    for (const v of r.drop) {
+      if (++n % 200 === 0) await new Promise((ok) => setImmediate(ok));   // the first pass deletes thousands: in slices
+      for (const f of v.files) { gone(join(dir, f)); dropped.add(`c/${f}`); }
+      const id = parseInt(v.stem.slice(2)), cur = live.voiced.get(id), k = known.get(id);
+      if (cur && stemOf(String(cur[0])) === v.stem) { live.voiced.delete(id); partial.delete(id); stale.delete(id); clipsOf.delete(id); }
+      if (k) { k.stems.delete(v.stem); if (!k.stems.size) known.delete(id); }
+      reach.delete(v.stem);
+    }
+    audio.dropped += r.drop.length;
+  }
+  const onDisk = new Set(versions.map((v) => v.stem));
+  for (const s of reach.keys()) if (!onDisk.has(s)) reach.delete(s);   // memory stays flat
+  // the voiced log, read whole at start-up, loses the lines of audio that's gone, once half of it is dead. Its first
+  // `logged` bytes were written before the listing (a file is written before its line), so they name only files the
+  // listing saw: one listed and not dropped is alive, anything else is gone. Those bytes never change, so they're
+  // sifted in slices; lines since are kept as they are.
+  if (real && r.drop.length && logged) {
+    const listed = new Set(versions.flatMap((v) => v.files.map((f) => `c/${f}`)));
+    const lines = readFileSync(VOICED).subarray(0, logged).toString('utf8').split('\n').filter(Boolean), kept: string[] = [];
+    for (let i = 0; i < lines.length; i += 2000) {
+      kept.push(...liveLines(lines.slice(i, i + 2000), (p) => listed.has(p) && !dropped.has(p)));
+      await new Promise((ok) => setImmediate(ok));
+    }
+    readVoiced();                                         // (synchronous from here: nothing appends in between)
+    if (kept.length * 2 <= lines.length && voicedOffset >= logged) {
+      const all = readFileSync(VOICED), head = Buffer.from(kept.map((l) => l + '\n').join(''));
+      writeFileSync(VOICED + '.tmp', Buffer.concat([head, all.subarray(logged)])); renameSync(VOICED + '.tmp', VOICED);
+      voicedOffset = head.length + (voicedOffset - logged);
+    }
+  }
+  const bytes = (f: (v: Version) => boolean) => versions.reduce((n, v) => n + (f(v) ? v.bytes : 0), 0);
+  audio.last = { versions: versions.length, mb: mb(bytes(() => true)), tower_mb: mb(bytes((v) => v.tower)), kept_mb: mb(r.bytes),
+    drop: r.drop.length, drop_mb: mb(r.drop.reduce((n, v) => n + v.bytes, 0)), marked: r.marked.size, full: r.full };
+  console.log(JSON.stringify({ audio: { ...audio.last, dry: !real } }));
+}
+
+/** Nothing new is voiced while the node's disk is nearly full (whatever filled it), or the audio is over its cap with
+ *  nothing left to drop: towerd is never what fills the disk. The disk is read every 5 s at most; tower-dry only
+ *  logs what it would hold. */
+let freeAt = 0, freePct = 100, heldFor = '';
+function held() {
+  if (Date.now() - freeAt > 5_000) {
+    freeAt = Date.now();
+    try { const s = statfsSync(LIVE); freePct = (100 * s.bavail) / s.blocks; } catch { /* the last reading stands */ }
+  }
+  const why = AUDIO_POLICY === 'age' ? '' : freePct < AUDIO.freeMin ? 'disk' : audio.full ? 'full' : '';
+  if (why !== heldFor) { heldFor = why; console.log(JSON.stringify({ audio: { held: why || null, free_pct: Math.round(freePct * 10) / 10, dry: AUDIO_POLICY !== 'tower' } })); }
+  return AUDIO_POLICY === 'tower' ? why : '';
+}
 
 // ---------------------------------------------------------------- commenters: a card each
 // Their public Hacker News profile and a sample of their recent comments, summarised by Claude Haiku: what they
@@ -880,7 +983,7 @@ async function voiceApi(req: import('node:http').IncomingMessage, res: import('n
     runners.set(runner, { ...r, node: String(b.node ?? '').slice(0, 60), cpus: Number(b.cpus) || 0, threads: Number(b.threads) || 0, seen: Date.now() });
     const patience = Math.max(0, Math.min(120, Number(b.patience) || 0));
     vq.hear(runner, patience);                       // heard, even while starting up: a standby stays out of the way
-    if (booting || !floors.size) { await sleep(2000); return send(204); }
+    if (booting || !floors.size || held()) { await sleep(2000); return send(204); }
     const c = vq.claim(runner, patience, 25_000);
     let gone = false;
     res.on('close', () => { if (!res.writableEnded) { gone = true; c.cancel(); } });
@@ -909,6 +1012,7 @@ async function voiceApi(req: import('node:http').IncomingMessage, res: import('n
   if (url.pathname === '/voice/clip') {
     const k = b.k, ogg = Buffer.isBuffer(b.ogg) ? b.ogg : typeof b.ogg === 'string' ? Buffer.from(b.ogg, 'base64') : null;
     if (!Number.isInteger(k) || (k as number) < 0 || (k as number) > 400 || !ogg || ogg.length < 64 || ogg.subarray(0, 4).toString('latin1') !== 'OggS') return send(400);
+    if (held() === 'disk') return send(507);         // the runner gives the job back; claims wait until there's room
     putLive(`c/${e.id}.${e.job.rev}.${k}.ogg`, ogg);
     const r = runners.get(String(b.runner ?? ''));
     if (r && Number(b.audio_s) > 0 && Number(b.work_s) > 0) { r.clips++; r.audio += Number(b.audio_s); r.work += Number(b.work_s); r.seen = Date.now(); }
@@ -1037,7 +1141,7 @@ for (;;) {
       lastChores = Date.now(); readOptOut();
       refreshOnTower();
     }
-    if (Date.now() - lastPrune > 600_000 && !pruning) {
+    if (Date.now() - lastPrune > PRUNE_MS && !pruning) {
       lastPrune = Date.now(); pruning = true;
       prune().catch((e) => console.error('prune', String(e).slice(0, 200))).finally(() => { pruning = false; });
     }
