@@ -533,7 +533,9 @@ export function spoken(text: string, o: Voicing = {}): string {
 function say1(m: string, link: string, code: string, num: string, slash: string, dotted: string, w: string, arrow: string, foot: string, hash: string, sym: string, at: number, s: string, o: Voicing): string {
   {
     if (link !== undefined) {
-      const l = o.link ? o.link() : m.slice(1, -1);
+      let l = o.link ? o.link() : m.slice(1, -1);
+      // after "this", "the", "my"…, the link's own article goes: "this GitHub link", "the other GitHub link"
+      if (/^(?:the|this|that|these|those|my|our|your|their|his|her|its)$/i.test(before(s, at))) l = l.replace(/^an? /, '').replace(/^another /, 'other ');
       const opens = at === 0 || (/[.!?]["'”’)\]]?\s+$/.test(s.slice(Math.max(0, at - 4), at)) && !ABBR_END.test(s.slice(Math.max(0, at - 10), at)));
       return opens ? l.charAt(0).toUpperCase() + l.slice(1) : l;
     }
