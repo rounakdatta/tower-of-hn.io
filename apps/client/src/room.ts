@@ -121,7 +121,9 @@ export class Room {
    *  all of them, not just the tabletop. */
   private reach(s: TableSpot) {
     let r = s.radius + 0.3 + BODY + 0.06;                   // the chairs, even empty ones
-    for (const st of s.seats) r = Math.max(r, Math.hypot(st.pos.x - s.pos.x, st.pos.z - s.pos.z) + BODY);
+    // (no further than the outermost ring a place is ever given in: someone who stopped short of the table in a jam
+    // is gone round on their own, not by every route swinging wide of the whole table)
+    for (const st of s.seats) r = Math.max(r, Math.min(Math.hypot(st.pos.x - s.pos.x, st.pos.z - s.pos.z), s.radius + RING + 1.5) + BODY);
     return r;
   }
 
@@ -129,6 +131,17 @@ export class Room {
    *  each one it would cross. The table they're going to is passed close (they're joining it): just its chairs. */
   route(a: THREE.Vector3, b: THREE.Vector3, to?: TableSpot, depth = 0): THREE.Vector3[] {
     const tables = this.spots.filter((s) => !s.bar);
+    // someone leaving a table (out of a chair, or from among those standing round it) for somewhere past it steps back
+    // from it first, as people do: setting off along its edge traps them between the tabletop and the next chair
+    if (depth === 0) for (const s of tables) {
+      if (s === to) continue;
+      const dx = a.x - s.pos.x, dz = a.z - s.pos.z, d = Math.hypot(dx, dz), out = this.reach(s) + 0.1;
+      if (d >= out - 0.15 || d < 1e-3 || (b.x - a.x) * -dx + (b.z - a.z) * -dz <= 0) continue;   // clear of it, or heading away
+      const o = new THREE.Vector3(s.pos.x + (dx / d) * out, 0, s.pos.z + (dz / d) * out);
+      const or = Math.hypot(o.x, o.z);
+      if (or > R - 0.6) o.multiplyScalar((R - 0.6) / or);   // inside the glass
+      return [o, ...this.route(o, b, to, depth + 1)];
+    }
     for (const s of tables) {
       const r = s === to ? s.radius + 0.3 + BODY + 0.06 : this.reach(s) + BODY;
       // closest point on segment ab to the table's centre
@@ -141,9 +154,16 @@ export class Room {
       const n = Math.hypot(nx, nz);
       if (n < 1e-3) { nx = -abz; nz = abx; } else { nx /= n; nz /= n; }
       const nl = Math.hypot(nx, nz) || 1;
-      const w = new THREE.Vector3(s.pos.x + (nx / nl) * (r + 0.18), 0, s.pos.z + (nz / nl) * (r + 0.18));
-      const wr = Math.hypot(w.x, w.z);
-      if (wr > R - 0.6) w.multiplyScalar((R - 0.6) / wr);   // inside the glass
+      const beside = (sg: number) => {
+        const w = new THREE.Vector3(s.pos.x + sg * (nx / nl) * (r + 0.18), 0, s.pos.z + sg * (nz / nl) * (r + 0.18));
+        const wr = Math.hypot(w.x, w.z);
+        if (wr > R - 0.6) w.multiplyScalar((R - 0.6) / wr);   // inside the glass
+        return w;
+      };
+      // a table by the glass leaves no room on that side (the glass pulls the detour back into its crowd): the other
+      const clear = (w: THREE.Vector3) => Math.hypot(w.x - s.pos.x, w.z - s.pos.z);
+      let w = beside(1);
+      if (clear(w) < r) { const o = beside(-1); if (clear(o) > clear(w)) w = o; }
       return [...this.route(a, w, to, depth + 1), ...this.route(w, b, to, depth + 1)];
     }
     return [b.clone()];

@@ -60,9 +60,10 @@ const STAND_TALL = 2.5;           // a standing body vs a seated one (the chair 
 /** Someone on their way across the room: the points ahead of them, and what to do on arrival. Their numbers that
  *  change every frame live in `n` (a Float64Array: plain object fields holding fractions get re-boxed on every write
  *  in V8, which made garbage each frame): pace (eased: people speed up and slow down), stride, progress toward the
- *  next point (to notice a blocked way), and where this frame's step started (NaN: not stepping). */
+ *  next point (to notice a blocked way), where this frame's step started (NaN: not stepping), and which way round
+ *  things they go (1: the other way, after being held up). */
 interface Walk { path: THREE.Vector3[]; speed: number; face: number; onArrive?: () => void; n: Float64Array }
-const W_V = 0, W_STRIDE = 1, W_BEST = 2, W_STUCK = 3, W_X0 = 4, W_Z0 = 5;
+const W_V = 0, W_STRIDE = 1, W_BEST = 2, W_STUCK = 3, W_X0 = 4, W_Z0 = 5, W_SIDE = 6;
 interface Person {
   name: string; look: Look; pose: Pose; parts: { hair: number; glasses: number; beard: number; hood: number }; expr: Expr; target: Expr; walk?: Walk; fade?: number;
   /** a standing person stepped aside to let someone squeeze past (room space, metres); it eases back to nothing */
@@ -80,7 +81,7 @@ const SHOVE_MAX = 0.25;           // how far someone standing steps aside for a 
 /** lengths without Math.hypot: it's a variadic built-in that optimised code doesn't inline, so every call boxed its
  *  numbers into garbage (thousands a frame here); these compile to a few multiplies and one sqrt */
 const len = (x: number, z: number) => Math.sqrt(x * x + z * z);
-const S_X = 0, S_Z = 1, S_ME = 2, S_WX = 3, S_WZ = 4, S_VX = 5, S_VZ = 6, S_EASE = 7;   // a walker's steering, in Crowd.sv
+const S_X = 0, S_Z = 1, S_ME = 2, S_WX = 3, S_WZ = 4, S_VX = 5, S_VZ = 6, S_EASE = 7, S_SIDE = 8;   // a walker's steering, in Crowd.sv
 const len3 = (x: number, y: number, z: number) => Math.sqrt(x * x + y * y + z * z);
 
 function headGeo() { return new THREE.SphereGeometry(0.2, 28, 18); }
@@ -159,6 +160,7 @@ export class Crowd {
   private e = new THREE.Euler();
   private v = new THREE.Vector3();
   private s = new THREE.Vector3();
+  private hand = new THREE.Vector3();
   active = new Set<number>();          // people whose transforms update every frame
   /** standing people stepped aside for a passer-by, easing back (placed every frame until they're home) */
   private shoved = new Set<number>();
@@ -478,7 +480,7 @@ export class Crowd {
   /** Where person i should look to face world point `t` (yaw relative to their body). */
   yawTo(i: number, t: THREE.Vector3) {
     const p = this.people[i];
-    const a = Math.atan2(t.x - p.pose.pos.x, t.z - p.pose.pos.z) - p.pose.facing;
+    const a = Math.atan2(t.x - p.pose.pos.x - (p.shove?.x ?? 0), t.z - p.pose.pos.z - (p.shove?.z ?? 0)) - p.pose.facing;
     return Math.atan2(Math.sin(a), Math.cos(a));
   }
 
@@ -515,13 +517,13 @@ export class Crowd {
     if (p.parts.beard >= 0) this.beards.setMatrixAt(p.parts.beard, this.m);
     // arms: lift forward, spread out (or across), and the right one can aim at someone
     const armY = 1 + 0.3 * st;
-    for (const side of [-1, 1]) {
+    for (let side = -1; side <= 1; side += 2) {
       const lift_ = side < 0 ? expr.armL : expr.armR, spread = side < 0 ? expr.spreadL : expr.spreadR, aim = side > 0 ? expr.aimR : 0;
       this.e.set(-0.25 - lift_ * 1.1 + pitch, yb + aim, side * (0.18 + spread * 0.9), 'YXZ'); this.q.setFromEuler(this.e);
       const sx = side * 0.19 * look.width;
       this.v.set(bx + Math.cos(yb) * sx + Math.sin(yb) * off * 0.8, pose.pos.y + lift + bob + bodyH * 0.82, bz - Math.sin(yb) * sx + Math.cos(yb) * off * 0.8);
       this.arms.setMatrixAt(i * 2 + (side < 0 ? 0 : 1), this.m.compose(this.v, this.q, this.s.set(1, armY, 1)));
-      const hand = new THREE.Vector3(0, -0.335 * armY, 0).applyQuaternion(this.q).add(this.v);
+      const hand = this.hand.set(0, -0.335 * armY, 0).applyQuaternion(this.q).add(this.v);
       this.hands.setMatrixAt(i * 2 + (side < 0 ? 0 : 1), this.m.compose(hand, this.q, this.s.set(1, 1, 1)));
     }
   }
@@ -541,7 +543,8 @@ export class Crowd {
   walkTo(i: number, path: THREE.Vector3[], face: number, onArrive?: () => void, speed = 1.25) {
     const p = this.people[i];
     if (!p || !path.length) return;
-    const n = new Float64Array(6);
+    if (p.shove) { p.pose.pos.x += p.shove.x; p.pose.pos.z += p.shove.z; p.shove.x = p.shove.z = 0; }   // set off from where they stand
+    const n = new Float64Array(7);
     n[W_V] = p.walk ? p.walk.n[W_V] : 0; n[W_BEST] = Infinity; n[W_X0] = n[W_Z0] = NaN;
     p.walk = { path: path.map((v) => v.clone()), speed, face, onArrive, n };
     this.active.add(i);
@@ -556,7 +559,7 @@ export class Crowd {
    * Only walkers do this work (a few at a time), against everyone on the floor: a few thousand sums a frame.
    */
   private stepWalkers(dt: number) {
-    let clear: { x: number; z: number; r: number }[] | null = null;
+    let clear: { x: number; z: number; r: number }[] | null = null;   // asked for once someone actually steps
     const walkers = this.walkers;                         // once a frame: the active set is walked once, not six times
     let nw = 0;
     for (const i of this.active) if (this.people[i]?.walk) walkers[nw++] = i;
@@ -567,12 +570,12 @@ export class Crowd {
         if (p.expr.stand < 0.92) continue;
         p.pose.seated = false; p.expr.stand = p.target.stand = 0;
       }
-      clear ??= this.keepClear();
+      clear ??= this.clearNow;
       const pos = p.pose.pos, next = w.path[0], me = roomOf(p);
       const dx = next.x - pos.x, dz = next.z - pos.z, d = len(dx, dz);
       const wx = d > 1e-3 ? dx / d : 0, wz = d > 1e-3 ? dz / d : 0;   // where they mean to go
       const sv = this.sv;
-      sv[S_X] = pos.x; sv[S_Z] = pos.z; sv[S_ME] = me; sv[S_WX] = wx; sv[S_WZ] = wz; sv[S_VX] = wx; sv[S_VZ] = wz; sv[S_EASE] = 1; this.svOdd = i % 2 === 1;
+      sv[S_X] = pos.x; sv[S_Z] = pos.z; sv[S_ME] = me; sv[S_WX] = wx; sv[S_WZ] = wz; sv[S_VX] = wx; sv[S_VZ] = wz; sv[S_EASE] = 1; sv[S_SIDE] = w.n[W_SIDE];
       this.around(Crowd.cellAt(pos.x), Crowd.cellAt(pos.z));
       const nb = this.nearby, nn = this.nearbyN;
       for (let k = 0; k < nn; k++) {
@@ -620,9 +623,11 @@ export class Crowd {
       // A way that stays blocked (no 10 cm gained in 2.5 s: someone stood in it): on to the next point, or, near their
       // place, stop where they are (a second is enough to see it's taken)
       const left = len(next.x - pos.x, next.z - pos.z), last = w.path.length === 1;
-      if (left < wn[W_BEST] - 0.1) { wn[W_BEST] = left; wn[W_STUCK] = 0; } else wn[W_STUCK] += dt;
+      if (left < wn[W_BEST] - 0.1) { wn[W_BEST] = left; wn[W_STUCK] = 0; }
+      else if ((wn[W_STUCK] += dt) >= 1 && wn[W_STUCK] - dt < 1) wn[W_SIDE] = 1 - wn[W_SIDE];   // a second held up (pressed
+      // into a pocket by whatever they're going round, on the side nearer their way): round the other side
       if (left < (last ? 0.06 : 0.35) || wn[W_STUCK] > (last && left < 0.6 ? 1 : 2.5)) {
-        w.path.shift(); wn[W_BEST] = Infinity; wn[W_STUCK] = 0;
+        w.path.shift(); wn[W_BEST] = Infinity; wn[W_STUCK] = 0; wn[W_SIDE] = 0;
         if (!w.path.length) {
           p.walk = undefined;
           p.target.armL = p.target.armR = 0; p.target.lean = 0.05;
@@ -637,8 +642,7 @@ export class Crowd {
   }
 
   /** a walker's steering, accumulated (a Float64Array, reused: no closure, no boxed numbers per walker per frame) */
-  private sv = new Float64Array(8);
-  private svOdd = false;
+  private sv = new Float64Array(9);
   /** Bend the walker in `sv` round one thing at (ox, oz) of radius r: a push away, a slide past on the side they're
    *  already nearer, a slower step when it's close ahead. */
   private steer(ox: number, oz: number, r: number) {
@@ -649,7 +653,8 @@ export class Crowd {
     if (ahead > 0) {                                      // in the way: round them, on the side already nearer
       let tx = -nz, tz = nx;
       const along = tx * wx + tz * wz;
-      if (along < 0 || (along === 0 && this.svOdd)) { tx = -tx; tz = -tz; }
+      // an exact tie (head-on) keeps it: each passes on its own side. Held up that way, they try the other.
+      if ((along < 0) !== (v[S_SIDE] > 0.5)) { tx = -tx; tz = -tz; }
       v[S_VX] += tx * push * ahead * 1.6; v[S_VZ] += tz * push * ahead * 1.6;
       v[S_EASE] = Math.min(v[S_EASE], 0.35 + 0.65 * (dist / reach));
     }
@@ -672,7 +677,7 @@ export class Crowd {
         if (j === i) continue;
         const q = this.people[j], sx = q.shove?.x ?? 0, sz = q.shove?.z ?? 0;
         const ax = pos.x - (q.pose.pos.x + sx), az = pos.z - (q.pose.pos.z + sz), dist = len(ax, az);
-        if (dist >= me + roomOf(q) + 0.2) continue;       // nowhere near (a lean moves a head ~0.1 m)
+        if (dist >= me + roomOf(q) + 0.4) continue;       // nowhere near (a standing lean moves a head up to ~0.3 m)
         // bodies need their shoulders apart; heads, a lean apart from their bodies, need their hair apart, but only
         // sideways as much as their heights don't already part them (a seated head below a standing one)
         let over = mb + bodyRoom(q) + 0.02 - dist, nx = dist > 1e-5 ? ax / dist : 1, nz = dist > 1e-5 ? az / dist : 0;
@@ -684,7 +689,8 @@ export class Crowd {
           if (oh > over) { over = oh; if (hd > 1e-5) { nx = hx / hd; nz = hz / hd; } }
         }
         if (over <= 0) continue;
-        if (q.walk) {                                     // both moving: each gives half
+        if (q.walk && !q.pose.seated) {                   // both moving: each gives half (someone still getting up
+                                                          // out of their chair is seated until they're up)
           pos.x += nx * over / 2; pos.z += nz * over / 2; q.pose.pos.x -= nx * over / 2; q.pose.pos.z -= nz * over / 2;
         } else if (!q.pose.seated) {                      // standing: they shift aside, as far as they will, into free room
           let tx = sx - nx * over * 0.5, tz = sz - nz * over * 0.5;
@@ -730,8 +736,12 @@ export class Crowd {
       this.headPos(k, hk);
       if (len3(hj.x - hk.x, hj.y - hk.y, hj.z - hk.z) < rr) return false;
     }
+    const clear = this.clearNow;                           // never into a table, nor into the lens
+    for (let c = 0; c < clear.length; c++) if (len(x - clear[c].x, z - clear[c].z) < r + clear[c].r) return false;
     return true;
   }
+  /** what's kept clear this frame (keepClear(), asked once a frame while anyone walks or eases back) */
+  private clearNow: { x: number; z: number; r: number }[] = [];
   private hC = new THREE.Vector3();
   private hD = new THREE.Vector3();
 
@@ -776,16 +786,18 @@ export class Crowd {
       const p = this.people[j], sh = p?.shove;
       if (!sh) { this.shoved.delete(j); continue; }
       this.at[0] = p.pose.pos.x + sh.x * k; this.at[1] = p.pose.pos.z + sh.z * k;
-      if (!this.freeAt(j, -1)) continue;                 // someone's in the way back: wait
-      sh.x *= k; sh.z *= k;
-      if (len(sh.x, sh.z) < 0.002) { sh.x = sh.z = 0; this.shoved.delete(j); }   // kept (zero): no garbage next time
-      if (!this.active.has(j)) this.place(j);
+      if (this.freeAt(j, -1)) {                          // back toward their place, unless someone's in the way
+        sh.x *= k; sh.z *= k;
+        if (len(sh.x, sh.z) < 0.002) { sh.x = sh.z = 0; this.shoved.delete(j); }   // kept (zero): no garbage next time
+      }
+      if (!this.active.has(j)) this.place(j);            // drawn where they stand, pressed or easing back
     }
   }
 
   update(dt: number) {
     if (!this.active.size && !this.shoved.size) return;
     this.frameNo++;
+    this.clearNow = this.keepClear();
     this.stepWalkers(dt);
     this.settleShoves(dt);
     for (const i of this.active) {

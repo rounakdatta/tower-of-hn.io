@@ -108,9 +108,10 @@ const mixer = new Mixer(sync, audio, crowd, room);
 mixer.pushChair = (c, k) => interior.pushChair(c, k);
 director.room = room; director.ambient = true;
 room.spawn = (name, at, facing) => {
-  // out of the lift, a step apart: several arriving together don't stand in one spot (they spread as they walk)
-  const a = (hash32(name, 17) % 628) / 100, r = 0.12 + (hash32(name, 19) % 100) / 400;
-  at.x += Math.cos(a) * r; at.z += Math.sin(a) * r;
+  // out of the lift, a step apart and a step in (the doorway is at the glass): several arriving together don't stand in
+  // one spot, and nobody starts outside the room (`facing` points into it)
+  const a = facing + ((hash32(name, 17) % 628) / 628 - 0.5) * Math.PI, r = 0.12 + (hash32(name, 19) % 100) / 400;
+  at.x += Math.sin(a) * r; at.z += Math.cos(a) * r;
   const i = crowd.add(name, { pos: at, facing, seated: false });
   if (i >= 0) { uLift.value = 1; audio.sfx('ding'); }
   return i;
@@ -125,7 +126,7 @@ walk.obstacles = () => {
   let n = 0;
   const put = (x: number, z: number, r: number) => { const o = (obstacleList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = x; o.z = z; o.r = r; };
   for (const s of spots) if (!s.bar) put(s.pos.x, s.pos.z, s.radius + 0.42);
-  for (const p of crowd.people) put(p.pose.pos.x, p.pose.pos.z, 0.34);
+  for (const p of crowd.people) put(p.pose.pos.x + (p.shove?.x ?? 0), p.pose.pos.z + (p.shove?.z ?? 0), 0.34);   // where they stand
   obstacleList.length = n;
   return obstacleList;
 };
@@ -133,12 +134,14 @@ walk.route = (a, b) => room.route(a, b);
 // what walkers keep clear of besides people: the tables (their tops), and the lens (where you stand, or the camera at
 // a table), so nobody walks through you or through the shot. Refreshed in place, as the obstacles above are.
 const clearList: { x: number; z: number; r: number }[] = [];
-crowd.keepClear = () => {
+crowd.keepClear = () => {                              // asked every frame anyone animates: no closure, no new objects
   let n = 0;
-  const put = (x: number, z: number, r: number) => { const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = x; o.z = z; o.r = r; };
-  for (const s of spots) if (!s.bar) put(s.pos.x, s.pos.z, s.radius + 0.05);
-  if (mode !== 'tower') put(camera.position.x, camera.position.z, 0.3);
-  clearList.length = n;
+  for (const s of spots) {
+    if (s.bar) continue;
+    const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = s.pos.x; o.z = s.pos.z; o.r = s.radius + 0.05;
+  }
+  if (mode !== 'tower') { const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = camera.position.x; o.z = camera.position.z; o.r = 0.3; }
+  if (clearList.length !== n) clearList.length = n;
   return clearList;
 };
 walk.onMove = () => {
