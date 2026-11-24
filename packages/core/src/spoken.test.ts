@@ -149,6 +149,8 @@ test('review: every link keeps its placard, and a list of them is one sentence',
   assert.deepEqual(g.segments.filter((x: any) => x.kind === 'link').map((x: any) => x.say), ['Three links: GitHub,', 'Wikipedia,', 'and N-Y Post dot com.']);
   const r = speakable('<a href="https://github.com/a">https://github.com/a</a><p><a href="https://github.com/b">https://github.com/b</a>');
   assert.deepEqual(r.segments.map((x: any) => x.say), ['A GitHub link,', 'and another.']);
+  const d = speakable('From this <a href="https://github.com/a">https://github.com/a</a>, and the <a href="https://github.com/b">https://github.com/b</a>.');
+  assert.equal((d.segments[0] as any).text, 'From this GitHub link, and the other GitHub link.');
   const e = speakable('(see e.g. <a href="https://github.com/a">https://github.com/a</a>)');
   assert.equal((e.segments[0] as any).text, '(see for example a GitHub link)');
   const i = speakable('<i>Source: <a href="https://example.com/a/long/path?id=1">https://example.com/a/long/path?id=1</a></i>');
