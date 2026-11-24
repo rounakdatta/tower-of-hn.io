@@ -114,12 +114,14 @@ export class Live {
     if (story !== undefined) this.dirtyStories.add(story);
   }
 
-  /** HN's current front page, best first. */
+  /** HN's current front page, best first. A story that comes back is rebuilt: only floors on the tower are, so
+   *  whatever changed while it was off (replies, audio deleted since) never reached its floor. */
   setTower(order: number[]): void {
     if (order.join() === this.tower.join()) return;
+    const was = new Set(this.tower);
     this.tower = order.slice();
     this.pending.tower = this.tower.slice();
-    for (const id of order) if (!this.floors.has(id)) this.dirtyStories.add(id);
+    for (const id of order) if (!this.floors.has(id) || !was.has(id)) this.dirtyStories.add(id);
   }
 
   /** Called every ~2 s: rebuild dirty floors, emit one delta (or nothing), the head, and any due snapshots. */

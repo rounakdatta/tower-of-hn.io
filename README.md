@@ -112,7 +112,7 @@ Both images are private, in GHCR. `docs/DEPLOY.md` covers the costs and the reas
 
 - **Release.** Push an annotated tag `vX.Y.Z` on its own; CI builds and pushes both images at that version. Then bump the three image tags in homelab.setup's `values.yaml` (tag AND digest; the voice image is used twice), deploy that branch with `deploy-stuff.yml --ref`, check it, and merge.
 - **Housekeeping is automatic.**
-  - Deltas, old floor revisions and audio past `RETENTION_DAYS` are pruned.
+  - Deltas, old floor revisions and audio past `RETENTION_DAYS` are pruned. With `AUDIO_POLICY=tower`, audio is kept only while a floor can still play it, capped, and never written into a nearly full disk: `docs/AUDIO.md`.
   - Stories two days off the front page are forgotten.
   - A comment HN deletes or kills loses its audio.
 - **Opt-out.** Add the HN username to `/data/optout.txt` (one per line; read every minute), or to `OPTOUT`. Their comments leave every table and their audio is deleted; replies to them still play.
