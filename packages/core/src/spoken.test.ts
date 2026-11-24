@@ -68,6 +68,7 @@ test('symbols, footnotes and markdown leftovers', () => {
     ['Paris -> London', 'Paris to London'],
     ['**bold** and *this*', 'bold and this'],
     ['10, <3, ok', '10, ok'],                                                // nothing doubled where a mark was dropped
+    ['10²⁰ operations, 10² and the study¹', '10 to the twentieth operations, 10 squared and the study'],
   ]);
 });
 
@@ -81,6 +82,7 @@ test('domains: said the way people say the site', () => {
   assert.equal(sayHost('fly.io'), 'fly dot I-O');
   assert.equal(sayHost('epoch.ai'), 'Epoch dot A-I');
   assert.equal(segment('nyt'), 'N-Y-T');
+  assert.equal(spoken('Formaviva.com did it, in Next.js'), 'formaviva dot com did it, in Next J-S');
   assert.equal(segment('thedailybeast'), 'the daily beast');
   assert.equal(segment('quantumcomputingreport'), 'quantum computing report');
   assert.equal(segment('mathisfun'), 'mathisfun');                          // no confident split: left whole
@@ -105,6 +107,8 @@ test('links: a platform by its brand, a site by its domain, never the path', () 
 test('in a comment: links said where they stand, or once for a list of them', () => {
   const s = speakable('See <a href="https://github.com/foo/bar">https://github.com/foo/bar</a> for details.<p><a href="https://nypost.com/x">https://nypost.com/x</a>');
   assert.deepEqual(s.segments.map((x: any) => x.kind === 'link' ? x.say : x.text), ['See a GitHub link for details.', '', 'A link to N-Y Post dot com.']);
+  const e = speakable('I tell the story. <a href="https://youtube.com/watch?v=1">https://youtube.com/watch?v=1</a>');
+  assert.equal((e.segments[0] as any).text, 'I tell the story. A YouTube link');
   const q = speakable('&gt; It costs $5.<p>Not $1.2T.');
   assert.equal((q.segments[0] as any).text, 'Quote: It costs 5 dollars. End quote.');
   assert.equal((q.segments[1] as any).text, 'Not 1.2 trillion dollars.');

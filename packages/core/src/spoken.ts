@@ -280,7 +280,7 @@ function word(tok: string, s: string, at: number): string {
     if (LEX.has(w)) return LEX.get(w)! + dot;
     const host = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,})$/i.exec(w);
     const lower = w.toLowerCase();
-    if (host && TLDS[host[1].toLowerCase()] !== undefined && !/\.(?:js|ts|py|rs|md|sh|so|pl|go|cc|ai|in)$/i.test(w) && (w === lower || SITES[lower])) return sayHost(w) + dot;
+    if (host && TLDS[host[1].toLowerCase()] !== undefined && !/\.(?:js|ts|py|rs|md|sh|so|pl|go|cc|ai|in)$/i.test(w) && (w === lower || SITES[lower] || /^[A-Z][a-z0-9-]*\.(?:com|org|net|io|dev|app|co|gov|edu)$/.test(w))) return sayHost(w) + dot;
     const file = /^([\w-]+)\.([A-Za-z0-9]{1,11})$/.exec(w);
     if (file && FILE_EXT[file[2]] !== undefined && !/^\d+$/.test(file[1])) {
       if (file[2] === 'js' && /^[A-Z]/.test(file[1])) return `${LEX.get(file[1]) ?? file[1]} J-S${dot}`;   // Three.js
@@ -478,6 +478,7 @@ const RE = new RegExp([
   String.raw`\s–\s|–|[™®†‡•]|(?<!\S)\/s(?=$|[\s.!?,)])|\.NET\b|(?:^|(?<=\s))\*\s|\*\*?(?=\S)|(?<=\S)\*\*?`,                         // 10 symbols
 ].map((r) => `(${r})`).join('|'), 'g');
 
+const SUP = '⁰¹²³⁴⁵⁶⁷⁸⁹';
 export interface Voicing { link?: () => string }
 /** One sentence (or any run of text), as it should be said. */
 export function spoken(text: string, o: Voicing = {}): string {
@@ -491,7 +492,10 @@ export function spoken(text: string, o: Voicing = {}): string {
 }
 function say1(m: string, link: string, code: string, num: string, slash: string, dotted: string, w: string, arrow: string, foot: string, hash: string, sym: string, at: number, s: string, o: Voicing): string {
   {
-    if (link !== undefined) return o.link ? o.link() : m.slice(1, -1);
+    if (link !== undefined) {
+      const l = o.link ? o.link() : m.slice(1, -1);
+      return at === 0 || /[.!?]["'”’)\]]?\s+$/.test(s.slice(Math.max(0, at - 4), at)) ? l.charAt(0).toUpperCase() + l.slice(1) : l;
+    }
     if (code !== undefined) return m.slice(1, -1).replace(/^`|`$/g, '');
     if (num !== undefined) return numeric(m, s, at);
     if (slash !== undefined) return SLASH[m];
@@ -502,7 +506,11 @@ function say1(m: string, link: string, code: string, num: string, slash: string,
     }
     if (w !== undefined) return word(m, s, at);
     if (arrow !== undefined) return /(?:<-+>|<=>|↔|⇔)/.test(m) ? ' and ' : /(?:<-|←|⟵|⇐)/.test(m) ? ' from ' : ' to ';
-    if (foot !== undefined) return '';
+    if (foot !== undefined) {
+      if (!/\d$/.test(s.slice(Math.max(0, at - 1), at)) || m[0] === '[' || m[0] === ' ') return '';
+      const e = +[...m].map((c) => SUP.indexOf(c)).join('');                                        // 10²⁰: an exponent
+      return e === 2 ? ' squared' : e === 3 ? ' cubed' : ` to the ${e < 100 ? ordinal(e) : e + th(e)}`;
+    }
     if (hash !== undefined) return `number ${m.slice(1)}`;
     if (sym !== undefined) return m === ' – ' ? ' — ' : m === '–' ? '-' : m === '.NET' ? 'dot net' : '';
     return m;
