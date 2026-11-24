@@ -1,4 +1,4 @@
-# TowerOfHan.io
+# Tower of HN
 
 Hacker News as a living tower. Every floor is a front-page story, every table is a thread, and the people at it speak their comments, verbatim, in their own voices, as the conversation happens.
 
@@ -104,7 +104,7 @@ The client renders headlessly on a software GPU (`?record` makes time determinis
 
 ## Production
 
-It runs on the homelab (`homelab.setup/kubernetes/apps/towerofhan`):
+It runs on the homelab (`homelab.setup/kubernetes/apps/towerofhn`), at https://towerofhn.taptappers.club (tailnet only). Its Kubernetes objects and images keep the name it first went out under, `towerofhan`: a deploy never deletes, so renaming them would start a second copy beside the running one, and new image names would rebuild and re-pull every layer.
 - `towerofhan` on the control plane: `towerofhan-web` (towerd, which also serves the built client) and a fallback voice lane, sharing `/data`
 - `towerofhan-runner`, one per worker node: `towerofhan-voice` lanes that voice what towerd hands out on its in-cluster voice port
 

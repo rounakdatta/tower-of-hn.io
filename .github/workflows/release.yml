@@ -35,6 +35,8 @@ jobs:
       packages: write
     strategy:
       matrix:
+        # The packages keep the name the project first went out under: the homelab pins their digests,
+        # and the layer cache below lives in them
         include:
           - image: towerofhan-web
             file: deploy/web.Dockerfile

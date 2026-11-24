@@ -1,4 +1,4 @@
-// The page and the extension talk through this script, on TowerOfHan's own pages only (see manifest matches).
+// The page and the extension talk through this script, on Tower of HN's own pages only (see manifest matches).
 // The page can ask; only the extension's own confirmation window can make a post happen (background.js).
 window.addEventListener('message', (e) => {
   if (e.source !== window || e.origin !== location.origin || !e.data || typeof e.data !== 'object') return;

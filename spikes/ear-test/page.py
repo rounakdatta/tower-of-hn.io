@@ -54,7 +54,7 @@ Live HN → speakability layer → an LLM picks each turn's delivery → Kitten-
 <audio controls preload=none src="audio/table-e2e.ogg"></audio><details><summary>Cast and delivery, in order</summary><ol>{cast}</ol></details></section>"""
     turns = "".join(f"<p><b>{html.escape(t['by'])}</b> {html.escape(t['text'])}</p>" for t in script)
     page = f"""<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>TowerOfHan — ear test</title><style>
+<title>Tower of HN — ear test</title><style>
 body{{margin:0 auto;max-width:640px;padding:20px 18px 60px;background:#0f1117;color:#e9e6e0;font:16px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}}
 h1{{font-size:22px;margin:8px 0 4px}}h2{{font-size:17px;margin:0 0 2px}}.m{{color:#9aa1b2;font-size:13px;margin:2px 0 8px}}
 section{{border-top:1px solid #262a36;padding:16px 0}}audio{{width:100%}}b{{color:#ff9a3c}}details p{{margin:0 0 10px}}a{{color:#9ab8ff}}

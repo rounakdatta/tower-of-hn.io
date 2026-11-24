@@ -1,4 +1,4 @@
-// TowerOfHan — spike 0. Throwaway code: proves the shape, not the art.
+// Tower of HN — spike 0. Throwaway code: proves the shape, not the art.
 // Live HN front page as a tower (1 draw call for all floors), a night city
 // (1 draw call), and a floor interior where every character is instanced
 // (bodies 1 call, heads 1 call) with shader-drawn faces and talking mouths.

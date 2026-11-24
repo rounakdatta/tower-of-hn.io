@@ -26,7 +26,7 @@ anyone answers you, you hear it. This note is what exists (0.4.1), what we can't
   - Your recent comments are checked every two minutes, straight from your browser to HN's public API
     (`hacker-news.firebaseio.com`, now allowed by the page's CSP). Nothing of yours passes through our server.
 - **The companion extension** (`apps/extension`, a sketch: not published, not installed, never run against HN).
-  - It is MV3. Its content script runs only on TowerOfHan's own pages.
+  - It is MV3. Its content script runs only on Tower of HN's own pages.
   - It posts with the browser's existing HN session: it fetches the reply page for the form's one-time token, then
     POSTs the form, exactly as HN's own page would.
   - **Every post needs a click in the extension's own confirmation window**, so a page, even a compromised one,
@@ -107,7 +107,7 @@ on a phone.
 - [x] No passwords or cookies ever reach our server.
 - [x] Speech recognition runs in the browser; we never receive audio.
 - [x] HN text is parsed in an inert document (`DOMParser`); every name and line is escaped.
-- [x] The extension talks only to TowerOfHan's own origins, matches each answer to its request, and is limited to
+- [x] The extension talks only to Tower of HN's own origins, matches each answer to its request, and is limited to
       news.ycombinator.com.
 - [x] Your HN name lives in localStorage only; clearing it stops the watch.
 - [x] The extension never double-posts. It looks for your reply under that comment before posting (HN returns no

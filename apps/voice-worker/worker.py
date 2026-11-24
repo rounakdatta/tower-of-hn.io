@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TowerOfHan voice runner.
+"""Tower of HN voice runner.
 
 towerd (beside the data) plans what to voice; runners on any node voice it. A runner claims one comment at a time over
 towerd's internal port (a long poll), voices it with Kokoro in a voice that belongs to that person forever (a

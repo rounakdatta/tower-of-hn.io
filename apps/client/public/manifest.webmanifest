@@ -1,6 +1,6 @@
 {
-  "name": "TowerOfHan",
-  "short_name": "TowerOfHan",
+  "name": "Tower of HN",
+  "short_name": "Tower of HN",
   "description": "Hacker News as a living tower: every floor a front-page story, every table a thread, read aloud.",
   "start_url": "/",
   "scope": "/",

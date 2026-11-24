@@ -1,4 +1,4 @@
-// TowerOfHan: Hacker News as a living tower.
+// Tower of HN: Hacker News as a living tower.
 import * as THREE from 'three/webgpu';
 import { pass, screenUV, smoothstep, vec3, hash, float, uniform } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
@@ -815,7 +815,7 @@ async function warmShaders() {
 function media(title: string, by?: string) {
   const ms = navigator.mediaSession;
   if (!ms || recording || typeof MediaMetadata === 'undefined') return;
-  ms.metadata = new MediaMetadata({ title, artist: by ? `${by} and others, on TowerOfHan` : 'TowerOfHan', album: 'Hacker News, live' });
+  ms.metadata = new MediaMetadata({ title, artist: by ? `${by} and others, on Tower of HN` : 'Tower of HN', album: 'Hacker News, live' });
 }
 if (navigator.mediaSession && !recording) {
   const ms = navigator.mediaSession;

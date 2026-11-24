@@ -1,4 +1,4 @@
-# How TowerOfHan scales
+# How Tower of HN scales
 
 The short answer: listeners cost almost nothing; *distinct comments listened to* cost voice time. A hundred people
 on the same three floors cost about what ten do. The only scarce thing is voicing, so it runs on every node that has

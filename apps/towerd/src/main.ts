@@ -23,7 +23,7 @@ import { VoiceQueue, band, type Entry } from './queue.ts';
 import { tagPrompt, parseTags, type Tag } from './tags.ts';
 
 const HN = 'https://hacker-news.firebaseio.com/v0';
-const UA = { 'User-Agent': 'towerofhan-towerd/0.1' };
+const UA = { 'User-Agent': 'towerofhn-towerd/0.1' };
 const PORT = Number(process.env.PORT ?? 8787);
 const VAR = resolve(process.env.VAR ?? join(import.meta.dirname, '../../../var'));
 const LIVE = join(VAR, 'live'), JOBS = join(VAR, 'jobs'), VOICED = join(VAR, 'voiced.jsonl');
