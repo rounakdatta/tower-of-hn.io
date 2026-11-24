@@ -458,7 +458,7 @@ def voice_job(c, kokoro, voices, oai, conns, runner):
         if tags:
             emotion, stance, intensity, cues = tags["e"], tags["s"], float(tags["i"]), list(tags["c"])
         else:
-            emotion, stance, intensity, cues = heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
+            emotion, stance, intensity, cues = heuristic_tag(" ".join(s.get("display") or s.get("text", "") for s in j["segments"]))
         clips_out, total, start = [], 0.0, 0
 
     def sidecar(nxt=None):
