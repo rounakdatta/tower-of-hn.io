@@ -47,6 +47,7 @@ open http://127.0.0.1:5288
   - **Lamps** take the colour of what's said under them: red for a row, yellow for laughter, blue for people thinking aloud. A row breaking out elsewhere gets a note you can tap to go there.
   - Every table in earshot acts what it says, as the one you sit at does: people get to their feet, point, laugh, slump.
 - **Table.** Space pauses, N moves to the next table, Esc stands you up, M mutes.
+  - Words are said the way a person reads them aloud: "$1.2T" is "1.2 trillion dollars", "LLMs" is "L L Ms", and a link is where it goes ("a GitHub link", "a link to N Y Post dot com"). See `docs/SPEECH.md`.
   - Links are held up as placards you can click.
   - When someone quotes the comment they're answering, its author speaks the quote.
 - **Reply, by voice.** On someone's card, while seated (Reply, or R), or aiming at them: speak, read your words back, fix them, and post. Your browser turns speech into text (nothing rewrites it), the room goes quiet while you talk, and nothing posts until you press Post. Posting is a hand-off today: your words are copied and HN's own reply page opens on that comment, so you paste and press reply. A companion extension (`apps/extension`, not published) would post straight from your browser with your own HN session. Add your HN name (kept in your browser) and replies to you are brought to your ears on the floor you're on, with a note for the ones elsewhere. See `docs/POSTING.md`.
@@ -82,7 +83,7 @@ The tags drive the performance, and nothing is canned:
 ## Layout
 
 ```
-packages/core       speakability, play order, seats, permanent voices, live state (14 tests: `node --test packages/core/src/*.test.ts`)
+packages/core       speakability and spoken forms, play order, seats, permanent voices, live state (`node --test packages/core/src/*.test.ts`)
 apps/towerd         local stand-in for the edge + CDN: follows live HN, writes head/epoch/floor files, queues voicing
 apps/voice-worker   tags, voices (Kokoro or OpenAI), writes clips + sidecars with loudness and mouth-shape tracks
 apps/client         the 3D client: three.js on WebGPU, plain TypeScript
