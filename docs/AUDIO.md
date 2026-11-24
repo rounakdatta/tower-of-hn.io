@@ -48,6 +48,21 @@ nothing is re-encoded, and the serving path is the same.
 - Exact duplicates: none. The same words in the same voice and mood, voiced twice: 1.8% of clips, nearly all
   comments voiced again after an edit on HN.
 
+## After (measured live, 25 Nov 2026)
+
+- **Rollout:** `tower-dry` for 1 h 50 min (it would delete 4,234–4,283 versions, 289–292 MB), then `tower`. The first
+  real pass deleted 4,283 versions (292 MB, about 14,000 files) in 3.8 s of slices; no play failed, and for about 8 s
+  plays took up to ~200 ms to first byte. Every pass since takes 3 ms.
+- **Disk:** `live/c` went from 436 MB to 187 MB (clips 392 → 154 MB, of which the tower's own 67–73 MB) and
+  `voiced.jsonl` from 18,191 to 7,850 lines.
+- **Latency, inside the cluster** (2.3 plays a second, ~25 min a run): clip first byte p50/p95/p99 0.8/101/305 ms
+  before, 0.7/77/190 after; playback start 3.7/274/704 before, 2.2/179/406 after. No percentile worse beyond noise in
+  any run. The serving path is the same, so read the lower tails as the VPS's CPU steal, not as a speed-up. Through
+  the tailnet door from Singapore and Paris: at or better than before; from India and the US, the differences
+  followed their own network path (TCP connect times), not towerd.
+- **Same bytes:** 150 clips hashed before were identical after, and every clip every floor on the tower names was
+  served before and after.
+
 ## Why not R2
 
 R2 was the obvious candidate, and the numbers rule it out for now:
