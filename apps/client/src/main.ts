@@ -16,7 +16,7 @@ import { MOOD, moodOf, tableMood, rowOf } from './mood.ts';
 import { Reply, Replies, type ReplyTarget } from './reply.ts';
 import { Crowd, setTimeValue } from './people.ts';
 import { Director } from './director.ts';
-import { esc } from './util.ts';
+import { esc, hash32 } from './util.ts';
 import { Rig } from './rig.ts';
 import { UI } from './ui.ts';
 
@@ -108,6 +108,9 @@ const mixer = new Mixer(sync, audio, crowd, room);
 mixer.pushChair = (c, k) => interior.pushChair(c, k);
 director.room = room; director.ambient = true;
 room.spawn = (name, at, facing) => {
+  // out of the lift, a step apart: several arriving together don't stand in one spot (they spread as they walk)
+  const a = (hash32(name, 17) % 628) / 100, r = 0.12 + (hash32(name, 19) % 100) / 400;
+  at.x += Math.cos(a) * r; at.z += Math.sin(a) * r;
   const i = crowd.add(name, { pos: at, facing, seated: false });
   if (i >= 0) { uLift.value = 1; audio.sfx('ding'); }
   return i;
@@ -127,6 +130,17 @@ walk.obstacles = () => {
   return obstacleList;
 };
 walk.route = (a, b) => room.route(a, b);
+// what walkers keep clear of besides people: the tables (their tops), and the lens (where you stand, or the camera at
+// a table), so nobody walks through you or through the shot. Refreshed in place, as the obstacles above are.
+const clearList: { x: number; z: number; r: number }[] = [];
+crowd.keepClear = () => {
+  let n = 0;
+  const put = (x: number, z: number, r: number) => { const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = x; o.z = z; o.r = r; };
+  for (const s of spots) if (!s.bar) put(s.pos.x, s.pos.z, s.radius + 0.05);
+  if (mode !== 'tower') put(camera.position.x, camera.position.z, 0.3);
+  clearList.length = n;
+  return clearList;
+};
 walk.onMove = () => {
   if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); if (!walk.locked) ui.hint(''); tapHint = false; }
   if (touch && !localStorage.getItem('tohn-stick')) { localStorage.setItem('tohn-stick', '1'); walk.ghost(false); }
@@ -1037,7 +1051,9 @@ if (recording) {
     standUp: () => standUp(),
     sit: () => sit(bestSpot()),
     profile: (name: string) => showProfile(name),
-    people: () => crowd.people.map((p, i) => ({ i, name: p.name, x: p.pose.pos.x, z: p.pose.pos.z, walking: crowd.isWalking(i) })),
+    people: () => crowd.people.map((p, i) => { const e = crowd.extent(i)!; return { i, name: p.name, x: p.pose.pos.x + e.shoveX, z: p.pose.pos.z + e.shoveZ, walking: crowd.isWalking(i), body: e.body, head: e.head }; }),
+    /** for timing the crowd's own work (record mode only) */
+    crowd,
     fov: () => camera.fov,
     /** who is acting right now (anyone the crowd is animating), and how far: stand, arms, lean, mouth */
     acting: () => [...crowd.active].map((i) => { const p = crowd.people[i], e = p?.expr; return e ? { name: p.name, stand: +e.stand.toFixed(2), armR: +e.armR.toFixed(2), armL: +e.armL.toFixed(2), lean: +e.lean.toFixed(2), open: +e.open.toFixed(2), smile: +e.smile.toFixed(2), flush: +e.flush.toFixed(2) } : null; }).filter(Boolean),
