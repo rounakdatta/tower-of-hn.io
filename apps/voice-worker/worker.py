@@ -144,7 +144,8 @@ def heuristic_tag(text):
 def sentences(text):
     """A text's sentences, split exactly as towerd splits a segment's display (packages/core speakable.ts `sentences`):
     towerd sends one spoken line per sentence of it, so what is shown is what is being said."""
-    t = re.sub(r"\b(e\.g|i\.e|eg|ie|vs|etc|cf|esp|incl|al|Mr|Mrs|Ms|Dr|Prof|St|Jr|Sr|approx|U\.S|a\.m|p\.m)\.", lambda m: m.group(0).replace(".", "․"), text)
+    # ASCII word boundaries, as JavaScript's: "Montréal." is protected the same way on both sides
+    t = re.sub(r"\b(e\.g|i\.e|eg|ie|vs|etc|cf|esp|incl|al|Mr|Mrs|Ms|Dr|Prof|St|Jr|Sr|approx|U\.S|a\.m|p\.m)\.", lambda m: m.group(0).replace(".", "․"), text, flags=re.ASCII)
     return [p.replace("․", ".").strip() for p in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(\"'])", t) if p.strip()]
 
 
@@ -156,7 +157,7 @@ def chunk(sents, limit=220, first=None):
         if out:
             limit = full
         while len(s) > limit:
-            cut = max(s.rfind(", ", 0, limit), s.rfind(" ", 0, limit))
+            cut = cut_point(s, limit)
             cut = cut if cut > 40 else limit
             if cur:
                 out.append(cur)
@@ -175,11 +176,22 @@ def chunk(sents, limit=220, first=None):
     return out
 
 
-def cut_at(t, share):
-    """Where to cut written text at about this share of its length: the nearest space."""
+def cut_point(s, limit):
+    """Where to end a clip that must stop before `limit`: after a comma in the last 40% of the window, else the last space."""
+    c = s.rfind(", ", 0, limit)
+    return c if c >= limit * 0.6 else s.rfind(" ", 0, limit)
+
+
+def cut_at(t, share, comma=False):
+    """Where to cut written text at about this share of its length: the nearest space; when the spoken text was cut at
+    a comma, the comma nearest that share (within a sixth of the text), so the subtitle ends where the voice pauses."""
     i = round(len(t) * share)
     if i <= 0 or i >= len(t):
         return max(0, min(len(t), i))
+    if comma:
+        commas = [x for x in (t.rfind(", ", 0, i + 1), t.find(", ", i)) if x > 0 and abs(x + 1 - i) <= len(t) / 6]
+        if commas:
+            return min(commas, key=lambda x: abs(x + 1 - i)) + 2
     spaces = [x for x in (t.rfind(" ", 0, i), t.find(" ", i)) if x > 0]
     return min(spaces, key=lambda x: abs(x - i)) + 1 if spaces else i
 
@@ -193,12 +205,12 @@ def chunk_pairs(pairs, limit=220, first=None):
         if out:
             limit = full
         while len(s) > limit:
-            cut = max(s.rfind(", ", 0, limit), s.rfind(" ", 0, limit))
+            cut = cut_point(s, limit)
             cut = cut if cut > 40 else limit
             if cur:
                 out.append((cur, shown))
                 cur = shown = ""
-            k = cut_at(t, (cut + 1) / len(s))
+            k = cut_at(t, (cut + 1) / len(s), comma=s[cut] == ",")
             out.append((s[:cut + 1].strip(), t[:k].strip() or s[:cut + 1].strip()))
             s, t = s[cut + 1:].strip(), t[k:].strip()
             limit = full

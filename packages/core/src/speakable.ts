@@ -64,7 +64,13 @@ function inline(htmlPara: string, links: Extract<Segment, { kind: 'link' }>[]) {
       links.push({ kind: 'link', url, domain: domainOf(url), text });
       raw += LINK + clean(text) + LINK_END;
     } else if (m[3] !== undefined) {                       // HN italics are how people emphasise
-      raw += EM + clean(decode(m[3].replace(/<[^>]+>/g, ''))) + EM_END;
+      // a link inside italics is still a link: its own marks, inside the emphasis
+      const inner = clean(m[3]).replace(/<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g, (_a, href: string, txt: string) => {
+        const url = decode(href), text = decode(txt.replace(/<[^>]+>/g, ''));
+        links.push({ kind: 'link', url, domain: domainOf(url), text });
+        return LINK + text + LINK_END;
+      });
+      raw += EM + decode(inner.replace(/<[^>]+>/g, '')) + EM_END;
     } else if (m[4] !== undefined) {
       raw += CODE + clean(decode(m[4])) + CODE_END;
     } else if (m[5] !== undefined) {
@@ -133,8 +139,8 @@ export function speakable(html: string, parent?: { id: number; text: string }): 
   let alone: Extract<Segment, { kind: 'link' }>[] = [];
   const flush = () => {                                     // links standing alone in a row: said together, once
     if (!alone.length) return;
-    alone[0].say = voice.alone(alone.map((l) => l.url));
-    for (const l of alone.slice(1)) l.say = '';
+    const says = voice.alone(alone.map((l) => l.url));
+    alone.forEach((l, i) => (l.say = says[i] ?? ''));
     alone = [];
   };
   const blocks = html.split(/(<pre><code>[\s\S]*?<\/code><\/pre>)/);

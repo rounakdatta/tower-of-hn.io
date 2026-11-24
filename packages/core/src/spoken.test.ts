@@ -100,8 +100,8 @@ test('links: a platform by its brand, a site by its domain, never the path', () 
   const v = new LinkVoice();
   assert.equal(v.inline('https://github.com/a'), 'a GitHub link');
   assert.equal(v.inline('https://github.com/b'), 'another GitHub link');
-  assert.equal(new LinkVoice().alone(['https://nypost.com/x']), 'A link to N-Y Post dot com.');
-  assert.equal(new LinkVoice().alone(['https://en.wikipedia.org/a', 'https://youtube.com/watch?v=1', 'https://nypost.com/x']), 'Three links: Wikipedia, YouTube and N-Y Post dot com.');
+  assert.deepEqual(new LinkVoice().alone(['https://nypost.com/x']), ['A link to N-Y Post dot com.']);
+  assert.deepEqual(new LinkVoice().alone(['https://en.wikipedia.org/a', 'https://youtube.com/watch?v=1', 'https://nypost.com/x']), ['Three links: Wikipedia,', 'YouTube,', 'and N-Y Post dot com.']);
 });
 
 test('in a comment: links said where they stand, or once for a list of them', () => {
@@ -119,6 +119,43 @@ test('one spoken line per written sentence, so the voice and the subtitles stay 
   assert.equal(s.segments[0].text, 'It is 5 dollars.\nMister Smith agreed, for example with 1.2 trillion dollars.\nDone!');
 });
 
+test('review: words a commenter types are never table keys of Object.prototype', () => {
+  says([
+    ['In JS you call super() inside the constructor.', 'In JS you call super() inside the constructor.'],
+    ['Override toString. It is called on coercion, and so is valueOf.', 'Override toString. It is called on coercion, and so is valueOf.'],
+    ['obj.toString() is the constructor 5 times', 'obj.toString() is the constructor 5 times'],
+  ]);
+});
+
+test('review: arithmetic, comparisons and code keep their meaning', () => {
+  says([
+    ['Rust vs. Go, approx. 5 of them', 'Rust versus Go, approximately 5 of them'],
+    ['if n < 3 return 1; the value is <3 in most cases; I <3 it; thanks <3', 'if n less than 3 return 1; the value is less than 3 in most cases; I love it; thanks'],
+    ['p<0.05 when n<5 and x>3', 'p less than 0.05 when n less than 5 and x more than 3'],
+    ['2*3 = 6 and 5 * 4 = 20; 2 / 4 - 1; 5 - 3 = 2; scores 3-2; pages 10 - 20', '2 times 3 = 6 and 5 times 4 = 20; 2 / 4 minus 1; 5 minus 3 = 2; scores 3 to 2; pages 10 to 20'],
+    ['300 km² and x² and 10⁻⁶ s, in 2020¹', '300 kilometers squared and x squared and 10 to the minus sixth s, in twenty twenty'],
+    ['argv[1] and arr[0] and matrix[2][3]; the paper[1] says; see [2]', 'argv[1] and arr[0] and matrix[2][3]; the paper says; see'],
+    ["awk '{print $1}' costs $1", "awk '{print $1}' costs 1 dollar"],
+    ['a ~$5 coffee, an ~8 hour flight, the ~$1,000 laptop, ~5 people', 'a roughly 5 dollar coffee, an approximately 8 hour flight, the roughly 1,000 dollar laptop, about 5 people'],
+    ['a $1.5 Billion deal, ₹1.2 crore, ₹1,00,000, ₹12,00,00,000', 'a 1.5 billion dollar deal, 1.2 crore rupees, 1 lakh rupees, 12 crore rupees'],
+    ['4K videos, 8K images, 10K users', '4K videos, 8K images, 10 thousand users'],
+    ['15:00, 00:00, 09:00, 3:00pm', "15 hundred, midnight, 9 o'clock, 3 P-M"],
+    ['a <-> b, a -> b, a <- b; std::vector is 10x faster', 'a and b, a to b, a from b; std::vector is 10 times faster'],
+  ]);
+});
+
+test('review: every link keeps its placard, and a list of them is one sentence', () => {
+  const g = speakable('Sources:<p><a href="https://github.com/a">https://github.com/a</a><p><a href="https://en.wikipedia.org/wiki/X">https://en.wikipedia.org/wiki/X</a><p><a href="https://nypost.com/x">https://nypost.com/x</a>');
+  assert.deepEqual(g.segments.filter((x: any) => x.kind === 'link').map((x: any) => x.say), ['Three links: GitHub,', 'Wikipedia,', 'and N-Y Post dot com.']);
+  const r = speakable('<a href="https://github.com/a">https://github.com/a</a><p><a href="https://github.com/b">https://github.com/b</a>');
+  assert.deepEqual(r.segments.map((x: any) => x.say), ['A GitHub link,', 'and another.']);
+  const e = speakable('(see e.g. <a href="https://github.com/a">https://github.com/a</a>)');
+  assert.equal((e.segments[0] as any).text, '(see for example a GitHub link)');
+  const i = speakable('<i>Source: <a href="https://example.com/a/long/path?id=1">https://example.com/a/long/path?id=1</a></i>');
+  assert.deepEqual(i.segments.map((x: any) => x.kind), ['say', 'link']);
+  assert.equal((i.segments[0] as any).text, '(((Source: example dot com)))');
+});
+
 test('pure and deterministic', () => {
   const t = 'LLMs cost $1.2T at nypost.com, e.g. 10x.';
   assert.equal(spoken(t), spoken(t));
@@ -132,6 +169,7 @@ test('linear on hostile input: long runs of digits, capitals, dots, symbols and 
     '<'.repeat(100_000) + '3', '-'.repeat(100_000) + '>', '1-'.repeat(100_000), '$1-'.repeat(60_000), 'LLMs '.repeat(40_000),
     'x'.repeat(100_000) + '.com', ('ab'.repeat(30) + '.').repeat(3000) + 'com', '[1]'.repeat(60_000), '~'.repeat(100_000) + '5',
     ''.repeat(50_000) + 'x' + '', 'e.g.'.repeat(50_000), '1,'.repeat(100_000) + '000', 'w/'.repeat(100_000),
+    '-'.repeat(100_000), '='.repeat(100_000), 'a-'.repeat(50_000), "k'".repeat(50_000), 'word-'.repeat(20_000), '<-'.repeat(50_000), '²'.repeat(100_000), '[1]x'.repeat(30_000),
   ];
   for (const n of nasty) {
     const t0 = performance.now();

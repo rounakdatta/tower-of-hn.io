@@ -47,7 +47,8 @@ const counts = (w: string) => COUNT_NOUNS.has(w.toLowerCase());
 const ends = (s: string, i: number) => s.length - i <= 6 && /^["'”’)\]\uE001\uE003\uE005\s]*$/.test(s.slice(i));
 
 // ---------------------------------------------------------------- money
-const MAG: Record<string, string> = { k: 'thousand', K: 'thousand', thousand: 'thousand', m: 'million', M: 'million', mm: 'million', MM: 'million',
+const MAG: Record<string, string> = { k: 'thousand', K: 'thousand', thousand: 'thousand', Thousand: 'thousand', Million: 'million', Billion: 'billion',
+  Trillion: 'trillion', lakh: 'lakh', lakhs: 'lakh', Lakh: 'lakh', crore: 'crore', crores: 'crore', Crore: 'crore', m: 'million', M: 'million', mm: 'million', MM: 'million',
   mn: 'million', mil: 'million', million: 'million', b: 'billion', B: 'billion', bn: 'billion', billion: 'billion', t: 'trillion', T: 'trillion',
   tn: 'trillion', tr: 'trillion', trillion: 'trillion' };
 const CUR: Record<string, [string, string, string?, string?]> = { $: ['dollar', 'dollars', 'cent', 'cents'], '€': ['euro', 'euros', 'cent', 'cents'],
@@ -59,9 +60,9 @@ const PER: Record<string, string> = { mo: 'a month', month: 'a month', mth: 'a m
   seat: 'per seat', person: 'per person', head: 'per head', unit: 'per unit', share: 'a share', ea: 'each', GB: 'per gigabyte', TB: 'per terabyte',
   kWh: 'per kilowatt hour', MWh: 'per megawatt hour', lb: 'a pound', kg: 'a kilo', gal: 'a gallon', M: 'per million', Mtok: 'per million tokens',
   MTok: 'per million tokens', mtok: 'per million tokens', 'M tokens': 'per million tokens', 'MM tokens': 'per million tokens' };
-const NUM = String.raw`(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?`;
+const NUM = String.raw`(?:\d{1,3}(?:,\d{3})+|\d{1,2}(?:,\d\d)+,\d{3}|\d+)(?:\.\d+)?`;   // 1,000,000 and India's 10,00,000
 const MAGS = String.raw`k|K|mm|MM|mn|mil|m|M|bn|b|B|tn|tr|t|T`;
-const MAGW = String.raw`${MAGS}|thousand|million|billion|trillion`;
+const MAGW = String.raw`${MAGS}|[Tt]housand|[Mm]illion|[Bb]illion|[Tt]rillion|[Ll]akhs?|[Cc]rores?`;
 const CODES = String.raw`US|CA|AU|NZ|HK|SG|C|A|S`;
 const MONEY = new RegExp(String.raw`^(${CODES})?([$€£¥₹])(${NUM})(?:\s?(${MAGW})(?![a-z]))?` +
   String.raw`(?:\s?(?:-|–|—|to)\s?(?:${CODES})?[$€£¥₹]?(${NUM})(?:\s?(${MAGW})(?![a-z]))?)?(?:\s?(?:\/|per\s)\s?(\w+(?: tokens)?))?(\+)?$`);
@@ -71,7 +72,11 @@ const DETERMINER = /^(a|an|the|this|that|these|those|its|their|his|her|our|your|
 /** attributive: before the noun it describes, the currency is singular ("a 5 dollar coffee") */
 function money(code: string | undefined, sym: string, a: string, am?: string, b?: string, bm?: string, per?: string, plus?: string, attributive = false): string | undefined {
   const [one, plural, cent, cents] = CUR[sym], many = attributive && !per && !plus ? one : plural;
-  const v = Number(a.replace(/,/g, ''));
+  let v = Number(a.replace(/,/g, ''));
+  if (sym === '₹' && !am && /^\d{1,2}(?:,\d\d)+,\d{3}$/.test(a) && v % 1000 === 0) {                     // ₹1,00,000: 1 lakh rupees
+    [a, am] = v >= 1e7 ? [String(+(v / 1e7).toFixed(2)), 'crore'] : [String(+(v / 1e5).toFixed(2)), 'lakh'];
+    v = Number(a);
+  }
   const amount = (n: string, m?: string) => n + (m ? ' ' + MAG[m] : '');
   let out: string;
   if (!b && !am && cents && v > 0 && v < 1 && /^0?\.\d{1,2}$/.test(a)) {                                    // $0.99: 99 cents
@@ -124,11 +129,13 @@ function numeric(tok: string, s: string, at: number): string {
   if (p[0]) {
     core = core.slice(p[0].length);
     const cmp = p[1]?.trim();
-    if (cmp === '<' && core === '3' && !p[2] && !/\d\s*$/.test(s.slice(Math.max(0, at - 4), at))) {  // <3: a heart, unless numbers compare
-      const next = after(s, end);
-      if (!next || !(counts(next) || UNITS[next] || /^(more|less|of|percent|times)$/.test(next))) return /^(I|we|you|they|i)$/.test(before(s, at)) ? 'love' + trail : trail;
+    if (p[1] === '<' && core === '3' && (at === 0 || /\s/.test(s[at - 1]))) {                    // <3: a heart, unless numbers compare
+      if (/^(I|we|you|they|i)$/.test(before(s, at))) return 'love' + trail;                          // I <3 this
+      if (!/^\s*[A-Za-z0-9]/.test(s.slice(end, end + 3))) return trail;                                 // "Thanks <3": a heart, unsaid
     }
-    pre = (cmp ? { '<': 'less than ', '>': 'more than ', '<=': 'at most ', '>=': 'at least ', '≤': 'at most ', '≥': 'at least ' }[cmp] : '') + (p[2] ? 'about ' : '');
+    const art = before(s, at).toLowerCase(), glued = at > 0 && /\w/.test(s[at - 1]);
+    pre = (glued ? ' ' : '') + (cmp ? { '<': 'less than ', '>': 'more than ', '<=': 'at most ', '>=': 'at least ', '≤': 'at most ', '≥': 'at least ' }[cmp] : '') +
+      (p[2] ? (cmp ? 'about ' : art === 'an' ? 'approximately ' : DETERMINER.test(art) ? 'roughly ' : 'about ') : '');
   }
   const said = sayNumber(core, before(s, at), after(s, at + tok.length - trail.length), s, at + p[0].length, end);
   return said === undefined ? (p[0] ? pre + core + trail : tok) : pre + said + trail;
@@ -136,6 +143,7 @@ function numeric(tok: string, s: string, at: number): string {
 
 function sayNumber(core: string, prev: string, next: string, s: string, at: number, end: number): string | undefined {
   let m: RegExpExecArray | null;
+  if (/^\$\d$/.test(core) && (/[{'"(=]/.test(s[at - 1] ?? '') || /[}'"]/.test(s[end] ?? ''))) return undefined;   // awk's $1
   if ((m = MONEY.exec(core))) return money(m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], DETERMINER.test(prev) && /^[a-z]/i.test(next) && !NOT_A_THING.test(next) && !PER[next]);
   if ((m = MONEY_AFTER.exec(core))) return money(undefined, m[3], m[1], m[2]);
   if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(core) && core.split('.').every((x) => +x < 256)) return core.split('.').join(' dot ');   // an IP address
@@ -150,11 +158,16 @@ function sayNumber(core: string, prev: string, next: string, s: string, at: numb
     return mo && d <= 31 ? `${MONTHS[mo - 1]} ${d}${th(d)}, ${yearWords(y)}` : undefined;
   }
   if ((m = /^(\d{4})-(\d\d)$/.exec(core)) && +m[2] >= 1 && +m[2] <= 12 && +m[2] <= +m[1].slice(2) && +m[1] > 1900) return `${MONTHS[+m[2] - 1]} ${yearWords(+m[1])}`;
-  if ((m = RANGE.exec(core))) return range(m[1], m[2], m[3], (m[4] ?? '').trim(), next);
+  if ((m = RANGE.exec(core))) {
+    const sum = /[=+*/×÷]\s*$/.test(s.slice(Math.max(0, at - 3), at)) || /^\s*[=+*/×÷]/.test(s.slice(end, end + 3));
+    if (/\d\s[-–—]|[-–—]\s\d/.test(core) && (sum || Number(m[3].replace(/,/g, '')) < Number(m[1].replace(/,/g, '')))) return sum && !m[2] && !m[4] ? `${m[1]} minus ${m[3]}` : undefined;
+    return range(m[1], m[2], m[3], (m[4] ?? '').trim(), next);
+  }
   if ((m = /^(\d{1,2}):(\d\d)(?::(\d\d))?\s?([AaPp])?\.?(?:[Mm]\.?)?$/.exec(core)) && +m[1] < 24 && +m[2] < 60 && (!m[4] || /[mM]/.test(core.slice(-2)))) {
     const mm = +m[2], ampm = m[4] ? ` ${m[4].toUpperCase()}-M` : '';
     const later = /^(am|pm|a|p)$/i.test(next) || /^\s?[ap]\.?m\b/i.test(s.slice(end, end + 5));
-    const min = mm === 0 ? (m[3] ? 'hundred' : ampm || later ? '' : "o'clock") : mm < 10 ? `oh ${mm}` : String(mm);
+    if (mm === 0 && !m[3] && !ampm && !later && +m[1] === 0) return 'midnight';
+    const min = mm === 0 ? (m[3] || (+m[1] >= 13 && !ampm) ? 'hundred' : ampm || later ? '' : "o'clock") : mm < 10 ? `oh ${mm}` : String(mm);
     return `${+m[1]} ${min}`.trim() + (m[3] ? ` ${+m[3] < 10 ? 'oh ' + +m[3] : +m[3]}` : '') + ampm;
   }
   if ((m = /^(\d+):(\d+)$/.exec(core))) return `${m[1]} to ${m[2]}`;                                     // 16:9, 3:1
@@ -165,7 +178,7 @@ function sayNumber(core: string, prev: string, next: string, s: string, at: numb
   }
   if ((m = MAGNITUDE.exec(core))) {                                                                       // 10M users, 250k, 3.5B parameters
     if (/^\d{4}$/.test(m[1]) && /^[kK]$/.test(m[2])) return `${pairs(+m[1])} K`;                         // i5 2500K: a model number
-    const w = magWord(m[2], next);
+    const w = magWord(m[2], next, m[1]);
     return w ? (m[3] ? 'more than ' : '') + `${m[1]} ${w}` : undefined;
   }
   if ((m = UNIT_RE.exec(core))) return withUnit(m[1], m[2] ?? m[3], next);
@@ -211,7 +224,8 @@ function range(a: string, as: string | undefined, b: string, bs: string, next: s
   return `${a}${wa ? ' ' + wa : ''} to ${b}${wb ? ' ' + wb : bs ? ' ' + bs : ''}`;
 }
 /** K and B are said as letters ("64K context", "a 27B model") unless what's counted follows; M and T as words */
-function magWord(mag: string, next: string): string | undefined {
+function magWord(mag: string, next: string, n = ''): string | undefined {
+  if (mag === 'K' && /^\d$/.test(n)) return undefined;                                                 // 4K video, 2K Games
   if (/^(K|k|B|b|m|t)$/.test(mag)) return counts(next) ? MAG[mag] : undefined;
   if (/^(M|T)$/.test(mag) && /^(model|models|MoE|dense|instruct|base|checkpoint|context|ctx|window)$/i.test(next)) return undefined;
   return MAG[mag];
@@ -277,7 +291,7 @@ function word(tok: string, s: string, at: number): string {
   if (w.includes('.')) {
     if (DOTTED[tok]) return DOTTED[tok] + stop;
     if (DOTTED[w]) return DOTTED[w] + dot;
-    if (LEX.has(w)) return LEX.get(w)! + dot;
+    if (LEX.has(w)) return LEX.get(w)! + stop;
     const host = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,})$/i.exec(w);
     const lower = w.toLowerCase();
     if (host && TLDS[host[1].toLowerCase()] !== undefined && !/\.(?:js|ts|py|rs|md|sh|so|pl|go|cc|ai|in)$/i.test(w) && (w === lower || SITES[lower] || /^[A-Z][a-z0-9-]*\.(?:com|org|net|io|dev|app|co|gov|edu)$/.test(w))) return sayHost(w) + dot;
@@ -289,7 +303,7 @@ function word(tok: string, s: string, at: number): string {
     if (host && w === lower && /\.(?:ai|in)$/.test(w)) return sayHost(w) + dot;                       // x.ai, but not a file
     return tok;
   }
-  if (LEX.has(w)) return LEX.get(w)! + dot;
+  if (LEX.has(w)) return LEX.get(w)! + stop;
   if (TITLES[w] && /^\s+[A-Z]/.test(s.slice(end, end + 2))) return TITLES[w];                        // Dr. Smith, St. Louis
   if (ABBR_DOT[w] && (!NEEDS_NUMBER.has(w) || /^\s*\d/.test(s.slice(end, end + 3)) || (w === 'v' && /^\s+[A-Z]/.test(s.slice(end, end + 2))))) return ABBR_DOT[w] + stop;
   const p = plain(w, s, end);
@@ -393,7 +407,7 @@ function split(w: string): string {
 }
 
 // ---------------------------------------------------------------- links
-const AN = /^(?:[AEIO]|U(?!ber|S\b|N\b|nix|niversity)|Nvidia|NVIDIA|X\b|R\b|F\b|H\b|L\b|M\b|N\b|S\b|[FHLMNRSX] [A-Z]\b|[FHLMNRSX][A-Z]+\b|8|11|18)/;
+const AN = /^(?:[AEIOaeio]|U(?!ber|S\b|N\b|nix|niversity)|Nvidia|NVIDIA|X\b|R\b|F\b|H\b|L\b|M\b|N\b|S\b|[FHLMNRSX] [A-Z]\b|[FHLMNRSX][A-Z]+\b|8|11|18)/;
 const article = (name: string) => (AN.test(name) ? 'an' : 'a');
 /** What a link is called aloud. A platform is "a GitHub link"; a known site by its name ("the New York Times"); a
  *  Hacker News item is "another Hacker News thread"; any other site by its spoken host. */
@@ -430,29 +444,36 @@ export class LinkVoice {
     this.seen.set(l.name, n + 1);
     return n && l.platform && /^an? /.test(l.phrase) && l.name !== 'a link' ? l.phrase.replace(/^an? /, 'another ') : l.phrase;
   }
-  /** Links standing alone (a paragraph of nothing else), said together: "A GitHub link.", "A link to the New York
-   *  Times.", "Two links: GitHub and Wikipedia.", "Five links: GitHub, Wikipedia, Reuters and two more." */
-  alone(urls: string[]): string {
+  /** Links standing alone (a paragraph of nothing else), said together as one sentence, one piece per link so each
+   *  placard rises while its name is said: "A GitHub link." / "Two links: Wikipedia," "and N-Y Post dot com." /
+   *  "A GitHub link," "another," "and another." Past six, the rest are counted: "and four more." */
+  alone(urls: string[]): string[] {
     const ls = urls.map(linkName);
-    const again = ls.length === 1 && (this.seen.get(ls[0].name) ?? 0) > 0;
-    for (const l of ls) this.seen.set(l.name, (this.seen.get(l.name) ?? 0) + 1);
+    const said = (l: ReturnType<typeof linkName>, again: boolean) => (!l.platform ? `${again ? 'another link' : 'a link'} to ${l.phrase}`
+      : again && /^an? /.test(l.phrase) && l.name !== 'a link' ? l.phrase.replace(/^an? /, 'another ') : l.phrase);
     if (ls.length === 1) {
-      const l = ls[0];
-      if (!l.platform) return cap(`${again ? 'another link' : 'a link'} to ${l.phrase}`) + '.';
-      return cap(again && /^an? /.test(l.phrase) && l.name !== 'a link' ? l.phrase.replace(/^an? /, 'another ') : l.phrase) + '.';
+      const l = ls[0], again = (this.seen.get(l.name) ?? 0) > 0;
+      this.seen.set(l.name, (this.seen.get(l.name) ?? 0) + 1);
+      return [cap(said(l, again)) + '.'];
     }
-    const N = ls.length < 13 ? cap(ONES[ls.length]) : String(ls.length);
-    const names = [...new Set(ls.map((l) => l.name))];
-    if (names.length === 1) {
-      const l = ls[0];
-      if (l.name === 'another Hacker News thread') return `${N} other Hacker News threads.`;
-      if (l.name === 'a link') return `${N} links.`;
-      if (!l.platform) return `${N} links to ${l.name}.`;
-      return `${N} ${l.phrase === `${article(l.name)} ${l.name} link` ? l.name + ' links' : 'links: ' + l.phrase + ', ' + ONES[ls.length - 1] + ' more'}.`;
+    const same = ls.every((l) => l.name === ls[0].name), n = ls.length, out: string[] = [];
+    const named = new Set<string>();
+    for (let i = 0; i < n; i++) {
+      const l = ls[i], last = i === n - 1 || i === 6;
+      if (i > 6) { out.push(''); continue; }
+      let piece: string;
+      if (i === 6) piece = `${n - 6 < 13 ? ONES[n - 6] : n - 6} more`;
+      else if (same) piece = i === 0 ? said(l, (this.seen.get(l.name) ?? 0) > 0) : 'another';
+      else {
+        const name = l.phrase === `${article(l.name)} ${l.name} link` ? l.name : l.phrase;
+        piece = named.has(l.name) ? said(l, true) : name;
+        if (i === 0) piece = `${n < 13 ? ONES[n] : n} links: ${piece}`;
+      }
+      named.add(l.name);
+      out.push(last && i > 0 ? `and ${piece}.` : `${piece},`);
     }
-    const shown = names.slice(0, 3), rest = ls.length - ls.filter((l) => shown.includes(l.name)).length;
-    const list = rest ? `${shown.join(', ')} and ${rest < 13 ? ONES[rest] : rest} more` : `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
-    return `${N} links: ${list}.`;
+    for (const l of ls) this.seen.set(l.name, (this.seen.get(l.name) ?? 0) + 1);
+    return out.map((p, i) => (i === 0 ? cap(p) : p));
   }
 }
 
@@ -471,14 +492,33 @@ const RE = new RegExp([
   String.raw`(?<![\w.])(?:[A-Za-z]\.){2,}(?:[A-Za-z]\.?)?(?![A-Za-z])|(?<![\w.])Ph\.D\.?|\bet al\.?`,                                // 5 U.S., e.g., a.m.
   // 6 a word that may need saying differently (and its full stop): one with a capital, a digit, a dot or a mark in it,
   // or an abbreviation in lower case. A plain lower-case word ("the") never matches, so most words cost nothing.
-  String.raw`\b(?:(?=[a-z'’-]*[A-Z0-9._#+;])|(?=(?:${LOWER})\b))[A-Za-z][\w'’]*(?:-[\w'’]+)*(?:\.[A-Za-z0-9][\w-]*)*(?:\+\+|#|;DR|;dr|\.(?![A-Za-z0-9]))?`,
-  String.raw`\s?(?:-+>|=+>|→|⟶|⇒|➡|➔)\s?|\s?(?:<-+(?!\d)|←|⟵|⇐)\s?|\s?(?:<-+>|<=>|↔|⇔)\s?`,                                       // 7 arrows
-  String.raw`\s?\[\d{1,3}\]:?|[¹²³⁴⁵⁶⁷⁸⁹⁰]+`,                                                                                  // 8 footnote marks
+  String.raw`\b(?:(?=[a-z'’-]{0,63}[A-Z0-9._#+;])|(?=(?:${LOWER})\b))[A-Za-z][\w'’]*(?:-[\w'’]+)*(?:\.[A-Za-z0-9][\w-]*)*(?:\+\+|#|;DR|;dr|\.(?![A-Za-z0-9]))?`,
+  String.raw`\s?(?:<-{1,9}>|<=>|↔|⇔)\s?|\s?(?:-{1,9}>|={1,9}>|→|⟶|⇒|➡|➔)\s?|\s?(?:<-{1,9}(?![\d>-])|←|⟵|⇐)\s?`,                      // 7 arrows
+  String.raw`\s?\[\d{1,3}\]:?|⁻?[¹²³⁴⁵⁶⁷⁸⁹⁰]+`,                                                                                // 8 footnote marks, superscripts
   String.raw`#\d{1,6}\b`,                                                                                                         // 9 #1
   String.raw`\s–\s|–|[™®†‡•]|(?<!\S)\/s(?=$|[\s.!?,)])|\.NET\b|(?:^|(?<=\s))\*\s|\*\*?(?=\S)|(?<=\S)\*\*?`,                         // 10 symbols
 ].map((r) => `(${r})`).join('|'), 'g');
 
-const SUP = '⁰¹²³⁴⁵⁶⁷⁸⁹';
+// every lookup table without a prototype: a commenter's "constructor" or "toString" is just a word
+for (const t of [MONTH_OF, MAG, CUR, CODE, PER, ORD, FILE_EXT, DOTTED, TITLES, ABBR_DOT, FRACTION, SLASH, PLURAL_NAME, PLURAL_WORDS] as object[]) Object.setPrototypeOf(t, null);
+const SUP = '⁰¹²³⁴⁵⁶⁷⁸⁹', SUP_MINUS = '⁻';
+const ABBR_END = /(?:^|[\s(])(?:e\.g|i\.e|eg|ie|vs|etc|cf|esp|incl|al|approx|Mr|Mrs|Ms|Dr|Prof|St|Jr|Sr|U\.S|a\.m|p\.m)\.\s+$/i;
+/** "[1]" and "¹" are footnote marks, dropped; "argv[1]" is code, kept; "10²⁰" is "10 to the twentieth", "km²" "km squared" */
+function footnote(m: string, s: string, at: number): string {
+  const prev = s.slice(Math.max(0, at - 12), at), next = s.slice(at + m.length, at + m.length + 2);
+  if (m.indexOf('[') >= 0) {
+    const w = /([\w\]]+)$/.exec(prev)?.[1] ?? '';
+    const code = m[0] === '[' && w && (w.endsWith(']') || /[_\d]/.test(w) || w.length <= 4 || /^(?:\[|\.\w|\(|\s?=[^=>])/.test(next));
+    return code ? m : '';
+  }
+  const neg = m[0] === SUP_MINUS, e = +[...(neg ? m.slice(1) : m)].map((c) => SUP.indexOf(c)).join('');
+  if (/\d$/.test(prev)) {                                                                          // after a number: an exponent,
+    if (!neg && (m === '¹' || /(?:^|\D)(?:19|20)\d\d$/.test(prev))) return '';                    // but "2020¹" and "x1¹" are marks
+    return !neg && e === 2 ? ' squared' : !neg && e === 3 ? ' cubed' : ` to the ${neg ? 'minus ' : ''}${e < 100 ? ordinal(e) : e + th(e)}`;
+  }
+  if (/[A-Za-z)]$/.test(prev) && !neg && (e === 2 || e === 3)) return e === 2 ? ' squared' : ' cubed';   // x², km³
+  return '';
+}
 export interface Voicing { link?: () => string }
 /** One sentence (or any run of text), as it should be said. */
 export function spoken(text: string, o: Voicing = {}): string {
@@ -488,13 +528,14 @@ export function spoken(text: string, o: Voicing = {}): string {
     if (r !== m) changed = true;
     return r;
   });
-  return changed ? out.replace(/ {2,}/g, ' ').replace(/ ([,.!?;:])(?![A-Za-z0-9])/g, '$1').replace(/[,;:](?= ?[,;:.!?])/g, '').replace(/^[\s,;:]+/, '') : out;
+  return changed ? out.replace(/ {2,}/g, ' ').replace(/ ([,.!?;:])(?![A-Za-z0-9])/g, '$1').replace(/[,;:](?= ?[,;.!?]| :)/g, '').replace(/^[\s,;:]+/, '').replace(/ +$/, '') : out;
 }
 function say1(m: string, link: string, code: string, num: string, slash: string, dotted: string, w: string, arrow: string, foot: string, hash: string, sym: string, at: number, s: string, o: Voicing): string {
   {
     if (link !== undefined) {
       const l = o.link ? o.link() : m.slice(1, -1);
-      return at === 0 || /[.!?]["'”’)\]]?\s+$/.test(s.slice(Math.max(0, at - 4), at)) ? l.charAt(0).toUpperCase() + l.slice(1) : l;
+      const opens = at === 0 || (/[.!?]["'”’)\]]?\s+$/.test(s.slice(Math.max(0, at - 4), at)) && !ABBR_END.test(s.slice(Math.max(0, at - 10), at)));
+      return opens ? l.charAt(0).toUpperCase() + l.slice(1) : l;
     }
     if (code !== undefined) return m.slice(1, -1).replace(/^`|`$/g, '');
     if (num !== undefined) return numeric(m, s, at);
@@ -506,13 +547,12 @@ function say1(m: string, link: string, code: string, num: string, slash: string,
     }
     if (w !== undefined) return word(m, s, at);
     if (arrow !== undefined) return /(?:<-+>|<=>|↔|⇔)/.test(m) ? ' and ' : /(?:<-|←|⟵|⇐)/.test(m) ? ' from ' : ' to ';
-    if (foot !== undefined) {
-      if (!/\d$/.test(s.slice(Math.max(0, at - 1), at)) || m[0] === '[' || m[0] === ' ') return '';
-      const e = +[...m].map((c) => SUP.indexOf(c)).join('');                                        // 10²⁰: an exponent
-      return e === 2 ? ' squared' : e === 3 ? ' cubed' : ` to the ${e < 100 ? ordinal(e) : e + th(e)}`;
-    }
+    if (foot !== undefined) return footnote(m, s, at);
     if (hash !== undefined) return `number ${m.slice(1)}`;
-    if (sym !== undefined) return m === ' – ' ? ' — ' : m === '–' ? '-' : m === '.NET' ? 'dot net' : '';
+    if (sym !== undefined) {
+      if (m.trim()[0] === '*' && /\d\s?$/.test(s.slice(Math.max(0, at - 2), at)) && /^\s?\d/.test(s.slice(at + m.length, at + m.length + 2))) return ' times ';
+      return m === ' – ' ? ' — ' : m === '–' ? '-' : m === '.NET' ? 'dot net' : '';
+    }
     return m;
   }
 }

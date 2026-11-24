@@ -56,12 +56,14 @@ badly it was said:
     com", "BBC dot co dot U-K". A domain is the publication's name, and the placard shows it, so it is said, not
     rebranded. In a sentence it is just the name ("see N-Y Post dot com for details"); standing alone it needs a noun:
     "A link to N-Y Post dot com." "A link" was kept there: shorter forms ("N-Y Post dot com.") sound like a stray word.
-  - several in a row are said once: "Three links: Wikipedia, YouTube and N-Y Post dot com."; a repeat is "another
-    GitHub link"; an IP address or a very long host is "a link"; a subdomain is dropped ("static-assets-1.truthsocial.com"
+  - several in a row are one sentence, a piece per link, so each placard rises while its name is said: "Three links:
+    GitHub," "Wikipedia," "and N-Y Post dot com."; the same site again is "another" ("A GitHub link, another, and
+    another."); an IP address or a very long host is "a link"; a subdomain is dropped ("static-assets-1.truthsocial.com"
     is "truth social dot com").
-- **Code and marks:** fenced code is "Here's 5 lines of code."; inline code is read (espeak splits identifiers);
-  footnote marks [1], bullets, ** and * are dropped; arrows are "to"; "#1" is "number 1"; a quote of the parent is
-  replayed in the parent's voice, any other quote is "Quote: … End quote."
+- **Code and marks:** fenced code is "Here's 5 lines of code."; inline code is read (espeak splits identifiers), and
+  so is code's "argv[1]" or "$1"; footnote marks ("[1]", "¹"), bullets and markdown stars are dropped, but "2*3" is
+  "2 times 3", "10²⁰" "10 to the twentieth", "km²" "kilometers squared"; arrows are "to"; "#1" is "number 1"; a quote
+  of the parent is replayed in the parent's voice, any other quote is "Quote: … End quote."
 
 Anything it isn't sure of is left as written for the engine. Other scripts are untouched.
 
@@ -87,6 +89,11 @@ espeak before adding it to `spoken-data.ts`.
 
 A say or quote segment's `text` has one spoken line per sentence of its `display`, split by `sentences` (speakable.ts),
 which `sentences` in worker.py must match exactly; the runner packs clips by what is said and subtitles each with the
-same sentences as written. A link segment's `say` is what is said for it where it stands alone ('' when it was said in
-its sentence). Audio already voiced keeps its old reading until it is voiced again (a `VOICE_VERSION` bump re-voices
-everything in the background).
+same sentences as written. A link segment's `say` is its piece of what is said for links standing alone ('' when it was said in its
+sentence); the runner gives each piece its own clip, shown as the link's URL, and the client raises a link's placard
+while a clip whose subtitle is its URL, or contains its text, plays. `VOICE_VERSION` is v3 for this change: towerd
+re-voices what's wanted in the background, and the old audio plays until the new lands, so no comment resumes half old
+and half new.
+
+Every lookup table has no prototype (a commenter's "constructor" is just a word), and every pattern is bounded, so a
+hostile 100,000-character comment costs milliseconds (`spoken.test.ts` keeps both true).
