@@ -1,13 +1,17 @@
 // Speakability: HN comment HTML -> what we voice and what we show.
-// The rule is "verbatim words": nothing a person wrote is paraphrased.
-// Only things that cannot be spoken become objects in the scene
-// (links -> placards, code -> chalk on the table) and quotes of the parent
-// become references, so the client can replay the parent's own voice.
+// The rule is "verbatim words": nothing a person wrote is paraphrased. What is written but not said that way is said
+// the way a person would say it (spoken.ts: "$1.2T" is "1.2 trillion dollars", a link is the site it goes to).
+// Code becomes an object in the scene (chalk on the table), and quotes of the parent become references, so the
+// client can replay the parent's own voice.
+
+import { spoken, LinkVoice } from './spoken.ts';
 
 export type Segment =
+  /** text: what is said, one line per sentence of `display` (the voice and the subtitles stay in step) */
   | { kind: 'say'; text: string; display: string }
   | { kind: 'quote'; text: string; display: string; of?: number }
-  | { kind: 'link'; url: string; domain: string; text: string }
+  /** say: what is said for it where it stands alone ('' when it was said where it stood, or with the links before it) */
+  | { kind: 'link'; url: string; domain: string; text: string; say?: string }
   | { kind: 'code'; code: string; lines: number; text: string };
 
 export interface Speakable {
@@ -18,58 +22,102 @@ export interface Speakable {
   spokenChars: number;
 }
 
-/** Pronunciation respellings for words TTS models get wrong. Grows over time; reviewed once, reused forever. */
-export const LEXICON: Record<string, string> = {
-  nginx: 'engine-x', Nginx: 'Engine-x', NGINX: 'Engine-x', kubectl: 'kube-control', k8s: 'kubernetes', K8s: 'Kubernetes',
-  SQLite: 'S-Q-Lite', PostgreSQL: 'Postgres-Q-L', MySQL: 'My-S-Q-L', NoSQL: 'No-S-Q-L', GraphQL: 'Graph-Q-L', SQL: 'S-Q-L',
-  UB: 'U.B.', CVE: 'C.V.E.', LLM: 'L.L.M.', LLMs: 'L.L.M.s', YC: 'Y.C.', HN: 'H.N.', SaaS: 'sass', OAuth: 'Oh-auth',
-  JSON: 'Jason', YAML: 'yammel', TOML: 'tommel', GIF: 'gif', CLI: 'C.L.I.', GUI: 'gooey', IDE: 'I.D.E.', API: 'A.P.I.', APIs: 'A.P.I.s',
-  ssh: 'S.S.H.', SSH: 'S.S.H.', sudo: 'soo-doo', vim: 'vim', Wasm: 'wazm', WASM: 'wazm', WebGPU: 'Web G.P.U.', GPU: 'G.P.U.', GPUs: 'G.P.U.s',
-  CPU: 'C.P.U.', CPUs: 'C.P.U.s', eBPF: 'E.B.P.F.', CUDA: 'cooda', SIMD: 'sim-D', x86: 'x eighty-six', ARM64: 'arm sixty-four',
-  'RISC-V': 'risk five', iOS: 'eye-O.S.', macOS: 'mac-O.S.', GNU: 'guh-new', LaTeX: 'lah-tek', TeX: 'tek', PyPI: 'pie-P.I.',
-  npm: 'N.P.M.', pnpm: 'P.N.P.M.', uv: 'U.V.', Deno: 'dee-no', ffmpeg: 'F.F.mpeg', systemd: 'system-D', regex: 'rej-ex',
-  'C++': 'C plus plus', 'C#': 'C sharp', 'F#': 'F sharp', '.NET': 'dot net', AWS: 'A.W.S.', GCP: 'G.C.P.', TLS: 'T.L.S.',
-  IIRC: 'if I recall correctly', AFAIK: 'as far as I know', IMO: 'in my opinion', IMHO: 'in my humble opinion', TFA: 'the article',
-  YMMV: 'your mileage may vary', FWIW: 'for what it\'s worth', TIL: 'today I learned', IANAL: 'I am not a lawyer', OP: 'O.P.',
-  TBH: 'to be honest', LOL: 'L.O.L.', ICYMI: 'in case you missed it',
-};
-
 const ENTITIES: Record<string, string> = { '&gt;': '>', '&lt;': '<', '&amp;': '&', '&quot;': '"', '&#x27;': "'", '&#39;': "'", '&#x2F;': '/', '&nbsp;': ' ' };
 const decode = (s: string) => s.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m) => ENTITIES[m] ?? (m.startsWith('&#x') ? String.fromCodePoint(parseInt(m.slice(3, -1), 16)) : m.startsWith('&#') ? String.fromCodePoint(parseInt(m.slice(2, -1), 10)) : m));
-const esc = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const LEX_RE = new RegExp(`(?<![\\w-])(${Object.keys(LEXICON).sort((a, b) => b.length - a.length).map(esc).join('|')})(?![\\w+#-])`, 'g');
-
-export function respell(text: string): string {
-  return text
-    .replace(/\bCVE-(\d{4})-(\d+)/g, 'C.V.E. $1, $2')
-    .replace(LEX_RE, (w) => LEXICON[w] ?? w);
-}
 
 function domainOf(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return 'a link'; }
 }
 
-/** Inline HTML of one paragraph -> spoken text, display text, and link objects found in it. */
-function inline(htmlPara: string, links: Segment[]): { spoken: string; display: string } {
-  let spoken = '', display = '';
+/**
+ * Sentences as the voice runner splits a segment's display text (worker.py `sentences`, kept identical): a full
+ * stop, question or exclamation mark, then a space and a capital, digit, bracket or quote. Common abbreviations
+ * don't end one.
+ */
+const PROTECT = /\b(e\.g|i\.e|eg|ie|vs|etc|cf|esp|incl|al|Mr|Mrs|Ms|Dr|Prof|St|Jr|Sr|approx|U\.S|a\.m|p\.m)\./g;
+const SPLIT = /(?<=[.!?])\s+(?=[A-Z0-9("'])/;
+export function sentences(text: string): string[] {
+  return text.replace(PROTECT, (m) => m.replace(/\./g, '․')).split(SPLIT).map((p) => p.replace(/․/g, '.').trim()).filter(Boolean);
+}
+/** [start, end) of each sentence of `d` (as `sentences` splits it) */
+function spans(d: string): [number, number][] {
+  const out: [number, number][] = [];
+  const t = d.replace(PROTECT, (m) => m.replace(/\./g, '․')), re = new RegExp(SPLIT.source, 'g');
+  let a = 0;
+  for (let m; (m = re.exec(t));) { out.push([a, m.index]); a = m.index + m[0].length; }
+  out.push([a, d.length]);
+  return out.filter(([x, y]) => d.slice(x, y).trim());
+}
+
+// Markers (private-use characters) carry what a paragraph knows into its text: a link and its anchor text, emphasis,
+// code. The display is the text without them; the spoken form is made from the text with them.
+const LINK = '\uE000', LINK_END = '\uE001', EM = '\uE002', EM_END = '\uE003', CODE = '\uE004', CODE_END = '\uE005';
+
+/** Inline HTML of one paragraph -> its text with markers, the display text, and the links found in it. */
+function inline(htmlPara: string, links: Extract<Segment, { kind: 'link' }>[]) {
+  let raw = '';
   const re = /<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>|<i>([\s\S]*?)<\/i>|<code>([\s\S]*?)<\/code>|<[^>]+>|([^<]+)/g;
+  const clean = (t: string) => t.replace(/[\uE000-\uE005]/g, '');
   for (let m; (m = re.exec(htmlPara));) {
     if (m[1] !== undefined) {
-      const url = decode(m[1]), d = domainOf(url);
-      links.push({ kind: 'link', url, domain: d, text: decode(m[2].replace(/<[^>]+>/g, '')) });
-      spoken += ` (link: ${d}) `; display += decode(m[2].replace(/<[^>]+>/g, ''));
+      const url = decode(m[1]), text = decode(m[2].replace(/<[^>]+>/g, ''));
+      links.push({ kind: 'link', url, domain: domainOf(url), text });
+      raw += LINK + clean(text) + LINK_END;
     } else if (m[3] !== undefined) {                       // HN italics are how people emphasise
-      const t = decode(m[3].replace(/<[^>]+>/g, ''));
-      spoken += `(((${t})))`; display += t;
+      // a link inside italics is still a link: its own marks, inside the emphasis
+      const inner = clean(m[3]).replace(/<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g, (_a, href: string, txt: string) => {
+        const url = decode(href), text = decode(txt.replace(/<[^>]+>/g, ''));
+        links.push({ kind: 'link', url, domain: domainOf(url), text });
+        return LINK + text + LINK_END;
+      });
+      raw += EM + decode(inner.replace(/<[^>]+>/g, '')) + EM_END;
     } else if (m[4] !== undefined) {
-      const t = decode(m[4]);
-      spoken += t.split(/\s+/).length <= 4 ? t : ' this snippet '; display += t;
+      raw += CODE + clean(decode(m[4])) + CODE_END;
     } else if (m[5] !== undefined) {
-      const t = decode(m[5]);
-      spoken += t.replace(/`([^`]{1,40})`/g, '$1'); display += t;
+      raw += clean(decode(m[5])).replace(/`([^`\n]{1,40})`/g, `${CODE}\`$1\`${CODE_END}`);
     }
   }
-  return { spoken: spoken.replace(/\s+/g, ' ').trim(), display: display.replace(/\s+/g, ' ').trim() };
+  // whitespace (as JavaScript or Python reads it: the runner splits sentences in Python) becomes single spaces, and
+  // where markers meet a space, what closes goes before it and what opens after it ("(((ever))) helped"), so the
+  // display (the text without them) never has two spaces in a row
+  const marked = raw.replace(/[\s\x1c-\x1f\x85]+/g, ' ').replace(/ ?((?:[\uE000-\uE005] ?)*[\uE000-\uE005]) ?/g, (m, k: string) => {
+    if (!m.includes(' ') || /[\uE000\uE002\uE004][^\uE001\uE003\uE005]*[\uE001\uE003\uE005]/.test(k)) return m;
+    return k.replace(/[ \uE000\uE002\uE004]/g, '') + ' ' + k.replace(/[ \uE001\uE003\uE005]/g, '');
+  }).replace(/^ /, '').replace(/ $/, '');
+  return { marked, display: marked.replace(/[\uE000-\uE005]/g, '') };
+}
+
+const isMark = (c: number) => c >= 0xe000 && c <= 0xe005;
+const opens = (c: number) => c === 0xe000 || c === 0xe002 || c === 0xe004;
+const closes = (c: number) => c === 0xe001 || c === 0xe003 || c === 0xe005;
+/** A paragraph's sentences, said: one line per sentence of its display (from `from`, past a quote's "> "). */
+function say(marked: string, display: string, from: number, voice: LinkVoice, urls: string[]): string {
+  const lines: string[] = [];
+  let mi = 0, di = 0;                                       // a cursor through the marked text and the display together
+  const pos = (d: number) => {                               // where display[d] sits in the marked text (d only grows)
+    for (;;) {
+      while (mi < marked.length && isMark(marked.charCodeAt(mi))) mi++;
+      if (di === d) return mi;
+      mi++; di++;
+    }
+  };
+  for (const [a, b] of spans(display.slice(from))) {
+    let x = pos(from + a);
+    const last = pos(from + b - 1);
+    let y = last + 1;
+    while (x > 0 && opens(marked.charCodeAt(x - 1))) x--;  // a link or emphasis opening right before goes with it
+    while (y < marked.length && closes(marked.charCodeAt(y))) y++;
+    let m = marked.slice(x, y);
+    if (m.indexOf(EM) >= 0 || m.indexOf(EM_END) >= 0) {     // emphasis a sentence break cut in two: closed and reopened
+      const o = m.split(EM).length - 1, c = m.split(EM_END).length - 1;
+      if (c > o || (c === o && m.indexOf(EM_END) < m.indexOf(EM))) m = EM + m;
+      if (m.split(EM).length > m.split(EM_END).length) m += EM_END;
+    }
+    const t = spoken(m, { link: () => voice.inline(urls.shift() ?? '') });
+    const u = t.indexOf(EM) < 0 && t.indexOf(EM_END) < 0 ? t : t.replaceAll(EM, '(((').replaceAll(EM_END, ')))');
+    lines.push((/[\uE000-\uE005]|\s\s/.test(u) ? u.replace(/[\uE000-\uE005]/g, '').replace(/\s+/g, ' ') : u).trim() || '…');
+  }
+  return lines.join('\n');
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -81,44 +129,60 @@ export function quotes(quote: string, parentText: string): boolean {
   return q.filter((w) => p.has(w)).length / q.length >= 0.8;
 }
 
+/** a paragraph that is nothing but links (and footnote marks, bullets, numbering): its links stand alone */
+const bare = (marked: string) => !marked.replace(/\uE000[^\uE001]*\uE001/g, '').replace(/[\uE002-\uE005]/g, '')
+  .replace(/\[\d{1,3}\]|^\s*(?:\d{1,2}[.):]|[-*•])/g, '').replace(/[\s()<>\[\]:;,.\-–—*•|^]+/g, '');
+
 export function speakable(html: string, parent?: { id: number; text: string }): Speakable {
   const segments: Segment[] = [];
+  const voice = new LinkVoice();
+  let alone: Extract<Segment, { kind: 'link' }>[] = [];
+  const flush = () => {                                     // links standing alone in a row: said together, once
+    if (!alone.length) return;
+    const says = voice.alone(alone.map((l) => l.url));
+    alone.forEach((l, i) => (l.say = says[i] ?? ''));
+    alone = [];
+  };
   const blocks = html.split(/(<pre><code>[\s\S]*?<\/code><\/pre>)/);
   const parentPlain = parent ? decode(parent.text.replace(/<[^>]+>/g, ' ')) : '';
   for (const block of blocks) {
     if (!block) continue;
     const pre = block.match(/^<pre><code>([\s\S]*?)<\/code><\/pre>$/);
     if (pre) {
+      flush();
       const code = decode(pre[1]).replace(/\n+$/, '');
       const lines = code.split('\n').length;
       segments.push({ kind: 'code', code, lines, text: lines === 1 ? 'one line of code' : `${lines} lines of code` });
       continue;
     }
     for (const para of block.split(/<p>/)) {
-      const links: Segment[] = [];
-      const { spoken, display } = inline(para, links);
+      const links: Extract<Segment, { kind: 'link' }>[] = [];
+      const { marked, display } = inline(para, links);
       if (!display && !links.length) continue;
+      if (links.length && bare(marked)) { alone.push(...links); segments.push(...links); continue; }
+      flush();
+      const urls = links.map((l) => l.url);
       const isQuote = /^(>|“|")/.test(display) && display.length > 3;
       if (isQuote && display.startsWith('>')) {
-        const text = display.replace(/^>\s*/, '');
+        const from = /^>\s*/.exec(display)![0].length, text = display.slice(from);
         const of = parent && quotes(text, parentPlain) ? parent.id : undefined;
-        segments.push({ kind: 'quote', text: respell(spoken.replace(/^>\s*/, '')), display: text, of });
-      } else if (spoken.replace(/\(link: [^)]+\)/g, '').trim() === '' && links.length) {
-        segments.push(...links);                            // a bare link: just the placard
-        continue;
+        let said = say(marked, display, from, voice, urls);
+        if (of === undefined) {                             // in their own voice: say it's a quote, and where it ends
+          const prev = segments[segments.length - 1];
+          if (prev?.kind === 'quote' && prev.of === undefined) prev.text = prev.text.replace(/ End quote\.$/, '');
+          else said = 'Quote: ' + said;
+          said += ' End quote.';
+        }
+        segments.push({ kind: 'quote', text: said, display: text, of });
       } else {
-        segments.push({ kind: 'say', text: respell(spoken), display });
+        segments.push({ kind: 'say', text: say(marked, display, 0, voice, urls), display });
       }
+      for (const l of links) l.say = '';                    // said where it stood
       segments.push(...links);
     }
   }
+  flush();
   const display = segments.map((s) => (s.kind === 'say' || s.kind === 'quote' ? (s.kind === 'quote' ? '> ' : '') + s.display : s.kind === 'code' ? s.code : s.url)).join('\n\n');
-  const spokenChars = segments.reduce((n, s) => n + (s.kind === 'say' || (s.kind === 'quote' && s.of === undefined) ? s.text.length : s.kind === 'code' ? s.text.length : 0), 0);
+  const spokenChars = segments.reduce((n, s) => n + (s.kind === 'say' || (s.kind === 'quote' && s.of === undefined) ? s.text.length : s.kind === 'code' ? s.text.length : s.kind === 'link' ? (s.say ?? '').length : 0), 0);
   return { segments, display, spokenChars };
-}
-
-/** Sentences of a 'say' segment, for per-sentence emotion tags. Conservative about abbreviations. */
-export function sentences(text: string): string[] {
-  const parts = text.replace(/\b(e\.g|i\.e|vs|etc|approx|cf|Mr|Ms|Dr|U\.S)\./g, (m) => m.replace(/\./g, '․')).split(/(?<=[.!?])\s+(?=[A-Z0-9("'])/);
-  return parts.map((p) => p.replace(/․/g, '.').trim()).filter(Boolean);
 }

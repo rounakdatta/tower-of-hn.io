@@ -142,7 +142,10 @@ def heuristic_tag(text):
 
 
 def sentences(text):
-    t = re.sub(r"\b(e\.g|i\.e|vs|etc|cf|Mr|Ms|Dr)\.", lambda m: m.group(0).replace(".", "․"), text)
+    """A text's sentences, split exactly as towerd splits a segment's display (packages/core speakable.ts `sentences`):
+    towerd sends one spoken line per sentence of it, so what is shown is what is being said."""
+    # ASCII word boundaries, as JavaScript's: "Montréal." is protected the same way on both sides
+    t = re.sub(r"\b(e\.g|i\.e|eg|ie|vs|etc|cf|esp|incl|al|Mr|Mrs|Ms|Dr|Prof|St|Jr|Sr|approx|U\.S|a\.m|p\.m)\.", lambda m: m.group(0).replace(".", "․"), text, flags=re.ASCII)
     return [p.replace("․", ".").strip() for p in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(\"'])", t) if p.strip()]
 
 
@@ -154,7 +157,7 @@ def chunk(sents, limit=220, first=None):
         if out:
             limit = full
         while len(s) > limit:
-            cut = max(s.rfind(", ", 0, limit), s.rfind(" ", 0, limit))
+            cut = cut_point(s, limit)
             cut = cut if cut > 40 else limit
             if cur:
                 out.append(cur)
@@ -173,23 +176,80 @@ def chunk(sents, limit=220, first=None):
     return out
 
 
+def cut_point(s, limit):
+    """Where to end a clip that must stop before `limit`: after a comma in the last 40% of the window, else the last space."""
+    c = s.rfind(", ", 0, limit)
+    return c if c >= limit * 0.6 else s.rfind(" ", 0, limit)
+
+
+def cut_at(t, share, comma=False):
+    """Where to cut written text at about this share of its length: the nearest space; when the spoken text was cut at
+    a comma, the comma nearest that share (within a sixth of the text), so the subtitle ends where the voice pauses."""
+    i = round(len(t) * share)
+    if i <= 0 or i >= len(t):
+        return max(0, min(len(t), i))
+    if comma:
+        commas = [x for x in (t.rfind(", ", 0, i + 1), t.find(", ", i)) if x > 0 and abs(x + 1 - i) <= len(t) / 6]
+        if commas:
+            return min(commas, key=lambda x: abs(x + 1 - i)) + 2
+    spaces = [x for x in (t.rfind(" ", 0, i), t.find(" ", i)) if x > 0]
+    return min(spaces, key=lambda x: abs(x - i)) + 1 if spaces else i
+
+
+def chunk_pairs(pairs, limit=220, first=None):
+    """chunk(), for (spoken, written) sentence pairs: packed by what is said, and each clip shows the same sentences as
+    written. A sentence too long for one clip is cut where chunk() cuts it, and its written form at the same share."""
+    full, out, cur, shown = limit, [], "", ""
+    limit = first or full
+    for s, t in pairs:
+        if out:
+            limit = full
+        while len(s) > limit:
+            cut = cut_point(s, limit)
+            cut = cut if cut > 40 else limit
+            if cur:
+                out.append((cur, shown))
+                cur = shown = ""
+            k = cut_at(t, (cut + 1) / len(s), comma=s[cut] == ",")
+            out.append((s[:cut + 1].strip(), t[:k].strip() or s[:cut + 1].strip()))
+            s, t = s[cut + 1:].strip(), t[k:].strip()
+            limit = full
+        if cur and len(cur) + 1 + len(s) > limit:
+            out.append((cur, shown))
+            cur, shown = s, t
+            limit = full
+        else:
+            cur, shown = (cur + " " + s).strip(), (shown + " " + t).strip()
+    if cur:
+        out.append((cur, shown or cur))
+    return out
+
+
+def said(s, first=None):
+    """A say or quote segment's clips, [(spoken, shown)]. towerd sends one spoken line per written sentence ($1.2T is
+    "1.2 trillion dollars", a link is the site it goes to), so a clip shows the words it says, as they were written."""
+    spoken, written = s["text"].split("\n"), sentences(s["display"])
+    if len(spoken) == len(written):
+        return chunk_pairs(zip(spoken, written), first=first)
+    a, b = chunk(sentences(s["text"]), first=first), chunk(written, first=first)     # (from an older towerd)
+    return list(zip(a, b)) if len(a) == len(b) else [(x, x) for x in a]
+
+
 def plan_clips(job):
     """[(spoken text, display text, who)] in order; quotes of the parent are spoken by the parent."""
     clips = []
     for s in job["segments"]:
         k = s["kind"]
         if k == "say":
-            first = None if clips else 110
-            spoken, shown = chunk(sentences(s["text"]), first=first), chunk(sentences(s["display"]), first=first)
-            if len(spoken) != len(shown):
-                shown = spoken
-            clips += [(a, b, job["by"]) for a, b in zip(spoken, shown)]
+            clips += [(a, b, job["by"]) for a, b in said(s, None if clips else 110)]
         elif k == "quote":
             who = (job.get("parentBy") or job["by"]) if s.get("of") else job["by"]
-            for a in chunk(sentences(s["text"])):
-                clips.append((a, "“" + a + "”", who or job["by"]))
+            clips += [(a, "“" + b + "”", who or job["by"]) for a, b in said(s)]
         elif k == "link":
-            clips.append((f"Link: {s['domain']}.", s["url"], job["by"]))
+            # what towerd says for a link standing alone ("A GitHub link."), '' when it was said in its sentence or with
+            # the links before it
+            say = s.get("say", f"Link: {s['domain']}.")
+            clips.append((say, s["url"], job["by"]))
         elif k == "code":
             clips.append((f"Here's {s['text']}.", s["code"][:300], job["by"]))
     return [c for c in clips if c[0].strip()]
@@ -410,7 +470,7 @@ def voice_job(c, kokoro, voices, oai, conns, runner):
         if tags:
             emotion, stance, intensity, cues = tags["e"], tags["s"], float(tags["i"]), list(tags["c"])
         else:
-            emotion, stance, intensity, cues = heuristic_tag(" ".join(s.get("text", "") for s in j["segments"]))
+            emotion, stance, intensity, cues = heuristic_tag(" ".join(s.get("display") or s.get("text", "") for s in j["segments"]))
         clips_out, total, start = [], 0.0, 0
 
     def sidecar(nxt=None):

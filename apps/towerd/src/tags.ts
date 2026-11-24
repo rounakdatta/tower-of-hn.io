@@ -8,12 +8,13 @@ export const CUES = ['question', 'uncertain', 'joke', 'sarcasm', 'frustrated', '
 export interface Tag { e: string; s: string; i: number; c: string[] }
 export interface Taggable {
   id: number; by: string; parentBy?: string; parentSaid?: string; back?: boolean;
-  segments: { kind: string; text?: string }[];
+  segments: { kind: string; text?: string; display?: string }[];
 }
 
 export function tagPrompt(batch: Taggable[]) {
   const lines = batch.map((j) => {
-    const said = j.segments.filter((s) => s.kind === 'say' || s.kind === 'quote').map((s) => s.text ?? '').join(' ').slice(0, 600);
+    // the words as written: the spoken forms ("L-L-Ems", "1.2 trillion dollars") are for the voice, not the judge
+    const said = j.segments.filter((s) => s.kind === 'say' || s.kind === 'quote').map((s) => s.display ?? s.text ?? '').join(' ').slice(0, 600);
     const to = j.parentBy;
     const who = j.back && to ? `${j.by} replying back to ${to} (who had answered ${j.by})` : `${j.by} replying to ${to || 'the story'}`;
     const ctx = j.parentSaid ? ` [answering: "${j.parentSaid.slice(0, 200)}"]` : '';

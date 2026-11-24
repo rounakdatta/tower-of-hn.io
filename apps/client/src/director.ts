@@ -429,7 +429,9 @@ export class Director {
     const turn = s.turn;
     this.ui.subtitle({ name, to, text: s.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: s.side.emotion, stance: s.side.stance, intensity: s.side.intensity,
       you: this.isMe(name), onWho: () => this.onWho(name, turn.by === name ? turn.id : undefined) });
-    const link = s.side.links.find((l) => l.url === s.clip.t);
+    // a link said where it stood rides on its sentence's clip (shown as written, with the link's text in it); one standing
+    // alone has a clip of its own, shown as its URL
+    const link = s.side.links.find((l) => l.url === s.clip.t || (!!l.text && s.clip.t.includes(l.text)));
     this.ui.placard(link ? { url: link.url, domain: link.domain, at: this.crowd.headPos(s.who) } : null);
     this.ui.code(s.side.code.find((c) => c.startsWith(s.clip.t.slice(0, 40))) ?? null);
     // pick a shot

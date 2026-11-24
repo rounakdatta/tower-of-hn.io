@@ -35,7 +35,8 @@ const FLOORS = 30;
 const PRE = { floors: Number(process.env.PREWARM_FLOORS ?? 6), tables: Number(process.env.PREWARM_TABLES ?? 4), turns: Number(process.env.PREWARM_TURNS ?? 14), bar: Number(process.env.PREWARM_BAR ?? 6) };
 const MAX_QUEUED = 48;                               // the most urgent of what's wanted, for runners to claim
 /** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
-const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v2';
+// v3: comments are said the way people read them aloud (packages/core spoken.ts); older audio plays until re-voiced
+const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v3';
 const STATIC = resolve(process.env.STATIC ?? join(import.meta.dirname, '../../client/dist'));
 const RETENTION_DAYS = Math.max(1, Number(process.env.RETENTION_DAYS) || 14);
 const AUDIO_POLICY = ['tower', 'tower-dry'].includes(process.env.AUDIO_POLICY ?? '') ? process.env.AUDIO_POLICY! : 'age';

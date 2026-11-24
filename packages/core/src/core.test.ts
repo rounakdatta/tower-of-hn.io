@@ -1,21 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { speakable, respell, quotes, sentences } from './speakable.ts';
+import { speakable, quotes, sentences } from './speakable.ts';
 import { playOrder, seat, voiceFor } from './conversation.ts';
 
-test('verbatim words, jargon respelled', () => {
+test('verbatim words, said the way people say them', () => {
   const s = speakable('Just another set of examples of programmers who are bad at C.<p>EDIT: this is UB in nginx, see CVE-2026-123007.');
   assert.equal(s.segments.length, 2);
   assert.deepEqual(s.segments.map((x) => x.kind), ['say', 'say']);
-  assert.match((s.segments[1] as any).text, /U\.B\. in engine-x, see C\.V\.E\. 2026, 123007\./);
+  assert.equal((s.segments[1] as any).text, 'EDIT: this is U-B in nginx, see C-V-E twenty twenty-six, 123007.');
   assert.match(s.display, /EDIT: this is UB in nginx/);            // subtitles keep what they wrote
 });
 
-test('a bare link becomes a placard, not speech', () => {
+test('a bare link becomes a placard, said as where it goes', () => {
   const s = speakable('The patch seems like a bug that can happen anywhere<p><a href="https:&#x2F;&#x2F;github.com&#x2F;nginx&#x2F;nginx&#x2F;commit&#x2F;e27f5f" rel="nofollow">https:&#x2F;&#x2F;github.com&#x2F;nginx&#x2F;nginx&#x2F;commit&#x2F;e27f5f</a>');
   assert.deepEqual(s.segments.map((x) => x.kind), ['say', 'link']);
   assert.equal((s.segments[1] as any).domain, 'github.com');
   assert.equal((s.segments[1] as any).url, 'https://github.com/nginx/nginx/commit/e27f5f');
+  assert.equal((s.segments[1] as any).say, 'A GitHub link.');
 });
 
 test('italics become spoken emphasis; code goes on the table', () => {
@@ -33,13 +34,10 @@ test('a quote of the parent is recognised so its own voice can replay it', () =>
   assert.ok(!quotes('something entirely different here', parent.text));
 });
 
-test('respell leaves words that merely contain a lexicon entry alone', () => {
-  assert.equal(respell('JSONB columns and a json-schema'), 'JSONB columns and a json-schema');
-  assert.equal(respell('Use SQLite, not MySQL.'), 'Use S-Q-Lite, not My-S-Q-L.');
-});
 
 test('sentences survive abbreviations', () => {
   assert.deepEqual(sentences('Use a lexicon, e.g. for nginx. Then test it. Done!'), ['Use a lexicon, e.g. for nginx.', 'Then test it.', 'Done!']);
+  assert.deepEqual(sentences('Some (eg. Rust) do. Others not.'), ['Some (eg. Rust) do.', 'Others not.']);
 });
 
 test('play order: depth-first, quick replies, a beat when backtracking; dead comments skipped but their replies kept', () => {
