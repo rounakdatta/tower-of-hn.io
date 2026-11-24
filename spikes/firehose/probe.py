@@ -10,7 +10,7 @@ import json, os, sys, time, threading, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 API = "https://hacker-news.firebaseio.com/v0"
-UA = {"User-Agent": "towerofhan-firehose-probe/0.1"}
+UA = {"User-Agent": "towerofhn-firehose-probe/0.1"}
 
 
 def get(path, timeout=10):

@@ -1,4 +1,4 @@
-# TowerOfHan.io: data plane, delivery and cost model
+# Tower of HN: data plane, delivery and cost model
 
 Research date: 19 Nov 2026 (IST; live probes ran 18 Nov from 19:34 UTC for about 1.5 hours). Everything price- or limit-shaped was read on a live first-party page that day unless tagged otherwise. Source IDs in square brackets resolve to the table in Appendix A, with the URL and the date read.
 

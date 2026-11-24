@@ -6,7 +6,7 @@ import { speakable, type Segment } from '../../../packages/core/src/speakable.ts
 import { playOrder, seat, voiceFor, type Node } from '../../../packages/core/src/conversation.ts';
 
 const HN = 'https://hacker-news.firebaseio.com/v0';
-const UA = { 'User-Agent': 'towerofhan-orchestrator/0.1' };
+const UA = { 'User-Agent': 'towerofhn-orchestrator/0.1' };
 const VOICE_POOL = 115;
 
 interface Item { id: number; type: string; by?: string; text?: string; title?: string; url?: string; score?: number; descendants?: number; kids?: number[]; dead?: boolean; deleted?: boolean; parent?: number; time: number }

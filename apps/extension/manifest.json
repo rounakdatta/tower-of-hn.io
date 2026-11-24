@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "TowerOfHan companion",
+  "name": "Tower of HN companion",
   "version": "0.1.0",
-  "description": "Post your spoken replies from TowerOfHan to Hacker News with your own Hacker News session. Every post asks you first.",
+  "description": "Post your spoken replies from Tower of HN to Hacker News with your own Hacker News session. Every post asks you first.",
   "permissions": ["storage"],
   "host_permissions": ["https://news.ycombinator.com/*"],
   "background": { "service_worker": "background.js", "type": "module" },
   "content_scripts": [{
-    "matches": ["https://towerofhan.taptappers.club/*", "https://towerofhan.world/*", "http://127.0.0.1:8787/*", "http://localhost:8787/*"],
+    "matches": ["https://towerofhn.taptappers.club/*", "https://towerofhn.world/*", "http://127.0.0.1:8787/*", "http://localhost:8787/*"],
     "js": ["content.js"],
     "run_at": "document_start"
   }]

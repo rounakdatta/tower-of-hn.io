@@ -3,7 +3,7 @@
 //
 // Your words stay yours: your browser turns speech into text (its own recognition, nothing on our server), nothing
 // rewrites them (HN asks for human comments), and nothing is posted until you press Post. How it posts:
-//   - with the TowerOfHan companion extension (desktop): straight from your browser, with your own Hacker News
+//   - with the Tower of HN companion extension (desktop): straight from your browser, with your own Hacker News
 //     session; we never see your password or your cookie;
 //   - without it (any phone, any browser): a hand-off. The text is copied, HN's own reply page opens for that
 //     comment, you paste and press reply there.
@@ -105,7 +105,7 @@ export class Reply {
     // honest about what the button does: with the extension it posts; without, it continues on HN's own page
     const act = this.ext ? 'Post to Hacker News' : 'Continue on Hacker News ↗';
     const how = this.ext
-      ? `Posts as you, with your own Hacker News session (the TowerOfHan extension). We never see your password.`
+      ? `Posts as you, with your own Hacker News session (the Tower of HN extension). We never see your password.`
       : `Opens Hacker News on that comment with your words copied: paste, then press reply.`;
     const field = (label: string, ph: string) => `<div class="me"><label for="hn-me">${label}</label><input id="hn-me" type="text" value="${esc(this.me)}" placeholder="${ph}" autocomplete="username" spellcheck="false"></div>`;
     this.el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>

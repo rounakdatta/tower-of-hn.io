@@ -1,6 +1,6 @@
 // Run the speakability layer over every comment on the live front page.
 import { speakable, LEXICON } from '../../packages/core/src/speakable.ts';
-const UA = { 'User-Agent': 'towerofhan-survey/0.1' };
+const UA = { 'User-Agent': 'towerofhn-survey/0.1' };
 const top: number[] = (await (await fetch('https://hacker-news.firebaseio.com/v0/topstories.json', { headers: UA })).json()).slice(0, 30);
 const trees = await Promise.all(top.map(async (id) => (await fetch(`https://hn.algolia.com/api/v1/items/${id}`, { headers: UA })).json()));
 let n = 0, links = 0, code = 0, quotes = 0, quotesOfParent = 0, emph = 0, chars = 0, spoken = 0;

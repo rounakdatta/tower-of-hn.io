@@ -1,4 +1,4 @@
-# TowerOfHan: voice replies to HN (research, 22 Nov 2026)
+# Tower of HN: voice replies to HN (research, 22 Nov 2026)
 
 [V] = read from a primary source today. [I] = inferred. [U] = unverified. I did not log in, post, or create accounts.
 

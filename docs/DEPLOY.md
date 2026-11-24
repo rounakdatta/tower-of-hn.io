@@ -1,13 +1,13 @@
-# Deploying TowerOfHan to the homelab
+# Deploying Tower of HN to the homelab
 
 Written 20 Nov 2026. Prices were read on the day; sources are listed at the end.
 
 ## Where it stands (21 Nov)
 
-**Live privately at https://towerofhan.taptappers.club** (tailnet only).
-- **Images:** a `v*` tag builds `towerofhan-web` and `towerofhan-voice` into GHCR. Both are private.
+**Live privately at https://towerofhn.taptappers.club** (tailnet only).
+- **Images:** a `v*` tag builds `towerofhan-web` and `towerofhan-voice` into GHCR (the packages keep the first spelling; see the README). Both are private.
 - **Deploy:**
-  1. Pin the new tag by digest in `homelab.setup/kubernetes/apps/towerofhan/values.yaml`.
+  1. Pin the new tag by digest in `homelab.setup/kubernetes/apps/towerofhn/values.yaml`.
   2. Deploy that branch with `deploy-stuff.yml --ref`.
   3. Merge.
 
@@ -46,7 +46,7 @@ Written 20 Nov 2026. Prices were read on the day; sources are listed at the end.
 | Claude Haiku 5.5 for emotion tags | ≈ $9 | About 5,000 comments a day × ~300 in / 60 out tokens, at $0.10 / $0.50 per M. Thinking off or low effort. Use a real API key, not the personal plan through auth2api, once the service is public. |
 | R2 for audio, behind Cloudflare | ≈ $0.2–2 | About 78 KB per comment (measured: Opus at ~36 kbps plus its sidecar), so ~12 GB of new audio a month if every front-page comment is voiced. $0.015/GB-month (the account's 10 GB free tier is already used by backups); egress is free. Keep ~30 days. |
 | GPU voicing on Modal (optional, for full coverage at peak) | ≈ $0–15 | The same Kokoro code on a T4 at $0.59/h, scaling to zero. ~22 h of speech a day ≈ 1–2 GPU-hours ≈ $20–40, minus Modal's $30 monthly credit. |
-| Domain | ≈ $1–4 | Both are unregistered today (RDAP 404). towerofhan.com: $11.81/yr at Porkbun. towerofhan.io: $28.12 the first year, $51.80/yr after. Or free: towerofhan.taptappers.club. |
+| Domain | ≈ $1–4 | Both are unregistered (24 Nov: towerofhn.com RDAP 404, towerofhn.io NXDOMAIN). towerofhn.com: $11.81/yr at Porkbun. towerofhn.io: $28.12 the first year, $51.80/yr after. Or free: towerofhn.taptappers.club. |
 | **Total** | **≈ $10–25** | |
 
 ## What the homelab can and can't do
@@ -83,7 +83,7 @@ Every person's voice is a weighted blend of two Kokoro voices plus their own spe
    - CI in this repo builds two images to GHCR: towerd, which also serves the client build, and the voice worker, with the models baked in or fetched on start.
    - No Docker on agentfest: the builds happen in CI.
 2. **Homelab, private first (½ day).**
-   - `homelab.setup/kubernetes/apps/towerofhan`: one pod in which towerd and the worker share a volume (they talk through files today), plus a Service and an Ingress on the **tailnet** door.
+   - `homelab.setup/kubernetes/apps/towerofhn`: one pod in which towerd and the worker share a volume (they talk through files today), plus a Service and an Ingress on the **tailnet** door.
    - Add the DNS record in oh-my-dns.
    - Put the Anthropic key (and later the R2 keys) in Bitwarden, synced to Secrets.
    - No CPU requests (the scheduler is full); the worker stays on one thread.
@@ -116,6 +116,6 @@ Every person's voice is a weighted blend of two Kokoro voices plus their own spe
 - DeepInfra Kokoro: https://deepinfra.com/hexgrad/Kokoro-82M ($0.99/M chars; `preset_voice` array without weights)
 - R2 pricing and public buckets: https://developers.cloudflare.com/r2/pricing/ and https://developers.cloudflare.com/r2/buckets/public-buckets/
 - Cloudflare service-specific terms (CDN and large files): https://www.cloudflare.com/service-specific-terms-application-services/
-- Porkbun pricing API (.com $11.81; .io $28.12 → $51.80); RDAP for towerofhan.com and .io (both 404 = unregistered)
+- Porkbun pricing API (.com $11.81; .io $28.12 → $51.80); RDAP for towerofhn.com (404 = unregistered) and DNS for towerofhn.io (NXDOMAIN), 24 Nov; prices are per TLD
 - Claude Haiku 5.5: $0.10 / $0.50 per M tokens (Anthropic API pricing)
 - Measured here: one-thread Kokoro speeds, worker memory, 78 KB per comment, 16.1 s average speech, the 263 KB client, and the WebGL2 fallback

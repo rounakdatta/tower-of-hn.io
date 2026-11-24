@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run TowerOfHan locally: towerd (live HN -> files, and the voice queue on :8788), a voice runner, and the 3D client.
+# Run Tower of HN locally: towerd (live HN -> files, and the voice queue on :8788), a voice runner, and the 3D client.
 #   scripts/dev.sh                 Kokoro voices, one lane on one CPU thread (free); LANES=2 THREADS=2 for more
 #   TTS_ENGINE=openai OPENAI_API_KEY=sk-... scripts/dev.sh     character-actor voices (gpt-4o-mini-tts)
 # Emotion tags come from Claude Haiku through towerd (AUTH2API_KEY or ANTHROPIC_API_KEY); without one, runners judge

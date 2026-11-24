@@ -8,7 +8,7 @@ import { dirname } from 'node:path';
 import { Live, type Item } from '../../../packages/core/src/live.ts';
 
 const HN = 'https://hacker-news.firebaseio.com/v0';
-const UA = { 'User-Agent': 'towerofhan-orchestrator/0.1 (local dev)' };
+const UA = { 'User-Agent': 'towerofhn-orchestrator/0.1 (local dev)' };
 const out = process.argv[2] ?? 'out', minutes = Number(process.argv[3] ?? 10);
 const FLOORS = 30;
 

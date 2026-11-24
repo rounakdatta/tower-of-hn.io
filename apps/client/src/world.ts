@@ -16,7 +16,7 @@ export const TOWER_TOP = LOBBY_H + FLOORS * FLOOR_H;
 
 export const uTime = uniform(0);
 export const uBeacon = uniform(0);     // 0..1, decays: a comment just landed
-/** the neon sign on the crown: the name, and its orange "Of" (which buzzes on its own now and then) */
+/** the neon sign on the crown: the name, and its orange "of" (which buzzes on its own now and then) */
 export const uNeon = uniform(0), uNeonOf = uniform(0);
 
 export function buildSky(scene: THREE.Scene) {
@@ -390,7 +390,7 @@ export class Tower {
 
 /**
  * The name in neon, round the crown: two copies, so one always faces you. Tubes are drawn as glowing strokes on
- * a dark backing ring; the orange "Of" is its own layer so it can buzz while the rest holds steady.
+ * a dark backing ring; the orange "of" is its own layer so it can buzz while the rest holds steady.
  */
 function neonSign() {
   const W = 2048, H = 256;
@@ -408,7 +408,8 @@ function neonSign() {
     t.anisotropy = 8;
     return t;
   };
-  const parts = ['Tower', 'Of', 'Han'];
+  // "Tower of HN": three tubes a word-space apart, the middle one in its own colour (uNeonOf)
+  const parts = ['Tower', 'of', 'HN'];
   const widths = (g: CanvasRenderingContext2D) => parts.map((p) => g.measureText(p).width);
   const tube = (g: CanvasRenderingContext2D, text: string, x: number, glow: string, core: string) => {
     g.shadowColor = glow; g.shadowBlur = 26;
@@ -417,12 +418,12 @@ function neonSign() {
     g.strokeStyle = core; g.lineWidth = 6; g.strokeText(text, x, H / 2);
   };
   const layout = (g: CanvasRenderingContext2D) => {
-    const w = widths(g), gap = 6, total = w[0] + w[1] + w[2] + gap * 2;
+    const w = widths(g), gap = g.measureText(' ').width, total = w[0] + w[1] + w[2] + gap * 2;
     const x0 = (W / 0.66 - total) / 2;
     return [x0, x0 + w[0] + gap, x0 + w[0] + w[1] + gap * 2];
   };
-  const base = layer((g) => { const x = layout(g); tube(g, 'Tower', x[0], '#ff9a6b', '#fff1e6'); tube(g, 'Han', x[2], '#ff9a6b', '#fff1e6'); });
-  const of = layer((g) => { const x = layout(g); tube(g, 'Of', x[1], '#ff5a0a', '#ffd2b0'); });
+  const base = layer((g) => { const x = layout(g); tube(g, parts[0], x[0], '#ff9a6b', '#fff1e6'); tube(g, parts[2], x[2], '#ff9a6b', '#fff1e6'); });
+  const of = layer((g) => { const x = layout(g); tube(g, parts[1], x[1], '#ff5a0a', '#ffd2b0'); });
   const mat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
   const tuv = vec2(fract(uv().x.mul(2)), uv().y);
   const a = texture(base, tuv), b = texture(of, tuv);

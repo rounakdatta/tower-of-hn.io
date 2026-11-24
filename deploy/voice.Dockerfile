@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# TowerOfHan voices: Kokoro (ONNX, fp16 weights), a permanent voice per HN user. A runner: lanes of Kokoro that claim
+# Tower of HN voices: Kokoro (ONNX, fp16 weights), a permanent voice per HN user. A runner: lanes of Kokoro that claim
 # comments from towerd's voice port and send the clips back (no volume, no keys, no internet). The models are baked
 # in (checksummed).
 # Layers go from the steadiest to the most changed, and CI caches them in the registry, so a release ships only what

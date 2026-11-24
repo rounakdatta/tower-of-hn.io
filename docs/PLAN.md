@@ -1,4 +1,4 @@
-# TowerOfHan.io: the plan
+# Tower of HN: the plan
 
 *v1 · 19 Nov 2026 · branch `v2` · everything referenced here is in this repo*
 
@@ -37,7 +37,7 @@
 
 ## 1. The experience
 
-**Arrive.** You open towerofhan.io and the tower is already on screen. It isn't a spinner: it's tonight's tower with the real titles, rendered a minute ago on our GPU and served from the nearest Cloudflare city. Within a second or two it comes alive:
+**Arrive.** You open towerofhn.io and the tower is already on screen. It isn't a spinner: it's tonight's tower with the real titles, rendered a minute ago on our GPU and served from the nearest Cloudflare city. Within a second or two it comes alive:
 - windows flicker with real comment activity
 - the roof beacon pulses whenever a comment lands anywhere on the front page
 - the city hums
@@ -56,7 +56,7 @@
 
 **Pocket mode.** Lock the phone and the tower becomes a radio: this table, then the floor, then the next floor, with lock-screen controls.
 
-**Share.** `towerofhan.io/t/<comment>` drops a friend at that table at that moment. The link unfurls with a picture of the scene, rendered once.
+**Share.** `towerofhn.io/t/<comment>` drops a friend at that table at that moment. The link unfurls with a picture of the scene, rendered once.
 
 **Your own seat (later).** An HN user can claim their character by putting a code in their HN profile. They can then choose their voice and look, or opt out to a silhouette with text.
 
@@ -380,7 +380,7 @@ The 28 Mar code (Go, Postgres, Next.js, ComicGen) stays in git history.
 2. **The look.** A (night diorama), B (Running Rectangles) or C (paper theatre). My pick is A with B's discipline. Mood clips come in M3, but a gut call now steers M1.
 3. **Budget.** Is ≈$260/month to start OK, with the GPU box at €214/month + €209 setup in your Hetzner account? The alternative is the ≈$100/month CPU box until launch.
 4. **Accounts, which only you can do:**
-   - buy **towerofhan.io** (and .com, both looked unregistered last night)
+   - buy **towerofhn.io** (and .com, both looked unregistered last night)
    - a Cloudflare R2 bucket + the Workers paid plan ($5)
    - register with KittenML for commercial use
    - an Anthropic API key for tagging, if Haiku wins the eval

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TowerOfHan.io monthly cost model (companion to data-infra.md; prices and sources are listed there).
+"""Tower of HN monthly cost model (companion to data-infra.md; prices and sources are listed there).
 
 usage: python3 -I cost_model.py [--gpu-hours-day 5] [--comments-day 12000] [--kbps 24] [--hours-day 24]
 Everything is a parameter; unit prices are the constants below (USD, read 19 Nov 2026).
