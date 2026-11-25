@@ -18,8 +18,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Core and voice queue tests
-        run: node --test packages/core/src/*.test.ts apps/towerd/src/*.test.ts
+      - name: Core, voice queue, HN formatting and extension tests
+        run: node --test packages/core/src/*.test.ts apps/towerd/src/*.test.ts apps/client/src/*.test.ts apps/extension/*.test.ts
       - name: Client builds
         working-directory: apps/client
         # the built page must keep towerd's support markers (HTML comments): a build that dropped them would leave
