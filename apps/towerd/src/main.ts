@@ -27,7 +27,7 @@ import { speakable } from '../../../packages/core/src/speakable.ts';
 import { VoiceQueue, band, type Entry } from './queue.ts';
 import { tagPrompt, parseTags, type Tag } from './tags.ts';
 import { versionOf, sweep, liveLines, type Version } from './store.ts';
-import { readSupport, withSupport, supportPage, SUPPORT_CSP } from './support.ts';
+import { readSupport, withSupport, supportPage, missingMarks, SUPPORT_CSP } from './support.ts';
 
 const HN = 'https://hacker-news.firebaseio.com/v0';
 const UA = { 'User-Agent': 'towerofhn-towerd/0.1' };
@@ -512,8 +512,10 @@ function indexPage(f: { body: Buffer; mtime: number }) {
 /** /support, built once; views are counted as clips are (a number since start, nothing about who). */
 const supportHtml = SUPPORT ? (() => {
   const body = Buffer.from(supportPage(SUPPORT));
-  return { body, mtime: Date.now(), tag: `"${createHash('sha1').update(body).digest('base64url').slice(0, 16)}"` };
+  return { body, mtime: Date.now(), tag: `W/"${createHash('sha1').update(body).digest('base64url').slice(0, 16)}"` };   // weak, as /live's: proxies pass it as is
 })() : null;
+// the page must carry its markers, or nothing would point to /support: say so at boot, not to a visitor
+if (SUPPORT && existsSync(INDEX)) { const missing = missingMarks(readFileSync(INDEX, 'utf8')); if (missing.length) console.warn(JSON.stringify({ support: { missing } })); }
 let supportViews = 0;
 const squeezed = new Map<string, { mtime: number; enc: string; body: Buffer }>();
 let squeezedBytes = 0;

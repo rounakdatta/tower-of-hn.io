@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { readSupport, withSupport, supportPage, MARKS, SUPPORT_CSP, type Support } from './support.ts';
+import { readSupport, withSupport, supportPage, missingMarks, MARKS, SUPPORT_CSP, type Support } from './support.ts';
 
 const INDEX = readFileSync(join(import.meta.dirname, '../../client/index.html'), 'utf8');
 const URL_ = 'https://github.com/sponsors/example';
@@ -13,6 +13,8 @@ const links = (html: string) => [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g
 
 test('the page carries each marker exactly once (else a piece would silently go missing, or twice)', () => {
   for (const m of Object.values(MARKS)) assert.equal(count(INDEX, m), 1, m);
+  assert.deepEqual(missingMarks(INDEX), []);
+  assert.deepEqual(missingMarks(INDEX.replace(MARKS.door, '')), [MARKS.door], 'and towerd can tell when one is gone');
 });
 
 test('unset: the page goes out exactly as it was before support existed, with nothing of it inside', () => {
@@ -30,10 +32,11 @@ test('set: a line at the foot of the door, a credit at the table, their styles, 
   assert.equal(count(page, 'id="give"'), 1);
   assert.equal(count(page, 'id="credit"'), 1);
   assert.equal(count(page, '<style>'), count(INDEX, '<style>') + 1);
-  // the door's line sits inside the door, after its own words; the credit after the seat's controls (tab order)
-  const splash = page.indexOf('<div id="splash"'), give = page.indexOf('id="give"'), body = page.indexOf('</body>');
-  assert.ok(splash > 0 && give > splash && give < body && give > page.indexOf('Headphones on.'));
-  assert.ok(page.indexOf('id="credit"') > page.indexOf('id="controls"'));
+  // the door's line is the splash's own last child, right after the door's words; the credit is the body's, right after
+  // the seat's controls (next in tab order) and outside them (#controls is transformed on touch screens, which would
+  // make it the credit's containing block)
+  assert.match(page, /<small>Headphones on\. Sound is half of it\.<\/small>\n<\/div><p id="give">[^\n]*<\/p><\/div>\n/);
+  assert.match(page, /id="leave">Stand up<\/button><\/div><p id="credit">[^\n]*<\/p>\n<div id="splash"/);
   // and nothing else in the page changed
   assert.equal(page.replace(/<style>\n#splash[\s\S]*?<\/style>|<p id="give">[\s\S]*?<\/p>|<p id="credit">[\s\S]*?<\/p>/g, ''), withSupport(INDEX, null));
 });
@@ -77,9 +80,10 @@ test('/support: who, what it pays for, monthly or once, any amount, the button, 
   assert.match(out[0].inner, /^Sponsor on GitHub/);
   assert.ok(links(page).some((l) => l.href === '/'), 'a way back to the tower');
   assert.ok(Buffer.byteLength(page) < 4096, `small: ${Buffer.byteLength(page)} bytes`);
-  // its policy lets it run nothing at all
-  assert.match(SUPPORT_CSP, /^default-src 'none';/);
-  assert.ok(!/script-src|unsafe-eval/.test(SUPPORT_CSP));
+  // its policy lets it run nothing, be framed by no one, post nowhere, and load nothing but its own icon (which exists)
+  const policy = SUPPORT_CSP.split('; ');
+  assert.deepEqual(policy.sort(), ["base-uri 'none'", "default-src 'none'", "form-action 'none'", "frame-ancestors 'none'", "img-src 'self'", "style-src 'unsafe-inline'"]);
+  assert.ok(page.includes('href="/icon-192.png"') && existsSync(join(import.meta.dirname, '../../client/public/icon-192.png')));
 });
 
 test('no exclamation marks and no "please" anywhere a visitor reads', () => {
@@ -95,7 +99,8 @@ test('only a GitHub Sponsors page turns it on: anything else keeps it off, so a 
   for (const bad of ['http://github.com/sponsors/example', 'https://evil.example/sponsors/example', 'https://github.com/example',
     'https://github.com/sponsors/', 'https://github.com/sponsors/-example', 'https://github.com/sponsors/ex--ample', 'https://github.com/sponsors/ex ample',
     'https://github.com/sponsors/a/b', 'https://github.com:8443/sponsors/example', 'https://me@github.com/sponsors/example',
-    'https://github.com.evil.example/sponsors/example', 'javascript:alert(1)', 'github.com/sponsors/example', 'https://github.com/sponsors/' + 'a'.repeat(40)]) {
+    'https://github.com.evil.example/sponsors/example', 'javascript:alert(1)', 'github.com/sponsors/example', 'https://github.com/sponsors/' + 'a'.repeat(40),
+    'https://evilgithub.com/sponsors/example', 'https://:pw@github.com/sponsors/example', 'https://github.com/sponsors/ex_ample', 'https://www.github.com/sponsors/example']) {
     const r = readSupport({ SPONSOR_URL: bad });
     assert.equal(r.support, null, bad);
     assert.match(r.problems[0], /SPONSOR_URL must be/, bad);
@@ -153,4 +158,37 @@ test('the door styles its own paragraphs: the line beneath them is specific enou
   const css = withSupport(INDEX, on).match(/<style>\n#splash[\s\S]*?<\/style>/)![0];
   assert.match(css, /\n#splash #give\{[^}]*color:var\(--mute\);font-size:12\.5px/);
   assert.ok(!/[\n,]#give\{/.test(css), 'never the bare id, which #splash p outranks');
+});
+
+test('a hand-made config still cannot break out of its attribute or its line of text', () => {
+  // readSupport would refuse these; the escaping must hold on its own all the same
+  const evil: Support = { url: 'https://github.com/sponsors/x?a="><script>alert(1)</script>&b=\'', upi: '"><img src=x onerror=alert(1)>@x' };
+  for (const page of [withSupport(INDEX, evil), supportPage(evil)]) {
+    assert.ok(!/<script>alert|<img src=x/.test(page), 'no markup from the config');
+    assert.ok(page.includes(`href="https://github.com/sponsors/x?a=&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;b='"`), 'one attribute, escaped');
+  }
+  assert.ok(supportPage(evil).includes('pa=%22%3E%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E%40x&amp;'));
+});
+
+test('the credit takes the hint\'s baseline, and only the widths where the hint has moved away from it', () => {
+  const css = withSupport(INDEX, on).match(/<style>\n#splash[\s\S]*?<\/style>/)![0];
+  // at or below this width the page moves the hint to the credit's own left; above it, the hint is centred
+  const [, w] = /@media \(max-width: (\d+)px\) \{ body\[data-mode="table"\] #hint \{ left:24px/.exec(INDEX)!;
+  assert.ok(css.includes(`@media (width > ${w}px) { body[data-mode="table"]:not(.reply-open) #credit { visibility:visible`), w);
+  assert.match(css, /#credit\{position:fixed;left:24px;/);
+  const [, bottom] = /body\[data-mode="table"\] #hint \{ bottom:([^}]+?) \}/.exec(INDEX)!;
+  assert.ok(css.includes(`#credit{position:fixed;left:24px;bottom:${bottom};`), bottom);
+  // the door's line clears a phone's home bar
+  assert.match(css, /#splash #give\{[^}]*padding:0 24px max\(18px, env\(safe-area-inset-bottom\)\)/);
+});
+
+test('towerd wires it as said: /support only when on, under its own policy; /status gains nothing when off', () => {
+  // importing main.ts would start the HN ingest, so its wiring is checked as text here (and against a running
+  // towerd, off and on, when this was built)
+  const main = readFileSync(join(import.meta.dirname, 'main.ts'), 'utf8');
+  assert.match(main, /const supportHtml = SUPPORT \?/);
+  assert.match(main, /if \(supportHtml && \(url\.pathname === '\/support' \|\| url\.pathname === '\/support\/'\)\) \{/);
+  assert.match(main, /'content-security-policy': SUPPORT_CSP/);
+  assert.match(main, /\.\.\.\(SUPPORT \? \{ support: \{ views: supportViews \} \} : \{\}\)/);
+  assert.match(main, /if \(p === INDEX\) file\.body = indexPage\(file\);/);
 });

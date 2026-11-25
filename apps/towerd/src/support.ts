@@ -11,6 +11,8 @@ export type Support = { url: string; upi: string | null };
 
 /** In index.html, where each piece goes (an HTML comment, so the page is whole without them). */
 export const MARKS = { head: '<!--support:head-->', door: '<!--support:door-->', table: '<!--support:table-->' } as const;
+/** The markers a page lacks (a build that dropped its comments couldn't carry support: towerd says so at boot). */
+export const missingMarks = (html: string) => Object.values(MARKS).filter((m) => !html.includes(m));
 
 // GitHub logins: letters, digits and single hyphens inside, at most 39
 const LOGIN = /^\/sponsors\/[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\/?$/;
@@ -44,18 +46,19 @@ const out = (s: Support, label: string, cls = '') =>
 // Matches the overlay's own language: --mute for quiet words, --ink for what you can act on, underlined so a link
 // never depends on colour alone; the white focus ring the elevator uses. The credit lives in the letterbox at a
 // table, the black bar below the picture, and only where the bar has room for it beside the hint and the controls
-// (wider than 1180 px, where the hint is centred). A phone's bars are already full (the title above, the controls
+// (wider than 1180 px, where the hint is centred: exactly where the page's own `max-width: 1180px` rule stops). A phone's bars are already full (the title above, the controls
 // below), so a phone meets it on the door. The door's line is `#splash #give`: the door styles its own paragraphs
 // (`#splash p`, its description), and only a selector this specific keeps the line small and quiet beneath it.
 const CSS = `<style>
 #splash{grid-template-rows:1fr auto}
-#splash #give{margin:0;padding:0 24px max(18px, env(safe-area-inset-bottom));max-width:min(100%, 640px);color:var(--mute);font-size:12.5px;line-height:1.5;text-align:center}
+#splash #give{margin:0;padding:0 24px max(18px, env(safe-area-inset-bottom));max-width:min(100%, 720px);color:var(--mute);font-size:12.5px;line-height:1.5;text-align:center;text-wrap:balance}
+#splash #give a{white-space:nowrap}
 #give a,#credit a{color:var(--ink);text-decoration:underline;text-decoration-color:#efe9e059;text-underline-offset:3px}
 #give a:hover,#credit a:hover{text-decoration-color:currentColor}
 #give a:focus-visible,#credit a:focus-visible{outline:2px solid #fff;outline-offset:3px;border-radius:3px}
 #credit{position:fixed;left:24px;bottom:calc(8.5vh / 2 - 9px);z-index:3;margin:0;color:var(--mute);font-size:12.5px;white-space:nowrap;visibility:hidden;opacity:0;transition:opacity .3s, visibility 0s .3s}
 #credit svg{width:9px;height:9px;margin-left:4px}
-@media (min-width: 1181px) { body[data-mode="table"]:not(.reply-open) #credit { visibility:visible; opacity:1; transition:opacity .6s .5s } }
+@media (width > 1180px) { body[data-mode="table"]:not(.reply-open) #credit { visibility:visible; opacity:1; transition:opacity .6s .5s } }
 @media (max-height: 420px) { #splash #give { display:none } }
 @media (prefers-reduced-motion: reduce) { #credit, body[data-mode="table"]:not(.reply-open) #credit { transition:none } }
 .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
@@ -119,7 +122,7 @@ a:focus-visible{outline:2px solid #fff;outline-offset:3px;border-radius:4px}
 <p>Sponsorships pay for those servers, the domain, and the time it takes to keep making it better.</p>
 <p>You can sponsor monthly or just once, with any amount, through GitHub Sponsors.</p>
 ${out(s, 'Sponsor on GitHub', 'go')}${upi}
-<p class="small">Sponsoring is voluntary and unlocks nothing: everyone hears the same tower.</p>
+<p class="small">Sponsoring is voluntary and unlocks nothing. Everyone hears the same tower.</p>
 </main>
 </body>
 </html>
