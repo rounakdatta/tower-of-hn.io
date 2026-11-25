@@ -146,3 +146,11 @@ test('the voices never say it: what they read is made from Hacker News by code t
   const users = src(here, /\.ts$/).filter((f) => readFileSync(f, 'utf8').includes("from './support.ts'"));
   assert.deepEqual(users.map((f) => f.slice(here.length + 1)), ['main.ts']);
 });
+
+test('the door styles its own paragraphs: the line beneath them is specific enough to stay small and quiet', () => {
+  // `#splash p` (the door's description: 17 px, bright) outranks a bare `#give`; it once made the line as loud as the copy
+  assert.match(INDEX, /#splash p \{[^}]*font-size/);
+  const css = withSupport(INDEX, on).match(/<style>\n#splash[\s\S]*?<\/style>/)![0];
+  assert.match(css, /\n#splash #give\{[^}]*color:var\(--mute\);font-size:12\.5px/);
+  assert.ok(!/[\n,]#give\{/.test(css), 'never the bare id, which #splash p outranks');
+});

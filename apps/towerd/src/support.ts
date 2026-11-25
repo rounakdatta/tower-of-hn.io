@@ -45,17 +45,18 @@ const out = (s: Support, label: string, cls = '') =>
 // never depends on colour alone; the white focus ring the elevator uses. The credit lives in the letterbox at a
 // table, the black bar below the picture, and only where the bar has room for it beside the hint and the controls
 // (wider than 1180 px, where the hint is centred). A phone's bars are already full (the title above, the controls
-// below), so a phone meets it on the door.
+// below), so a phone meets it on the door. The door's line is `#splash #give`: the door styles its own paragraphs
+// (`#splash p`, its description), and only a selector this specific keeps the line small and quiet beneath it.
 const CSS = `<style>
 #splash{grid-template-rows:1fr auto}
-#give{margin:0;padding:0 24px max(18px, env(safe-area-inset-bottom));max-width:min(100%, 640px);color:var(--mute);font-size:12.5px;line-height:1.5;text-align:center}
+#splash #give{margin:0;padding:0 24px max(18px, env(safe-area-inset-bottom));max-width:min(100%, 640px);color:var(--mute);font-size:12.5px;line-height:1.5;text-align:center}
 #give a,#credit a{color:var(--ink);text-decoration:underline;text-decoration-color:#efe9e059;text-underline-offset:3px}
 #give a:hover,#credit a:hover{text-decoration-color:currentColor}
 #give a:focus-visible,#credit a:focus-visible{outline:2px solid #fff;outline-offset:3px;border-radius:3px}
 #credit{position:fixed;left:24px;bottom:calc(8.5vh / 2 - 9px);z-index:3;margin:0;color:var(--mute);font-size:12.5px;white-space:nowrap;visibility:hidden;opacity:0;transition:opacity .3s, visibility 0s .3s}
 #credit svg{width:9px;height:9px;margin-left:4px}
 @media (min-width: 1181px) { body[data-mode="table"]:not(.reply-open) #credit { visibility:visible; opacity:1; transition:opacity .6s .5s } }
-@media (max-height: 420px) { #give { display:none } }
+@media (max-height: 420px) { #splash #give { display:none } }
 @media (prefers-reduced-motion: reduce) { #credit, body[data-mode="table"]:not(.reply-open) #credit { transition:none } }
 .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 </style>`;
