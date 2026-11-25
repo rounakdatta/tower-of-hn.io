@@ -13,7 +13,8 @@ import { Mixer } from './mixer.ts';
 import { WalkCam, EYE } from './walk.ts';
 import { Minimap } from './minimap.ts';
 import { MOOD, moodOf, tableMood, rowOf } from './mood.ts';
-import { Reply, Replies, type ReplyTarget } from './reply.ts';
+import { you, Replies } from './you.ts';
+import type { Reply, ReplyTarget, Landed } from './reply.ts';
 import { Crowd, setTimeValue } from './people.ts';
 import { Director } from './director.ts';
 import { esc, hash32 } from './util.ts';
@@ -160,30 +161,45 @@ walk.onLock = (locked) => {
   if (locked) { const at = clock; after(6, () => { if (walk.locked && clock - at >= 5.9) ui.hint(''); }); }
   if (!locked) ui.aim('');
 };
-// ---------------------------------------------------------------- replying, by voice (reply.ts)
-const reply = new Reply(), replies = new Replies();
+// ---------------------------------------------------------------- replying, by voice (reply.ts, loaded the first time)
+let reply: Reply | null = null;
+let sheet: Promise<Reply> | null = null;
+const replies = new Replies();
 let pausedForReply = false;
-reply.onListen = (on) => audio.duck(on);
-reply.onOpen = (on) => {
-  document.body.classList.toggle('reply-open', on);
-  // seated: the table waits while you answer (you won't miss a word), and goes on when you're done
-  if (on && mode === 'table' && !director.paused) { director.togglePause(); pausedForReply = true; syncPause(); }
-  if (!on && pausedForReply) {
-    pausedForReply = false;
-    if (director.paused) director.togglePause();
-    else if (audio.ctx?.state === 'suspended') audio.ctx.resume().catch(() => {});
-    syncPause();
-  }
-  if (on) { walk.release(); ui.profile(null); }
-  // whoever you're answering turns to you while you do
-  const by = reply.to?.by ?? replyingTo;
-  if (by && on) { if (mode === 'table') director.glanceAt(by, camera.position, 900); else mixer.glanceAt(by, camera.position, 900); }
-  if (by && !on) { director.glanceAt(by, camera.position, 0); mixer.glanceAt(by, camera.position, 0); }
-  replyingTo = on ? by : '';
-};
+function replySheet() {
+  return sheet ??= import('./reply.ts').then(({ Reply }) => {
+    const r = reply = new Reply();
+    r.onListen = (on) => audio.duck(on);
+    r.onOpen = (on) => {
+      document.body.classList.toggle('reply-open', on);
+      // seated: the table waits while you answer (you won't miss a word), and goes on when you're done
+      if (on && mode === 'table' && !director.paused) { director.togglePause(); pausedForReply = true; syncPause(); }
+      if (!on && pausedForReply) {
+        pausedForReply = false;
+        if (director.paused) director.togglePause();
+        else if (audio.ctx?.state === 'suspended') audio.ctx.resume().catch(() => {});
+        syncPause();
+      }
+      if (on) { walk.release(); ui.profile(null); }
+      // whoever you're answering turns to you while you do
+      const by = r.to?.by ?? replyingTo;
+      if (by && on) { if (mode === 'table') director.glanceAt(by, camera.position, 900); else mixer.glanceAt(by, camera.position, 900); }
+      if (by && !on) { director.glanceAt(by, camera.position, 0); mixer.glanceAt(by, camera.position, 0); }
+      replyingTo = on ? by : '';
+    };
+    r.onLanded = (l) => replyLanded(l);
+    return r;
+  }).catch((e) => { sheet = null; throw e; });
+}
 let replyingTo = '';
-reply.onDone = () => ui.toast(reply.me ? 'Watching Hacker News for your reply: in a minute or two you walk in by the lift and say it' : 'Add your HN username next time, and your reply walks in here');
-director.isMe = (n) => !!reply.me && n === reply.me;
+/** your reply is on Hacker News (the sheet says so itself, if it's open on that comment) */
+function replyLanded(l: Landed) {
+  if (reply?.to?.id === l.parent) return;
+  ui.toast(`Your reply to <b>${esc(l.to)}</b> is on Hacker News`, () => window.open(`https://news.ycombinator.com/item?id=${l.id}`, '_blank', 'noopener'));
+}
+// back with a reply handed to HN before a reload (a phone can drop this tab while you're there): keep watching for it
+if (you.pending()) replySheet().then((r) => r.resume()).catch(() => {});
+director.isMe = (n) => !!you.me && n === you.me;
 director.onWho = (n, turn) => showProfile(n, turn);
 function syncPause() { const b = document.getElementById('pause'); if (b) b.textContent = director.paused ? 'Play' : 'Pause'; }
 /** Answer `by`: their comment at the table you're at, else at the nearest table they've spoken at, the latest. */
@@ -199,9 +215,11 @@ function replyTo(by: string, prefer?: number) {
   }
   if (!id) return;
   const t: ReplyTarget = { id, by, story: activeFloor.story.id, title: activeFloor.story.title };
-  reply.show(t);
   const u = spots.flatMap((s) => s.table.turns).find((x) => x.id === id);
-  if (u?.v) sync.sidecar(u.v[0]).then((side) => reply.said(id, side.clips.map((c) => c.t).join(' '))).catch(() => {});
+  replySheet().then((r) => {
+    r.show(t);
+    if (u?.v) sync.sidecar(u.v[0]).then((side) => r.said(id, side.clips.map((c) => c.t).join(' '))).catch(() => {});
+  }, () => ui.toast('Couldn’t open the reply sheet: check your connection'));
 }
 /** Seated: answer whoever is speaking (or spoke last). */
 function replyHere() {
@@ -220,7 +238,7 @@ replies.onReply = (r) => {
   heard.add(r.id);
   ui.toast(`<b>${esc(r.by)}</b> replied to you on Hacker News`, () => window.open(`https://news.ycombinator.com/item?id=${r.id}`, '_blank', 'noopener'));
 };
-replies.start(() => reply.me);
+replies.start(() => you.me);
 
 // the floor at a glance: tap a table there to walk over
 const map = new Minimap();
@@ -502,7 +520,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
         for (const u of f.tables[k].turns) {
           if (known.has(u.id)) continue;
           mixer.breaking(sp, u);
-          const me = reply.me, parent = u.replyTo !== undefined ? f.tables[k].turns.find((x) => x.id === u.replyTo) : undefined;
+          const me = you.me, parent = u.replyTo !== undefined ? f.tables[k].turns.find((x) => x.id === u.replyTo) : undefined;
           if (me && u.by === me) { mixer.spotlight(sp, u.id); ui.toast(`<b>That’s you</b>, walking in to say it`, () => walkToTable(sp)); continue; }
           if (me && parent?.by === me && !heard.has(u.id)) {
             // someone answered you: said next at its table, and brought to your ears wherever you are on the floor
@@ -585,6 +603,7 @@ function sit(s: TableSpot | undefined, push = false) {
   ui.aim('');
   ui.sitDown(null);
   mode = 'table'; ui.mode('table'); audio.setMode('table'); audio.sfx('sit'); ui.showLabels(false); map.show(false); awake();
+  (window.requestIdleCallback ?? setTimeout)(() => replySheet().catch(() => {}));   // seated: the reply sheet, ready (it isn't in the first load)
   subLine = null; ui.subtitle(null);
   ui.flash(); setDof(true);
   nav(`?story=${activeFloor.story.id}&table=${s.table.root}`, fromFloor && depth === 1);
@@ -614,7 +633,7 @@ director.onEnd = () => {
     after(2.9, () => enterFloor(next));
   } else nextTable();
 };
-director.onNewReply = (by) => ui.toast(reply.me && by === reply.me ? '<b>That’s you</b>, by the lift: here it comes' : `<b>${esc(by)}</b> just replied on Hacker News`);
+director.onNewReply = (by) => ui.toast(you.me && by === you.me ? '<b>That’s you</b>, by the lift: here it comes' : `<b>${esc(by)}</b> just replied on Hacker News`);
 
 /** Up from the table and on your feet beside it, facing it: the room plays on, this table where you left it. */
 function standUp() {
@@ -682,12 +701,12 @@ document.getElementById('next')!.onclick = () => nextTable();
 document.getElementById('pause')!.onclick = (e) => { director.togglePause(); (e.target as HTMLElement).textContent = director.paused ? 'Play' : 'Pause'; };
 addEventListener('keydown', (e) => {
   // (an Esc that gave the mouse back is only that: it doesn't also leave the floor)
-  if (reply.open) { if (e.key === 'Escape') reply.close(); return; }      // typing a reply never drives the room
+  if (reply?.open) { if (e.key === 'Escape') reply.escape(); return; }      // typing a reply never drives the room
   if (e.key === 'Escape') { if (walk.locked || performance.now() - walk.unlockedAt < 500) return; if (mode === 'table') stepOut(1); else if (mode === 'floor') { leanBack = false; stepOut(1); } }
   else if (e.key === ' ' && mode === 'table') { e.preventDefault(); director.togglePause(); }
   else if ((e.key === 'n' || e.key === 'N') && mode === 'table') nextTable();
   else if (e.key === 'm' || e.key === 'M') audio.setMuted(!audio.muted);
-  else if ((e.key === 'r' || e.key === 'R') && !reply.open && !(e.target as HTMLElement)?.closest?.('input, textarea')) {
+  else if ((e.key === 'r' || e.key === 'R') && !reply?.open && !(e.target as HTMLElement)?.closest?.('input, textarea')) {
     e.preventDefault();
     if (mode === 'table') replyHere();
     else if (mode === 'floor' && walk.locked) { const a = aimAt(innerWidth / 2, innerHeight / 2); if (a.kind === 'person') replyTo(crowd.people[a.i].name); }
@@ -872,7 +891,7 @@ function walkSubtitles() {
   const to = l.clip.who === l.turn.by && l.turn.replyTo ? mixer.focus!.table.turns.find((u) => u.id === l.turn.replyTo)?.by : undefined;
   const name = l.clip.who, turn = l.turn;
   ui.subtitle({ name, to, text: l.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: l.side.emotion, stance: l.side.stance, intensity: l.side.intensity,
-    you: !!reply.me && name === reply.me, onWho: () => showProfile(name, turn.by === name ? turn.id : undefined) });
+    you: !!you.me && name === you.me, onWho: () => showProfile(name, turn.by === name ? turn.id : undefined) });
 }
 /** Each table's lamp wears its mood: a hot line (a row, laughter) flares on its first frame and settles warm; quiet
  *  moods stay quiet (cool light pools badly in a warm room); a table's history is only a faint tint. A row breaking
@@ -890,7 +909,7 @@ function lampMoods(dt: number) {
     const cur = lampNow.get(s) ?? [1, 0.9, 0.8, 0];
     let rgb: [number, number, number] = MOOD.calm.rgb, a = 0;
     const fresh = !!line && lampLine.get(s) !== line.turn;   // a new comment started here (per comment, not per clip)
-    if (fresh && reply.me && line!.turn.by === reply.me) { cur[0] = 1; cur[1] = 0.42; cur[2] = 0.1; cur[3] = 0.95; }   // there you are
+    if (fresh && you.me && line!.turn.by === you.me) { cur[0] = 1; cur[1] = 0.42; cur[2] = 0.1; cur[3] = 0.95; }   // there you are
     if (line) {
       const m = moodOf(line.side.emotion, line.side.stance, line.side.intensity);
       if (m !== 'calm') {
@@ -1045,7 +1064,7 @@ if (recording) {
     /** replying: seated, to whoever is speaking; or to someone by name */
     replyHere: () => replyHere(),
     replyTo: (name: string) => replyTo(name),
-    setMe: (name: string) => reply.setMe(name),
+    setMe: (name: string) => you.set(name),
     /** a reply to you landing at the k-th table: brought to your ears wherever you stand */
     spotlight: (k: number) => { const sp = spots.filter((x) => !x.bar)[k]; const u = sp?.table.turns.find((x) => !x.v) ?? sp?.table.turns[0]; if (sp && u) mixer.spotlight(sp, u.id); },
     where: () => ({ x: +walk.pos.x.toFixed(2), z: +walk.pos.z.toFixed(2), yaw: +walk.yaw.toFixed(2), walking: walk.walking, locked: walk.locked, aim: document.getElementById('aim')?.textContent ?? '' }),

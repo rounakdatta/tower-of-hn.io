@@ -1,36 +1,57 @@
 # Replying by voice, and posting to Hacker News
 
 The goal, in Rounak's words: walk up to the person you want to answer, speak, confirm, and it's posted, and when
-anyone answers you, you hear it. This note is what exists (0.4.1), what we can't do and why, and the plan.
+anyone answers you, you hear it. This note is what exists (0.5.x, after the 25 Nov QA pass), what we can't do and
+why, and the plan. The QA report (flows, results, numbers, risks) is in Nextcloud `current/hobby/towerofhn/`.
 
 ## What exists now
 
-- **The reply sheet** (`apps/client/src/reply.ts`). It opens from someone's card, from their name in the
-  subtitles (answering exactly that line), from Reply while seated (whoever is speaking), or with R on desktop.
+- **The reply sheet** (`apps/client/src/reply.ts`, with `reply.css`; loaded the first time you reply, or when you sit
+  down, so it isn't part of the first load). It opens from someone's card, from their name in the subtitles
+  (answering exactly that line), from Reply while seated (whoever is speaking), or with R on desktop.
   - The person you're answering turns to you.
   - The room goes nearly silent while the microphone is open, so it hears you, not the toys. A seated table pauses.
-  - Their comment is quoted, and the mic fills an editable box live.
-  - **Your words, exactly:** the browser turns speech into text, and the only change we make is a capital letter
-    to start. No model touches the text, because HN asks for human comments (see the guidelines below).
+  - Their comment is quoted, and the mic fills an editable box live. Typing takes over from the mic at once.
+  - **Your words, exactly:** the browser turns speech into text (Google's service in Chrome, Apple's in Safari; the
+    sheet says which), and the only changes we make are spacing and a capital where a sentence starts
+    (`dictation.ts`). No model touches the text, because HN asks for human comments (see the guidelines below).
+  - **Nothing is lost:** a draft per comment is kept in this browser (a week, the latest 20) through closing the
+    sheet, Esc, answering someone else, a reload, or a phone dropping the tab while you're on HN.
+  - **A preview** shows what HN will make of it (italics, code, links, paragraphs: `hnformat.ts`, from formatdoc),
+    offered only when the text has any of those.
+  - It says before you write when HN won't take a reply: a deleted comment, or a thread closed after two weeks.
+  - Microphone problems are said plainly and stay on screen (blocked, Siri off, no mic, offline, no speech).
+  - On a phone it sits above the keyboard (the visual viewport) and gives the box and the button the room.
+  - Keyboard: Enter on the mic talks, ⌘/Ctrl+Enter sends, Esc stops listening and then closes; focus goes back to
+    where it was. Screen readers get a labelled dialog, a live status line and a pressed state on the mic.
 - **Posting is a hand-off**, today, on every device. "Continue on Hacker News ↗":
   1. Your words are copied, and HN's own reply page opens for that comment (`/reply?id=<comment>&goto=...`).
-  2. You paste and press **reply** there. HN's button is the confirmation.
-  3. Back in the room, "Done, I posted it" closes the sheet and says the app is watching.
-  - The words stay visible in the sheet, in case the copy fails or logging in to HN overwrites the clipboard.
-- **Your HN username** is kept in your browser only. It is optional, and is asked for after the button.
+  2. You paste and press **reply** there (signing in first, on HN's own page, if it asks). HN's button is the
+     confirmation; we never see a password.
+  3. Meanwhile the sheet watches HN's public API for your reply under that comment (new answers only, matched by
+     your name or your words), and says **Posted**, with a link to it and HN's two-hour edit and delete window.
+     It keeps watching through a reload (ten minutes in all), and a note says so if you've closed the sheet.
+  - The words stay in the sheet, with Copy again, Open it again and Edit, in case the copy fails, signing in
+    overwrites the clipboard, or HN refuses it ("posting too fast", an expired form).
+- **Your HN username** is kept in your browser only. Nobody types it: it's learned when your reply lands (from your
+  own words, five or more of them), and the sheet shows it ("as alice": change it, or forget it).
   - With it, your reply *walks in*: when HN shows your comment, your character comes out of the lift and says it.
     The lamp flares orange, the line is spotlit (you hear yourself from anywhere on the floor), and the subtitle
     says YOU.
   - **Replies to you** are played. One on the floor you're on is said next at its table and spotlit, so that
     table becomes the one you hear, wherever you are, once its voice is ready. One anywhere else on HN gets a note.
   - Your recent comments are checked every two minutes, straight from your browser to HN's public API
-    (`hacker-news.firebaseio.com`, now allowed by the page's CSP). Nothing of yours passes through our server.
-- **The companion extension** (`apps/extension`, a sketch: not published, not installed, never run against HN).
+    (`hacker-news.firebaseio.com`, allowed by the page's CSP). Nothing of yours passes through our server.
+- **The companion extension** (`apps/extension`: not published, not installed, never run against HN; tested against
+  the HN mock, `background.test.ts`).
   - It is MV3. Its content script runs only on Tower of HN's own pages.
   - It posts with the browser's existing HN session: it fetches the reply page for the form's one-time token, then
     POSTs the form, exactly as HN's own page would.
   - **Every post needs a click in the extension's own confirmation window**, so a page, even a compromised one,
-    can only *ask*.
+    can only *ask*. Closing that window is a no.
+- **Tests**: `apps/client/e2e` is a local mock of HN (its login and reply pages and its API: `hn-mock.ts`, with where
+  each string comes from) and Playwright tests of every reply flow, in Chromium, Firefox and WebKit, on desktops, an
+  iPhone and a Pixel (`npm run e2e` in `apps/client`; CI runs them). Nothing in them reaches the real HN.
 
 ## What we checked (22 Nov 2026)
 
@@ -111,7 +132,8 @@ on a phone.
       news.ycombinator.com.
 - [x] Your HN name lives in localStorage only; clearing it stops the watch.
 - [x] The extension never double-posts. It looks for your reply under that comment before posting (HN returns no
-      id), never retries blind, and answers HN's resubmission confirm once.
+      id; it compares the words alone, so HN's formatting doesn't hide it), never retries blind, and answers HN's
+      resubmission confirm once.
 - [ ] Before publishing the extension: a review of HN's current reply-form HTML (field names change rarely, but they
       can), a per-minute post limit inside the extension, and Chrome Web Store, Firefox and Safari packaging.
 - [ ] Consider Chrome's `processLocally` (on-device speech) where it's installed, for privacy.
