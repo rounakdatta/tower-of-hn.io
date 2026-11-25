@@ -34,21 +34,31 @@ jobs:
   # Chromium, Firefox and WebKit, on desktops, an iPhone and a Pixel (apps/client/e2e)
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:   # one job per engine and device, side by side
+        include:
+          - { project: chromium, browser: chromium }
+          - { project: firefox, browser: firefox }
+          - { project: webkit, browser: webkit }
+          - { project: iphone, browser: webkit }
+          - { project: pixel, browser: chromium }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
       - working-directory: apps/client
-        run: npm ci --no-audit --no-fund && npx playwright install --with-deps chromium firefox webkit
+        run: npm ci --no-audit --no-fund && npx playwright install --with-deps ${{ matrix.browser }}
       - working-directory: apps/client
-        run: npm run e2e
+        run: npm run e2e -- --project=${{ matrix.project }}
         env:
           SHOTS: e2e/.results/shots   # the key screens, per engine and device, for review
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results
+          name: e2e-results-${{ matrix.project }}
           path: apps/client/e2e/.results
           retention-days: 7
 
