@@ -23,7 +23,8 @@ why, and the plan. The QA report (flows, results, numbers, risks) is in Nextclou
   - Microphone problems are said plainly and stay on screen (blocked, Siri off, no mic, offline, no speech).
   - On a phone it sits above the keyboard (the visual viewport) and gives the box and the button the room.
   - Keyboard: Enter on the mic talks, ⌘/Ctrl+Enter sends, Esc stops listening and then closes; focus goes back to
-    where it was. Screen readers get a labelled dialog, a live status line and a pressed state on the mic.
+    where it was. Screen readers get a labelled dialog, a live status line, and a mic named for what it does next
+    (Speak your reply, Stop listening).
 - **Posting is a hand-off**, today, on every device. "Continue on Hacker News ↗":
   1. Your words are copied, and HN's own reply page opens for that comment (`/reply?id=<comment>&goto=...`).
   2. You paste and press **reply** there (signing in first, on HN's own page, if it asks). HN's button is the
@@ -116,7 +117,8 @@ on a phone.
   - Chrome on desktop and Android: Google's service.
   - Safari on macOS and iOS: Apple's, on-device for many languages.
   - It's free and fast, and it uses your browser's language.
-  - Firefox has none, so the sheet says so and you type.
+  - Where there's none (Firefox before 160; Brave, whose API is there but never answers), the sheet says so and
+    you type, or use the keyboard's own mic.
 - **Later, for privacy or offline use:** an on-device model in the browser (a small Whisper through WebGPU, roughly
   40–150 MB, downloaded once). Opt-in, because of the download.
 - **Punctuation:** Chrome returns little. A punctuation-only pass would be allowed only if it can't change a single

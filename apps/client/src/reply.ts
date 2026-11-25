@@ -32,7 +32,8 @@ const ua = navigator.userAgent;
 // (iOS has no speech recognition in a home-screen web app, though the constructor is there: typing there)
 const standaloneIOS = (/iP(hone|ad|od)/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1))
   && (matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true);
-const SR = standaloneIOS ? undefined : (window as unknown as { SpeechRecognition?: new () => Rec; webkitSpeechRecognition?: new () => Rec }).SpeechRecognition
+// (Brave has the constructor but no recogniser behind it: every start ends in a "network" error, brave-browser#2802)
+const SR = standaloneIOS || 'brave' in navigator ? undefined : (window as unknown as { SpeechRecognition?: new () => Rec; webkitSpeechRecognition?: new () => Rec }).SpeechRecognition
   ?? (window as unknown as { webkitSpeechRecognition?: new () => Rec }).webkitSpeechRecognition;
 /** whose service turns your voice into text: the browser's own (every iPhone browser is Safari underneath) */
 const EAR = /iP(hone|ad|od)/.test(ua) || (/Safari\//.test(ua) && !/Chrom|Edg\//.test(ua)) ? 'Apple' : /Edg\//.test(ua) ? 'Microsoft' : 'Google';
@@ -400,7 +401,7 @@ export class Reply {
       'not-allowed': 'The microphone is blocked for this site: allow it in your browser’s site settings, or type',
       'service-not-allowed': 'Dictation is off on this device (on iPhone it needs Siri): type, or use your keyboard’s mic',
       'audio-capture': 'No microphone found: type your reply',
-      'network': `Dictation needs a connection: type, or ${tap} to try again`,
+      'network': navigator.onLine ? `The dictation service didn’t answer: type, or ${tap} to try again` : `Dictation needs a connection: type, or ${tap} to try again`,
       'language-not-supported': `Dictation doesn’t know ${lang} here: type your reply`,
       'no-speech': `Didn’t catch that: ${tap} to try again`,
       'aborted': '',

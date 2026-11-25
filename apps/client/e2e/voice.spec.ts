@@ -64,7 +64,7 @@ test('microphone blocked (or the prompt dismissed): a reason, a way on, and it s
   await expect(sheet.getByRole('textbox')).toBeEditable();
 });
 
-for (const [code, words] of [['no-speech', 'Didn’t catch that'], ['network', 'Dictation needs a connection'], ['audio-capture', 'No microphone found'],
+for (const [code, words] of [['no-speech', 'Didn’t catch that'], ['network', 'The dictation service didn’t answer'], ['audio-capture', 'No microphone found'],
   ['service-not-allowed', 'Dictation is off on this device'], ['language-not-supported', 'Dictation doesn’t know']] as const) {
   test(`recogniser error "${code}" is said plainly`, async ({ page }) => {
     const sheet = page.getByRole('dialog');
@@ -115,6 +115,19 @@ test('Chrome on Android repeats earlier words in each result: said once (Pixel o
   await sr(page, 'push', 'hello world how are you', true);
   await sr(page, 'end');
   await expect(box).toHaveValue('Hello world how are you');
+});
+
+test.describe('Brave: the speech API is there but nothing answers it (brave-browser#2802)', () => {
+  test.beforeEach(async ({ context }) => {
+    await context.addInitScript(() => { Object.defineProperty(navigator, 'brave', { value: { isBrave: () => Promise.resolve(true) }, configurable: true }); });
+  });
+  test('no microphone that can only fail; it says to type, or use the keyboard\'s own mic', async ({ page }) => {
+    await page.reload();
+    await page.locator('[data-reply=bob]').click();
+    const sheet = page.getByRole('dialog');
+    await expect(sheet.getByRole('button', { name: 'Speak your reply' })).toHaveCount(0);
+    await expect(sheet.getByRole('status')).toHaveText('This browser can’t take dictation: type, or use your keyboard’s mic');
+  });
 });
 
 test.describe('a browser that can\'t take dictation', () => {
