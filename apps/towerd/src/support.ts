@@ -6,6 +6,8 @@
 // the table's letterbox, the frame round the picture) and serves /support. Unset, it empties them: index.html goes
 // out byte for byte as it did before this existed, and /support is the app, as any other unknown path is.
 // None of it is a comment or a turn: nothing here can reach the voices, which only ever read Hacker News.
+// supportSite() is all towerd asks of it (its HTTP layer only glues it in), so the tests drive what it serves.
+import { createHash } from 'node:crypto';
 
 export type Support = { url: string; upi: string | null };
 
@@ -58,7 +60,7 @@ const CSS = `<style>
 #give a:focus-visible,#credit a:focus-visible{outline:2px solid #fff;outline-offset:3px;border-radius:3px}
 #credit{position:fixed;left:24px;bottom:calc(8.5vh / 2 - 9px);z-index:3;margin:0;color:var(--mute);font-size:12.5px;white-space:nowrap;visibility:hidden;opacity:0;transition:opacity .3s, visibility 0s .3s}
 #credit svg{width:9px;height:9px;margin-left:4px}
-@media (width > 1180px) { body[data-mode="table"]:not(.reply-open) #credit { visibility:visible; opacity:1; transition:opacity .6s .5s } }
+@media not all and (max-width: 1180px) { body[data-mode="table"]:not(.reply-open) #credit { visibility:visible; opacity:1; transition:opacity .6s .5s } }
 @media (max-height: 420px) { #splash #give { display:none } }
 @media (prefers-reduced-motion: reduce) { #credit, body[data-mode="table"]:not(.reply-open) #credit { transition:none } }
 .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
@@ -127,4 +129,34 @@ ${out(s, 'Sponsor on GitHub', 'go')}${upi}
 </body>
 </html>
 `;
+}
+
+/**
+ * towerd's support, built once from the config: what /support answers, the client's page as served, and what /status
+ * adds. Off (null), it answers nothing and changes nothing. Views are counted as towerd counts clips: a number since
+ * start, nothing about who.
+ */
+export function supportSite(s: Support | null) {
+  const page = s ? Buffer.from(supportPage(s)) : null;
+  const tag = page ? `W/"${createHash('sha1').update(page).digest('base64url').slice(0, 16)}"` : '';   // weak, as /live's
+  let views = 0, memo: { mtime: number; body: Buffer } | null = null;
+  return {
+    /** the page /support sends (null: off), for towerd to compress as it does any other */
+    page,
+    /** /support's answer to a GET or HEAD: null when off, or for any other path (the app answers those) */
+    answer(method: string, path: string, ifNoneMatch?: string): { status: 200 | 304; headers: Record<string, string> } | null {
+      if (!page || (path !== '/support' && path !== '/support/')) return null;
+      if (method === 'GET') views++;
+      const headers: Record<string, string> = { 'cache-control': 'no-cache', etag: tag, vary: 'accept-encoding' };
+      if (ifNoneMatch === tag) return { status: 304, headers };
+      return { status: 200, headers: { ...headers, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': SUPPORT_CSP, 'referrer-policy': 'strict-origin-when-cross-origin' } };
+    },
+    /** the client's index.html as served: rebuilt only when the file changes */
+    index(f: { body: Buffer; mtime: number }): Buffer {
+      if (memo?.mtime !== f.mtime) memo = { mtime: f.mtime, body: Buffer.from(withSupport(f.body.toString('utf8'), s)) };
+      return memo.body;
+    },
+    /** what /status adds: nothing while off */
+    status: () => (s ? { support: { views } } : {}),
+  };
 }

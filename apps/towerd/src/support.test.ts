@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { readSupport, withSupport, supportPage, missingMarks, MARKS, SUPPORT_CSP, type Support } from './support.ts';
+import { readSupport, withSupport, supportPage, supportSite, missingMarks, MARKS, SUPPORT_CSP, type Support } from './support.ts';
 
 const INDEX = readFileSync(join(import.meta.dirname, '../../client/index.html'), 'utf8');
 const URL_ = 'https://github.com/sponsors/example';
@@ -37,6 +37,7 @@ test('set: a line at the foot of the door, a credit at the table, their styles, 
   // make it the credit's containing block)
   assert.match(page, /<small>Headphones on\. Sound is half of it\.<\/small>\n<\/div><p id="give">[^\n]*<\/p><\/div>\n/);
   assert.match(page, /id="leave">Stand up<\/button><\/div><p id="credit">[^\n]*<\/p>\n<div id="splash"/);
+  assert.ok(page.indexOf('</style><style>\n#splash') > 0 && page.indexOf('<style>\n#splash') < page.indexOf('</head>'), 'the styles, in the head');
   // and nothing else in the page changed
   assert.equal(page.replace(/<style>\n#splash[\s\S]*?<\/style>|<p id="give">[\s\S]*?<\/p>|<p id="credit">[\s\S]*?<\/p>/g, ''), withSupport(INDEX, null));
 });
@@ -174,7 +175,8 @@ test('the credit takes the hint\'s baseline, and only the widths where the hint 
   const css = withSupport(INDEX, on).match(/<style>\n#splash[\s\S]*?<\/style>/)![0];
   // at or below this width the page moves the hint to the credit's own left; above it, the hint is centred
   const [, w] = /@media \(max-width: (\d+)px\) \{ body\[data-mode="table"\] #hint \{ left:24px/.exec(INDEX)!;
-  assert.ok(css.includes(`@media (width > ${w}px) { body[data-mode="table"]:not(.reply-open) #credit { visibility:visible`), w);
+  // (`not all and (max-width)`, not `width >`: range syntax is lost on Chrome 94–103, which still runs the tower)
+  assert.ok(css.includes(`@media not all and (max-width: ${w}px) { body[data-mode="table"]:not(.reply-open) #credit { visibility:visible`), w);
   assert.match(css, /#credit\{position:fixed;left:24px;/);
   const [, bottom] = /body\[data-mode="table"\] #hint \{ bottom:([^}]+?) \}/.exec(INDEX)!;
   assert.ok(css.includes(`#credit{position:fixed;left:24px;bottom:${bottom};`), bottom);
@@ -182,13 +184,46 @@ test('the credit takes the hint\'s baseline, and only the widths where the hint 
   assert.match(css, /#splash #give\{[^}]*padding:0 24px max\(18px, env\(safe-area-inset-bottom\)\)/);
 });
 
-test('towerd wires it as said: /support only when on, under its own policy; /status gains nothing when off', () => {
-  // importing main.ts would start the HN ingest, so its wiring is checked as text here (and against a running
-  // towerd, off and on, when this was built)
+test('what towerd serves: off, nothing answers and nothing changes; on, /support under its own policy, counted bare', () => {
+  const f = { body: Buffer.from(INDEX), mtime: 1 };
+  const off = supportSite(null);
+  for (const path of ['/support', '/support/']) assert.equal(off.answer('GET', path), null, path);
+  assert.equal(off.page, null);
+  assert.deepEqual(off.status(), {});
+  assert.equal(off.index(f).toString(), withSupport(INDEX, null));
+
+  const site = supportSite(on);
+  for (const path of ['/', '/supportx', '/support/x', '/SUPPORT', '/support.html', '/live/support']) assert.equal(site.answer('GET', path), null, path);
+  const a = site.answer('GET', '/support')!;
+  assert.equal(a.status, 200);
+  assert.deepEqual(a.headers, { 'cache-control': 'no-cache', etag: a.headers.etag, vary: 'accept-encoding', 'content-type': 'text/html; charset=utf-8',
+    'content-security-policy': SUPPORT_CSP, 'referrer-policy': 'strict-origin-when-cross-origin' });
+  assert.match(a.headers.etag, /^W\/"[\w-]{16}"$/);
+  assert.equal(site.page!.toString(), supportPage(on));
+  assert.equal(site.answer('GET', '/support/')!.status, 200);
+  assert.equal(site.answer('GET', '/support', a.headers.etag)!.status, 304);
+  assert.deepEqual(Object.keys(site.answer('HEAD', '/support', a.headers.etag)!.headers).sort(), ['cache-control', 'etag', 'vary']);
+  assert.equal(site.answer('GET', '/support', 'W/"something else"')!.status, 200);
+  // a view is a GET (a 304 is someone looking again; a HEAD is no one): four above
+  assert.deepEqual(site.status(), { support: { views: 4 } });
+  // the page as served: filled, and rebuilt only when the file changes
+  const first = site.index(f);
+  assert.equal(first.toString(), withSupport(INDEX, on));
+  assert.equal(site.index({ body: Buffer.from('changed'), mtime: 1 }), first, 'same file: the same bytes');
+  assert.ok(site.index({ body: Buffer.from('<p>x</p><!--support:door-->'), mtime: 2 }).toString().includes('<p id="give">'));
+  // and towerd only glues it in: read from the environment, asked first for every GET or HEAD, its page and its count
   const main = readFileSync(join(import.meta.dirname, 'main.ts'), 'utf8');
-  assert.match(main, /const supportHtml = SUPPORT \?/);
-  assert.match(main, /if \(supportHtml && \(url\.pathname === '\/support' \|\| url\.pathname === '\/support\/'\)\) \{/);
-  assert.match(main, /'content-security-policy': SUPPORT_CSP/);
-  assert.match(main, /\.\.\.\(SUPPORT \? \{ support: \{ views: supportViews \} \} : \{\}\)/);
-  assert.match(main, /if \(p === INDEX\) file\.body = indexPage\(file\);/);
+  assert.match(main, /readSupport\(process\.env\)/);
+  assert.match(main, /const support = supportSite\(SUPPORT\);/);
+  assert.ok(main.indexOf('support.answer(') > main.indexOf("req.method !== 'GET' && req.method !== 'HEAD'") && main.indexOf('support.answer(') < main.indexOf("if (!url.pathname.startsWith('/live/')) {"));
+  assert.match(main, /if \(p === INDEX\) file\.body = support\.index\(file\);/);
+  assert.match(main, /\.\.\.support\.status\(\) \}\)\);/);
+});
+
+test('the door line and the credit keep the rules their look depends on', () => {
+  const css = withSupport(INDEX, on).match(/<style>\n#splash[\s\S]*?<\/style>/)![0];
+  for (const rule of ['#splash{grid-template-rows:1fr auto}', 'max-width:min(100%, 720px)', 'text-align:center;text-wrap:balance}', '#splash #give a{white-space:nowrap}',
+    '@media (max-height: 420px) { #splash #give { display:none } }', 'z-index:3;', 'text-decoration:underline;', 'white-space:nowrap;visibility:hidden;opacity:0;'])
+    assert.ok(css.includes(rule), rule);
+  assert.equal(readSupport({ SPONSOR_URL: URL_, SPONSOR_UPI: '  rounak.d@okaxis ' }).support?.upi, 'rounak.d@okaxis', 'spaces round a UPI ID are not part of it');
 });

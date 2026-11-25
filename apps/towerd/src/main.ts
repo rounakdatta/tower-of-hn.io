@@ -27,7 +27,7 @@ import { speakable } from '../../../packages/core/src/speakable.ts';
 import { VoiceQueue, band, type Entry } from './queue.ts';
 import { tagPrompt, parseTags, type Tag } from './tags.ts';
 import { versionOf, sweep, liveLines, type Version } from './store.ts';
-import { readSupport, withSupport, supportPage, missingMarks, SUPPORT_CSP } from './support.ts';
+import { readSupport, supportSite, missingMarks } from './support.ts';
 
 const HN = 'https://hacker-news.firebaseio.com/v0';
 const UA = { 'User-Agent': 'towerofhn-towerd/0.1' };
@@ -40,7 +40,7 @@ const MAX_QUEUED = 48;                               // the most urgent of what'
 /** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
 // v3: comments are said the way people read them aloud (packages/core spoken.ts); older audio plays until re-voiced
 const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v3';
-const STATIC = resolve(process.env.STATIC ?? join(import.meta.dirname, '../../client/dist'));
+const STATIC = resolve(process.env.STATIC ?? join(import.meta.dirname, '../../client/dist')), INDEX = join(STATIC, 'index.html');
 const RETENTION_DAYS = Math.max(1, Number(process.env.RETENTION_DAYS) || 14);
 const AUDIO_POLICY = ['tower', 'tower-dry'].includes(process.env.AUDIO_POLICY ?? '') ? process.env.AUDIO_POLICY! : 'age';
 const AUDIO = { grace: Math.max(1, Number(process.env.AUDIO_GRACE_HOURS) || 24) * 3_600_000,
@@ -49,6 +49,9 @@ const PRUNE_MS = Math.max(10, Number(process.env.PRUNE_EVERY_S) || 600) * 1000; 
 console.log(JSON.stringify({ audio: { policy: AUDIO_POLICY, asked: process.env.AUDIO_POLICY ?? null, grace_h: AUDIO.grace / 3_600_000, max_mb: AUDIO.maxBytes / 1_048_576, free_min_pct: AUDIO.freeMin, retention_days: RETENTION_DAYS } }));
 const { support: SUPPORT, problems: supportProblems } = readSupport(process.env);
 console.log(JSON.stringify({ support: { on: !!SUPPORT, upi: !!SUPPORT?.upi, ...(supportProblems.length ? { refused: supportProblems } : {}) } }));
+const support = supportSite(SUPPORT);
+// the page must carry its markers, or nothing would point to /support: say so at boot, not to a visitor
+if (SUPPORT) { try { const missing = missingMarks(readFileSync(INDEX, 'utf8')); if (missing.length) console.warn(JSON.stringify({ support: { missing } })); } catch { /* no page yet: / answers 503 */ } }
 for (const d of [LIVE, JOBS]) mkdirSync(d, { recursive: true });
 
 // ---------------------------------------------------------------- HN access
@@ -432,17 +435,15 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     held();
     res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: vq.entries.size, demand: demand.size, backlog, listeners: ears.size, tower: live.tower.length, audience: audience(), voicing: voicingSummary(),
       audio: { policy: AUDIO_POLICY, held: heldFor || null, free_pct: Math.round(freePct * 10) / 10, ...audio.last, dropped: audio.dropped, gets: clipGets },
-      ...(SUPPORT ? { support: { views: supportViews } } : {}) }));
+      ...support.status() }));
     return;
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
-  if (supportHtml && (url.pathname === '/support' || url.pathname === '/support/')) {
-    if (req.method === 'GET') supportViews++;
-    const head = { 'cache-control': 'no-cache', etag: supportHtml.tag, vary: 'accept-encoding' };
-    if (req.headers['if-none-match'] === supportHtml.tag) { res.writeHead(304, head); res.end(); return; }
-    const out = squeeze(req, '/support.html', supportHtml, false);
-    res.writeHead(200, { ...head, 'content-type': TYPES['.html'], ...(out.enc ? { 'content-encoding': out.enc } : {}),
-      'content-security-policy': SUPPORT_CSP, 'referrer-policy': 'strict-origin-when-cross-origin' });
+  const sup = support.answer(req.method!, url.pathname, req.headers['if-none-match']);
+  if (sup) {
+    if (sup.status === 304) { res.writeHead(304, sup.headers); res.end(); return; }
+    const out = squeeze(req, '/support.html', { body: support.page!, mtime: 0 }, false);
+    res.writeHead(200, { ...sup.headers, ...(out.enc ? { 'content-encoding': out.enc } : {}) });
     res.end(req.method === 'HEAD' ? undefined : out.body);
     return;
   }
@@ -457,7 +458,7 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     const forever = url.pathname.startsWith('/assets/');
     const file = readOr503(p, res);
     if (!file) return;
-    if (p === INDEX) file.body = indexPage(file);
+    if (p === INDEX) file.body = support.index(file);
     const out = squeeze(req, p, file, forever);
     res.writeHead(200, {
       'content-type': TYPES[extname(p)] ?? 'application/octet-stream',
@@ -501,22 +502,6 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
  * revision) and the client's script 3.7x. Brotli for the content-hashed assets (compressed once, served forever),
  * gzip for the rest. Audio is already compressed: never touched.
  */
-/** The client's page as served: the support markers filled, or emptied when it's off (then the page is byte for byte
- *  the one Vite built before they existed). Rebuilt only when the file changes. */
-const INDEX = join(STATIC, 'index.html');
-let indexMemo: { mtime: number; body: Buffer } | null = null;
-function indexPage(f: { body: Buffer; mtime: number }) {
-  if (indexMemo?.mtime !== f.mtime) indexMemo = { mtime: f.mtime, body: Buffer.from(withSupport(f.body.toString('utf8'), SUPPORT)) };
-  return indexMemo.body;
-}
-/** /support, built once; views are counted as clips are (a number since start, nothing about who). */
-const supportHtml = SUPPORT ? (() => {
-  const body = Buffer.from(supportPage(SUPPORT));
-  return { body, mtime: Date.now(), tag: `W/"${createHash('sha1').update(body).digest('base64url').slice(0, 16)}"` };   // weak, as /live's: proxies pass it as is
-})() : null;
-// the page must carry its markers, or nothing would point to /support: say so at boot, not to a visitor
-if (SUPPORT && existsSync(INDEX)) { const missing = missingMarks(readFileSync(INDEX, 'utf8')); if (missing.length) console.warn(JSON.stringify({ support: { missing } })); }
-let supportViews = 0;
 const squeezed = new Map<string, { mtime: number; enc: string; body: Buffer }>();
 let squeezedBytes = 0;
 function squeeze(req: import('node:http').IncomingMessage, p: string, f: { body: Buffer; mtime: number }, asset: boolean) {
