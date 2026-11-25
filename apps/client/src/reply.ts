@@ -114,7 +114,8 @@ class Watch {
         // this device's clock and HN's needn't agree)
         if (!h.kids && (c.time ?? 0) < h.at / 1000 - 1800) { this.checked.add(k); continue; }
         const how = yours(c, h.text, you.me);
-        if (!how) { if (you.me || (c.text && c.text !== '[delayed]')) this.checked.add(k); continue; }   // (a held one: again)
+        // (a short reply counts only among the answers that are new since you opened the sheet)
+        if (!how || (how === 'same' && !h.kids)) { if (you.me || (c.text && c.text !== '[delayed]')) this.checked.add(k); continue; }   // (a held one: again)
         if (how === 'words' && c.by) you.set(c.by);                    // that's you, then (never replaces a known name)
         if (this.h !== h) return true;
         this.stop();
@@ -198,10 +199,10 @@ export class Reply {
     this.target = t; this.kids = null; this.failed = ''; this.shut = ''; this.blocked = false; this.said_ = ''; this.busy = false;
     clearTimeout(this.extTimer);
     this.onOpen(true);
+    this.el.classList.add('show');                       // (first: nothing in a hidden sheet can take the focus)
     const h = watch.h;
     if (h && h.id === t.id) this.handed(h, null);
     else { const d = drafts.get(t.id); this.render(d, d ? 'draft' : ''); }
-    this.el.classList.add('show');
     visualViewport?.addEventListener('resize', this.fit);
     visualViewport?.addEventListener('scroll', this.fit);
     this.fit();
@@ -347,6 +348,7 @@ export class Reply {
   private listen() {
     if (!SR || this.rec) return;
     const ta = this.$<HTMLTextAreaElement>('textarea')!;
+    if (ta.hidden) this.$<HTMLButtonElement>('.peek')?.click();   // (out of the preview: you see what it writes)
     const rec = new SR();
     rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
     this.base = ta.value;
@@ -484,7 +486,7 @@ export class Reply {
     (TOUCH ? this.$('#reply-to') : c)?.focus({ preventScroll: true });
   }
   private notYet() {
-    this.state('Not seen on Hacker News yet (its API can lag). If HN showed an error, your words are still here.', 'error');
+    this.state('Not seen on Hacker News yet (its API can lag): look at the thread before sending it again. If HN showed an error, your words are still here.', 'error');
   }
   /** It's there: where to see it, and HN's own rules for changing it */
   private posted(l: Landed) {

@@ -12,13 +12,25 @@ export const replyUrl = (id: number, story: number) => `https://news.ycombinator
 export const test = base.extend<{ mock: HnMock; speech: void }>({
   mock: async ({ context }, use) => {
     const mock = new HnMock();
+    // a request the browser makes by following a redirect is never routed (Playwright's network docs; WebKit refuses a
+    // fulfilled redirect outright), so it would reach the real HN: the mock's redirects are sent as pages that navigate
+    // instead (below), and any request that still arrives by a redirect fails the test
+    const leaks: string[] = [];
+    context.on('request', (q) => { if (q.redirectedFrom()) leaks.push(q.url()); });
     // nothing leaves this machine but for HN's two hosts, which are the mock
     await context.route(/^https?:\/\/(?!127\.0\.0\.1[:/]|localhost[:/]|news\.ycombinator\.com\/|hacker-news\.firebaseio\.com\/)/, (r) => r.abort());
     await context.route(/^https:\/\/(news\.ycombinator\.com|hacker-news\.firebaseio\.com)\//, async (route) => {
       const r = route.request();
-      const res = await mock.handle({ method: r.method(), url: r.url(), headers: await r.allHeaders(), body: r.postData() ?? '' });
+      // (WebKit adds cookies below the interception layer: the mock reads them from the browser's jar, in every engine)
+      const cookie = (await context.cookies(r.url())).map((c) => `${c.name}=${c.value}`).join('; ');
+      const res = await mock.handle({ method: r.method(), url: r.url(), headers: { ...(await r.allHeaders()), cookie }, body: r.postData() ?? '' });
       const set = res.headers['set-cookie'];
       if (set) await keepCookie(context, set);           // (every engine keeps it, fulfilled or not)
+      if (res.status >= 300 && res.status < 400 && res.headers.location) {
+        const to = new URL(res.headers.location, r.url()).href.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+        await route.fulfill({ status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: `<meta http-equiv="refresh" content="0; url=${to}">` });
+        return;
+      }
       await route.fulfill({ status: res.status, headers: res.headers, body: res.body });
     });
     // what the page put on the clipboard (the real clipboard is still written: the page sees the real outcome)
@@ -29,6 +41,7 @@ export const test = base.extend<{ mock: HnMock; speech: void }>({
       c.writeText = (t: string) => { (window as unknown as { __copied: string }).__copied = t; return write(t); };
     });
     await use(mock);
+    expect(leaks, 'requests that went round the HN mock').toEqual([]);
   },
   speech: async ({ context }, use) => { await context.addInitScript(fakeSpeech); await use(); },
 });

@@ -24,6 +24,7 @@ test('no serious or critical axe findings in any state: writing, handed over, po
   expect(await axe(page)).toEqual([]);
   await hn.locator('textarea[name=text]').fill('Checked by axe, all the way through.');
   await hn.locator('input[type=submit][value=reply]').click();
+  await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
   await page.bringToFront();
   await expect(page.locator('#reply-to')).toHaveText('Posted', { timeout: 20_000 });
   expect(await axe(page)).toEqual([]);
@@ -76,6 +77,7 @@ test('200% zoom: the sheet fits, and every control can be reached', async ({ pag
   test.skip(info.project.name === 'iphone' || info.project.name === 'pixel', 'a desk');
   await page.setViewportSize({ width: 640, height: 360 });                       // a 1280×720 window at 200%
   await page.locator('[data-reply=bob]').click();
+  await page.locator('#reply').evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));   // (it slides up)
   const box = await page.locator('#reply').boundingBox();
   expect(box!.y).toBeGreaterThanOrEqual(0);
   expect(box!.y + box!.height).toBeLessThanOrEqual(360);

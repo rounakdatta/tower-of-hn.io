@@ -110,9 +110,12 @@ function overlap(a: string[], b: string[]) {
 /** Yours? By name, if we know it (and then only by name: someone else's words never count). Without a name, by your
  *  words, five or more of them (HN formats them, and its API gives back its HTML): a short "Thanks!" from someone
  *  else under the same comment must never pass for yours. */
-export function yours(c: { by?: string; text?: string }, text: string, me: string): 'name' | 'words' | '' {
+export function yours(c: { by?: string; text?: string }, text: string, me: string): 'name' | 'words' | 'same' | '' {
   if (me) return c.by === me ? 'name' : '';
   if (!c.text || c.text === '[delayed]') return '';
-  const wa = asPosted(text).split(' '), wb = skeleton(hnPlain(c.text)).split(' ');
-  return wa.length >= 5 && wb.length >= 5 && overlap(wa, wb) >= 0.8 ? 'words' : '';
+  const a = asPosted(text), b = skeleton(hnPlain(c.text)), wa = a.split(' '), wb = b.split(' ');
+  if (wa.length >= 5 && wb.length >= 5) return overlap(wa, wb) >= 0.8 ? 'words' : '';
+  // a short reply ("Thanks, this helped!"), or one in a script without spaces: word for word only, and never enough
+  // to learn a name from
+  return a !== '' && a === b ? 'same' : '';
 }

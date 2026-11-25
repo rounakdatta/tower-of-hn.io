@@ -55,7 +55,10 @@ test('yours: by name when we know it (and then only by name); else by five or mo
   assert.equal(yours({ by: 'bob', text: 'The borrow checker is the reason this compiles at all, not LLVM itself.' }, text, ''), 'words');
   assert.equal(yours({ by: 'carol', text: 'I disagree: LLVM is why it compiles, the checker only rejects.' }, text, ''), '');
   assert.equal(yours({ by: 'bob', text: '[delayed]' }, text, ''), '');
-  assert.equal(yours({ by: 'bob', text: 'Thanks!' }, 'Thanks!', ''), '');           // too short to tell: never someone else's
+  assert.equal(yours({ by: 'bob', text: 'Thanks!' }, 'Thanks!', ''), 'same');       // short: word for word only (no name learned)
+  assert.equal(yours({ by: 'bob', text: 'Thanks, really!' }, 'Thanks!', ''), '');
+  assert.equal(yours({ by: 'bob', text: '谢谢你的解释' }, '谢谢你的解释', ''), 'same');    // a script without spaces
+  assert.equal(yours({ by: 'bob', text: '谢谢' }, '谢谢你的解释', ''), '');
 });
 
 test('entities HN could send, and ones it never would, decode safely', () => {

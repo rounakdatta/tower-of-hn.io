@@ -94,6 +94,7 @@ test('a reply handed to HN survives a reload (a phone dropping the tab): the not
   await page.reload();                                                           // the room is gone, the hand-off isn't
   await hn.locator('textarea[name=text]').fill('Posted while this tab was gone.');
   await hn.locator('input[type=submit][value=reply]').click();
+  await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
   await page.bringToFront();
   await expect(page.locator('#toast')).toContainText('Your reply to bob is on Hacker News', { timeout: 20_000 });
 });
@@ -205,6 +206,7 @@ test('HN asks to confirm (commconfirm): reply once more there, and it lands', as
   await expect(hn.locator('body')).toContainText('Please confirm that this is your comment');
   await expect(hn.locator('textarea[name=text]')).toHaveValue('Confirmed, eventually.');
   await hn.locator('input[type=submit][value=reply]').click();
+  await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
   await page.bringToFront();
   await expect(page.locator('#reply-to')).toHaveText('Posted', { timeout: 20_000 });
   expect(mock.posts).toHaveLength(1);
@@ -248,12 +250,13 @@ test('HN\'s API down: the sheet still opens, and finds your reply once the API i
   await signedIn(context, mock);
   mock.mode.apiDown = true;
   await page.locator('[data-reply=bob]').click();
-  await page.getByRole('dialog').getByRole('textbox').fill('Through an outage.');
+  await page.getByRole('dialog').getByRole('textbox').fill('Through an outage, it still landed.');
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
   const hn = await opened;
-  await hn.locator('textarea[name=text]').fill('Through an outage.');
+  await hn.locator('textarea[name=text]').fill('Through an outage, it still landed.');
   await hn.locator('input[type=submit][value=reply]').click();
+  await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
   await page.bringToFront();
   await page.waitForTimeout(6000);
   await expect(page.locator('#reply-to')).toHaveText('Over to Hacker News');
@@ -267,9 +270,11 @@ test('a deleted comment, or a thread HN has closed, says so before you write', a
   await expect(sheet.getByRole('status')).toContainText('That comment was deleted');
   await sheet.getByRole('textbox').fill('Too late.');
   await expect(sheet.getByRole('button', { name: /Continue on Hacker News/ })).toBeDisabled();
+  await page.keyboard.press('Escape');
   await page.locator('[data-reply=dave]').click();
-  await expect(sheet.getByRole('status')).toContainText('This thread is closed');
-  await expect(sheet.getByRole('button', { name: /Continue on Hacker News/ })).toBeDisabled();
+  await expect(sheet.getByRole('status')).toContainText('This thread looks closed');   // (a warning: HN's page decides)
+  await sheet.getByRole('textbox').fill('Still worth saying.');
+  await expect(sheet.getByRole('button', { name: /Continue on Hacker News/ })).toBeEnabled();
 });
 
 test('a reply from someone else under the same comment is never taken for yours', async ({ page, context, mock }) => {
@@ -286,6 +291,21 @@ test('a reply from someone else under the same comment is never taken for yours'
   expect(await page.evaluate(() => localStorage.getItem('tohn-me'))).toBeNull();
 });
 
+test('a short reply is found word for word, and teaches the sheet no name', async ({ page, context, mock }) => {
+  await signedIn(context, mock);
+  await page.locator('[data-reply=bob]').click();
+  await page.getByRole('dialog').getByRole('textbox').fill('Thanks, this helped!');
+  const opened = context.waitForEvent('page');
+  await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
+  const hn = await opened;
+  await hn.locator('textarea[name=text]').fill('Thanks, this helped!');
+  await hn.locator('input[type=submit][value=reply]').click();
+  await hn.waitForURL(/\/item\?id=/);
+  await page.bringToFront();
+  await expect(page.locator('#reply-to')).toHaveText('Posted', { timeout: 20_000 });
+  expect(await page.evaluate(() => localStorage.getItem('tohn-me'))).toBeNull();
+});
+
 test('signing in as someone the sheet doesn\'t know: "as alice" is learned; "Forget it" forgets', async ({ page, context, mock }) => {
   await signedIn(context, mock);
   await page.locator('[data-reply=bob]').click();
@@ -295,6 +315,7 @@ test('signing in as someone the sheet doesn\'t know: "as alice" is learned; "For
   const hn = await opened;
   await hn.locator('textarea[name=text]').fill('Five words make a match!');                      // fixed on HN
   await hn.locator('input[type=submit][value=reply]').click();
+  await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
   await page.bringToFront();
   await expect(page.locator('#reply-to')).toHaveText('Posted', { timeout: 20_000 });
   await page.getByRole('button', { name: 'Forget it' }).click();
