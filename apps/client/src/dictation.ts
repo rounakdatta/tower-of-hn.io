@@ -3,17 +3,19 @@
 // capital where a sentence starts.
 export type Result = { isFinal: boolean; 0: { transcript: string } };
 export const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-const SPACED = /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Armenian}\p{N}]/u;
-/** two stretches of text as one: a space between words of a spaced script (none in Chinese or Japanese) */
+/** scripts written without spaces between words */
+const UNSPACED = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u;
+/** two stretches of text as one: a space between, except before punctuation, or in a script without spaces */
 export function glue(a: string, b: string) {
-  if (!a || !b || /\s$/.test(a) || /^\s/.test(b)) return a + b;
-  return (SPACED.test(a.slice(-1)) || /[.!?,;:]$/.test(a)) && SPACED.test(b[0]) ? `${a} ${b}` : a + b;
+  if (!a || !b || /\s$/.test(a) || /^\s/.test(b) || /^[.,;:!?)\]}”’»…]/.test(b)) return a + b;
+  return UNSPACED.test(a.slice(-1)) || UNSPACED.test(b[0]) ? a + b : `${a} ${b}`;
 }
 /** One listening round, as text. Each of the recogniser's results holds a stretch of what you said, except in Chrome on
  *  Android, whose continuous sessions repeat all the earlier words in each new result: there, a result that starts
  *  with everything before it replaces it, instead of saying it all twice. */
 export function heard(results: ArrayLike<Result>, cumulative: boolean) {
-  const add = (acc: string, w: string) => (acc && cumulative && norm(acc) && norm(w).startsWith(norm(acc)) ? w : glue(acc, w));
+  // (whole words: "so" then "something else" is two stretches, not one repeated)
+  const add = (acc: string, w: string) => (acc && cumulative && norm(acc) && `${norm(w)} `.startsWith(`${norm(acc)} `) ? w : glue(acc, w));
   let fin = '', mid = '';
   for (let i = 0; i < results.length; i++) {
     const r = results[i], w = r[0]?.transcript ?? '';

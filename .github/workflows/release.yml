@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Core, voice queue, HN formatting and extension tests
+      - name: Core, voice queue, reply and extension tests
         run: node --test packages/core/src/*.test.ts apps/towerd/src/*.test.ts apps/client/src/*.test.ts apps/extension/*.test.ts
       - name: Client builds
         working-directory: apps/client
@@ -26,8 +26,28 @@ jobs:
       - name: Worker parses
         run: python3 -c "import ast; ast.parse(open('apps/voice-worker/worker.py').read())"
 
+  # Replying, end to end: the reply sheet against a local mock of Hacker News (nothing reaches the real HN), in
+  # Chromium, Firefox and WebKit, on desktops, an iPhone and a Pixel (apps/client/e2e)
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - working-directory: apps/client
+        run: npm ci --no-audit --no-fund && npx playwright install --with-deps chromium firefox webkit
+      - working-directory: apps/client
+        run: npm run e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: apps/client/e2e/.results
+          retention-days: 7
+
   images:
-    needs: test
+    needs: [test, e2e]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

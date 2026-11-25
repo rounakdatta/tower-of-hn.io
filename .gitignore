@@ -55,3 +55,5 @@ spikes/*/out/
 spikes/live-out/
 var/
 apps/client/dist/
+apps/client/e2e/.harness/
+apps/client/e2e/.results/

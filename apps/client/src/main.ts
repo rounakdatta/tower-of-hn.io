@@ -706,7 +706,7 @@ addEventListener('keydown', (e) => {
   else if (e.key === ' ' && mode === 'table') { e.preventDefault(); director.togglePause(); }
   else if ((e.key === 'n' || e.key === 'N') && mode === 'table') nextTable();
   else if (e.key === 'm' || e.key === 'M') audio.setMuted(!audio.muted);
-  else if ((e.key === 'r' || e.key === 'R') && !reply?.open && !(e.target as HTMLElement)?.closest?.('input, textarea')) {
+  else if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey && !reply?.open && !(e.target as HTMLElement)?.closest?.('input, textarea')) {
     e.preventDefault();
     if (mode === 'table') replyHere();
     else if (mode === 'floor' && walk.locked) { const a = aimAt(innerWidth / 2, innerHeight / 2); if (a.kind === 'person') replyTo(crowd.people[a.i].name); }

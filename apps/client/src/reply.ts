@@ -46,10 +46,10 @@ const MIC = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0
 /** text HN will format (italics, code, links, paragraphs): worth a preview */
 const FORMATTED = /\*|https?:\/\/|\n[ \t]*\n|(^|\n) {2,}\S/;
 
-const item = (id: number): Promise<Item> => fetch(`${API}/item/${id}.json`, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null));
+const item = (id: number): Promise<Item> => fetch(`${API}/item/${id}.json`, { cache: 'no-store', signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null));
 const replyUrl = (h: { id: number; story: number }) => `${SITE}/reply?id=${h.id}&goto=${encodeURIComponent(`item?id=${h.story}#${h.id}`)}`;
 const store = {
-  get<T>(k: string, or: T): T { try { return JSON.parse(localStorage.getItem(k) ?? 'null') ?? or; } catch { return or; } },
+  get<T>(k: string, or: T): T { try { const v = JSON.parse(localStorage.getItem(k) ?? 'null'); return v && typeof v === 'object' ? v : or; } catch { return or; } },
   set(k: string, v: unknown) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode, or full */ } },
 };
 
@@ -57,19 +57,20 @@ const store = {
 export const drafts = {
   get(id: number): string {
     const d = store.get<Record<string, { text: string; at: number }>>(DRAFTS, {})[id];
-    return d && Date.now() - d.at < WEEK ? d.text : '';
+    return d && typeof d.text === 'string' && Date.now() - d.at < WEEK ? d.text : '';
   },
   put(id: number, text: string) {
     const all = store.get<Record<string, { text: string; at: number }>>(DRAFTS, {}), now = Date.now();
     if (text.trim()) all[id] = { text, at: now }; else delete all[id];
-    store.set(DRAFTS, Object.fromEntries(Object.entries(all).filter(([, d]) => now - d.at < WEEK).sort((a, b) => b[1].at - a[1].at).slice(0, 20)));
+    store.set(DRAFTS, Object.fromEntries(Object.entries(all).filter(([, d]) => d && typeof d.text === 'string' && now - d.at < WEEK).sort((a, b) => b[1].at - a[1].at).slice(0, 20)));
   },
 };
 
 /**
  * After a hand-off: is your reply on Hacker News yet? The comment's new answers (the ones it didn't have when you
- * opened the sheet), matched to you. Asked of HN's public API every few seconds while this page is visible (not while
- * you're on HN's tab), for ten minutes. It outlives the sheet, and a reload (the hand-off is kept in this browser).
+ * opened the sheet), matched to you by name, or by your words. Asked of HN's public API every few seconds while this
+ * page is visible (not while you're on HN's tab), for ten minutes, and once more when you come back after that. It
+ * outlives the sheet, and a reload (the hand-off is kept in this browser).
  */
 class Watch {
   h: Handoff | null = null;
@@ -91,28 +92,36 @@ class Watch {
     const h = this.h;
     if (!h || this.busy) return;
     clearTimeout(this.timer);
-    if (Date.now() - h.at > WATCH_MS) { this.stop(); this.onGiveUp(h); return; }
-    if (!document.hidden) {
-      this.busy = true;
+    if (document.hidden) return;                                         // (back on this tab: a look at once)
+    const late = Date.now() - h.at > WATCH_MS;
+    this.busy = true;
+    try { if (await this.find(h)) return; } finally { this.busy = false; }
+    if (this.h !== h) return;
+    if (late) { this.stop(); this.onGiveUp(h); return; }                 // (that was the last look)
+    this.timer = window.setTimeout(() => this.look(), EVERY_MS);
+  }
+  /** one look: true when it's found (or the watch moved on) */
+  private async find(h: Handoff) {
+    const p = await item(h.id).catch(() => null);
+    if (!p) return false;                                                // HN's API is down or slow: next time
+    for (const k of (p.kids ?? []).filter((x) => !h.kids?.includes(x) && !this.checked.has(x)).slice(0, 20)) {
       try {
-        const p = await item(h.id);
-        if (!p) throw new Error('no answer');                              // HN's API is down: next time
-        for (const k of (p.kids ?? []).filter((x) => !h.kids?.includes(x) && !this.checked.has(x)).slice(0, 20)) {
-          const c = await item(k);
-          if (!c || c.deleted) { this.checked.add(k); continue; }
-          // (no list of the answers from before you sent it on: only one written since then can be yours)
-          if (!h.kids && (c.time ?? 0) < h.at / 1000 - 120) { this.checked.add(k); continue; }
-          const how = yours(c, h.text, you.me);
-          if (!how) { if (c.text && c.text !== '[delayed]') this.checked.add(k); continue; }   // (a held one: look again)
-          if (how !== 'name' && c.by && asPosted(h.text).split(' ').length >= 5) you.set(c.by);   // that's you, then
-          if (this.h !== h) return;
-          this.stop();
-          this.onFound({ id: k, parent: h.id, to: h.by, by: c.by ?? '', dead: !!c.dead, delayed: c.text === '[delayed]' });
-          return;
-        }
-      } catch { /* offline, or HN's API is slow: next time */ } finally { this.busy = false; }
+        const c = await item(k);
+        if (!c) continue;                                                // (no answer: ask again next time)
+        if (c.deleted) { this.checked.add(k); continue; }
+        // (no list of the answers from before you sent it on: only a recent one can be yours; a wide window, as
+        // this device's clock and HN's needn't agree)
+        if (!h.kids && (c.time ?? 0) < h.at / 1000 - 1800) { this.checked.add(k); continue; }
+        const how = yours(c, h.text, you.me);
+        if (!how) { if (you.me || (c.text && c.text !== '[delayed]')) this.checked.add(k); continue; }   // (a held one: again)
+        if (how === 'words' && c.by) you.set(c.by);                    // that's you, then (never replaces a known name)
+        if (this.h !== h) return true;
+        this.stop();
+        this.onFound({ id: k, parent: h.id, to: h.by, by: c.by ?? '', dead: !!c.dead, delayed: c.text === '[delayed]' });
+        return true;
+      } catch { /* this one next time; the others now */ }
     }
-    if (this.h === h) this.timer = window.setTimeout(() => this.look(), EVERY_MS);
+    return false;
   }
 }
 const watch = new Watch();
@@ -125,9 +134,13 @@ export class Reply {
   private target: ReplyTarget | null = null;
   private base = '';                                     // the text before this round of listening
   private kids: number[] | null = null;                  // the answers that comment had when you opened the sheet
+  private said_ = '';                                    // their words, as shown (kept across re-renders)
+  /** posts asked of the extension, by nonce: its answer can come after the sheet gave up waiting, or was closed */
+  private asked = new Map<string, Handoff>();
   private back: Element | null = null;                   // where the keyboard goes back to on close
   private failed = '';                                   // a microphone problem being shown (until you try again)
-  private shut = '';                                     // why HN won't take a reply to this comment
+  private shut = '';                                     // why HN may not take a reply to this comment
+  private blocked = false;                               // ...and it surely won't (a deleted comment)
   private saveTimer = 0;
   private hushTimer = 0;
   private extTimer = 0;
@@ -148,13 +161,15 @@ export class Reply {
     this.el.setAttribute('aria-labelledby', 'reply-to');
     document.body.appendChild(this.el);
     this.el.addEventListener('keydown', (e) => {
+      if (e.isComposing) return;                         // (an input method's own Esc and Enter)
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.escape(); }
       else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && this.composing) { e.preventDefault(); this.post(); }
     });
-    // the extension answers a post with its parent (and only for the comment it was asked about)
+    // the extension answers each post with the nonce it was asked with (late, or after the sheet closed, is fine)
     addEventListener('message', (e) => {
       if (e.source !== window || !e.data || typeof e.data !== 'object' || e.data.tohn !== 'posted') return;
-      if (this.target && e.data.parent === this.target.id && this.busy) this.extAnswer(!!e.data.ok, String(e.data.error ?? ''));
+      const h = this.asked.get(String(e.data.nonce));
+      if (h) { this.asked.delete(String(e.data.nonce)); this.extAnswer(h, !!e.data.ok, String(e.data.error ?? '')); }
     });
     const keep = () => this.saveNow();
     addEventListener('pagehide', keep);
@@ -171,7 +186,7 @@ export class Reply {
   get to() { return this.target; }
 
   /** Back after a reload with a reply handed to HN: keep watching for it (no sheet; a note when it's there). */
-  resume() { const h = store.get<Handoff | null>(HANDOFF, null); if (h && Date.now() - h.at < WATCH_MS) watch.start(h); }
+  resume() { const h = store.get<Handoff | null>(HANDOFF, null); if (h && typeof h.text === 'string' && Date.now() - h.at < 1_800_000) watch.start(h); }
 
   /** Open the sheet to answer comment `t`: your draft for it, if there is one; their words, to show what you're
    *  answering (the room's first, then HN's own). */
@@ -179,7 +194,7 @@ export class Reply {
     if (this.target) this.saveNow();                     // (the last few keys, before anything changes)
     this.cut();
     if (!this.target) this.back = document.activeElement;
-    this.target = t; this.kids = null; this.failed = ''; this.shut = ''; this.busy = false;
+    this.target = t; this.kids = null; this.failed = ''; this.shut = ''; this.blocked = false; this.said_ = ''; this.busy = false;
     clearTimeout(this.extTimer);
     this.onOpen(true);
     const h = watch.h;
@@ -195,26 +210,27 @@ export class Reply {
       if (this.target?.id !== t.id || !it) return;
       this.kids = it.kids ?? [];
       if (it.text) { real = true; this.quote(hnPlain(it.text)); }
-      if (it.deleted) this.closed('That comment was deleted: Hacker News takes no replies to it. Your words are kept here.');
+      if (it.deleted) this.closed('That comment was deleted: Hacker News takes no replies to it. Your words are kept here.', true);
     }).catch(() => {});
-    // HN's FAQ: "Threads are closed to new comments after two weeks, or if the submission has been killed"
+    // HN's FAQ: "Threads are closed to new comments after two weeks, or if the submission has been killed" (a warning:
+    // a story HN gives a second chance can look older than it is)
     item(t.story).then((s) => {
       if (this.target?.id === t.id && s && (s.dead || s.deleted || Date.now() / 1000 - (s.time ?? Infinity) > 14 * 86400)) {
-        this.closed('This thread is closed: Hacker News takes no new comments after two weeks, or on a killed story. Your words are kept here.');
+        this.closed('This thread looks closed: Hacker News takes no new comments after two weeks, or on a killed story. Your words are kept here.', false);
       }
     }).catch(() => {});
   }
-  /** the comment can't be answered on HN: say why, before you write (or keep what you wrote) */
-  private closed(why: string) {
-    if (!this.composing) return;
-    this.shut = why;
-    this.state(why, 'error');
+  /** HN won't take a reply here: say why, before you write; a deleted comment can't be answered at all */
+  private closed(why: string, hard: boolean) {
+    this.shut = why; this.blocked ||= hard;
     const post = this.$<HTMLButtonElement>('.post');
-    if (post) { post.disabled = true; post.dataset.closed = '1'; }
+    if (hard && post && this.composing) post.disabled = true;
+    if (this.composing) this.state(why, 'error');
   }
   private quote(text: string) {
+    this.said_ = `“${text.slice(0, 260)}${text.length > 260 ? '…' : ''}”`;
     const q = this.el.querySelector('.quote');
-    if (q) q.textContent = `“${text.slice(0, 260)}${text.length > 260 ? '…' : ''}”`;
+    if (q) q.textContent = this.said_;
   }
 
   close() {
@@ -268,13 +284,13 @@ export class Reply {
       : 'Copies your words and opens that comment on Hacker News: paste, then press reply.';
     this.el.innerHTML = `${X}
       <div class="to" id="reply-to" tabindex="-1">Reply to <b>${esc(t.by)}</b>${you.me ? ` <button class="as" type="button" title="Not you? Change or forget it">as ${esc(you.me)}</button>` : ''}</div>
-      <p class="quote">…</p>
-      ${SR ? `<button class="mic" type="button" aria-pressed="false" aria-label="Speak your reply"><span class="ring"></span>${MIC}</button>` : ''}
+      <p class="quote">${esc(this.said_ || '…')}</p>
+      ${SR ? `<button class="mic" type="button" aria-label="Speak your reply"><span class="ring"></span>${MIC}</button>` : ''}
       <div class="state" role="status"></div>
       <textarea rows="4" aria-label="Your reply to ${esc(t.by)}" placeholder="${SR ? 'Your words appear here, and you can fix them' : 'Your reply'}">${esc(text)}</textarea>
-      <div class="foot"><button class="peek" type="button" aria-pressed="false" hidden>Preview</button></div>
+      <div class="foot"><button class="peek" type="button" hidden>Preview</button></div>
       <div class="preview" hidden></div>
-      <button class="post" type="button" aria-keyshortcuts="Meta+Enter Control+Enter" ${text.trim() && !this.shut ? '' : 'disabled'}${this.shut ? ' data-closed="1"' : ''}>${act}${TOUCH ? '' : ' <kbd aria-hidden="true">⌘↩</kbd>'}</button>
+      <button class="post" type="button" aria-keyshortcuts="Meta+Enter Control+Enter" ${text.trim() && !this.blocked ? '' : 'disabled'}>${act}${TOUCH ? '' : ' <kbd aria-hidden="true">⌘↩</kbd>'}</button>
       <p class="how">${how} Your words, exactly: nothing rewrites them.${SR ? ` Speech becomes text in your browser, by ${EAR}’s service: we never get your voice.` : ''}</p>`;
     if (!TOUCH && !/Mac/.test(navigator.platform)) { const k = this.$('.post kbd'); if (k) k.textContent = 'Ctrl ↩'; }
     this.state(why === 'draft' ? `Your draft is back. ${this.idle()}` : this.idle());
@@ -293,7 +309,6 @@ export class Reply {
       if (on) pre.innerHTML = hnHtml(this.text()) || '<p class="none">Nothing yet</p>';
       pre.hidden = !on; ta.hidden = on;
       peek.textContent = on ? 'Edit' : 'Preview';
-      peek.setAttribute('aria-pressed', String(on));
       if (!on) ta.focus({ preventScroll: true });
     };
     post.onclick = () => this.post();
@@ -317,7 +332,7 @@ export class Reply {
   private changed() {
     const ta = this.$<HTMLTextAreaElement>('textarea'), post = this.$<HTMLButtonElement>('.post'), peek = this.$<HTMLButtonElement>('.peek');
     if (!ta || !post) return;
-    if (!this.busy) post.disabled = !ta.value.trim() || post.dataset.closed === '1';
+    if (!this.busy) post.disabled = !ta.value.trim() || this.blocked;
     if (peek && peek.hidden === FORMATTED.test(ta.value)) peek.hidden = !peek.hidden;
     clearTimeout(this.saveTimer);
     this.saveTimer = window.setTimeout(() => this.saveNow(), 400);
@@ -346,8 +361,7 @@ export class Reply {
     try { rec.start(); } catch { this.rec = null; this.fail('start'); return; }
     this.listening = true;
     this.el.classList.add('listening');
-    const mic = this.$('.mic');
-    mic?.setAttribute('aria-pressed', 'true'); mic?.setAttribute('aria-label', 'Stop listening');
+    this.$('.mic')?.setAttribute('aria-label', 'Stop listening');
     this.state(`Listening… ${tap} when you’re done`);
     this.onListen(true);
   }
@@ -373,8 +387,7 @@ export class Reply {
     if (!this.listening) return;
     this.listening = false;
     this.el.classList.remove('listening');
-    const mic = this.$('.mic');
-    mic?.setAttribute('aria-pressed', 'false'); mic?.setAttribute('aria-label', 'Speak your reply');
+    this.$('.mic')?.setAttribute('aria-label', 'Speak your reply');
     this.base = this.text();
     this.state(this.idle(), this.failed || this.shut ? 'error' : '');
     this.saveNow();
@@ -400,44 +413,65 @@ export class Reply {
   /** Send it on: through the extension (your own session), or handed to HN's own reply page. */
   private post() {
     const t = this.target, text = this.text().trim();
-    if (!t || !text || this.busy || !this.composing) return;
+    if (!t || !text || this.busy || !this.composing || this.blocked) return;
     this.cut();
     this.saveNow();
-    const post = this.$<HTMLButtonElement>('.post')!;
     if (!navigator.onLine) { this.state('You’re offline. Your reply is kept here: send it when you’re back', 'error'); return; }
-    this.busy = true; post.disabled = true;               // (one tap, one tab)
     const h: Handoff = { id: t.id, story: t.story, by: t.by, text, at: Date.now(), kids: this.kids };
-    if (you.ext) {
-      this.state('Confirm it in the extension’s window…', 'wait');
-      window.postMessage({ tohn: 'post', parent: t.id, story: t.story, text }, location.origin);   // answered with its parent
-      this.extTimer = window.setTimeout(() => this.extAnswer(false, 'No answer from the extension'), 120_000);
-      return;
-    }
-    // the hand-off: copy, and open HN's own reply form for that comment (a new tab, from this tap)
-    const ta = this.$<HTMLTextAreaElement>('textarea');
-    const copied = copy(text, ta);
+    if (!you.ext) { this.handoff(h); return; }
+    this.busy = true;
+    this.$<HTMLButtonElement>('.post')!.disabled = true;
+    this.$('#reply-to')?.focus({ preventScroll: true });   // (not left on a button that just went out)
+    this.state('Confirm it in the extension’s window…', 'wait');
+    const nonce = crypto.randomUUID();
+    this.asked.set(nonce, h);
+    window.postMessage({ tohn: 'post', parent: t.id, story: t.story, text, nonce }, location.origin);
+    // no answer for two minutes: say so, and offer HN's own page; a late yes still counts (see extAnswer)
+    this.extTimer = window.setTimeout(() => {
+      if (this.target?.id !== t.id || !this.busy) return;
+      this.state('No answer from the extension yet. If you confirm in its window it still posts; or post it on HN’s own page:', 'error');
+      this.offerHandoff(h);
+    }, 120_000);
+  }
+  /** the hand-off: copy, and open HN's own reply form for that comment (a new tab, from this tap); then watch */
+  private handoff(h: Handoff) {
+    this.busy = true;
+    const post = this.$<HTMLButtonElement>('.post');
+    if (post) post.disabled = true;                        // (one tap, one tab)
+    const copied = copy(h.text, this.$<HTMLTextAreaElement>('textarea'));
     window.open(replyUrl(h), '_blank', 'noopener');
     watch.start(h);
     if (!h.kids) item(h.id).then((p) => { if (p && !h.kids) { h.kids = p.kids ?? []; if (watch.h === h) watch.start(h); } }).catch(() => {});
-    copied.then((ok) => { if (this.target?.id === t.id && this.busy) this.handed(h, ok); });
+    copied.then((ok) => { if (this.target?.id === h.id && this.busy) this.handed(h, ok); });
   }
-  private extAnswer(ok: boolean, error: string) {
-    clearTimeout(this.extTimer);
-    const t = this.target;
-    if (!t || !this.busy) return;
-    this.busy = false;
-    if (ok) { this.composing = false; this.state('Posted. Finding it on Hacker News…', 'wait'); watch.start({ id: t.id, story: t.story, by: t.by, text: this.text().trim(), at: Date.now(), kids: this.kids }); return; }
+  private offerHandoff(h: Handoff) {
+    const how = this.$('.how');
+    if (!how) return;
+    how.innerHTML = '<button class="instead" type="button">Continue on Hacker News instead ↗</button>';
+    (how.firstElementChild as HTMLButtonElement).onclick = () => { this.busy = false; clearTimeout(this.extTimer); this.handoff({ ...h, at: Date.now() }); };
+  }
+  /** the extension's answer: posted (then find it on HN, sheet open or not), or why not, with HN's own page as a way on */
+  private extAnswer(h: Handoff, ok: boolean, error: string) {
+    const here = this.target?.id === h.id;
+    if (here) { clearTimeout(this.extTimer); this.busy = false; }
+    if (ok) {
+      drafts.put(h.id, '');
+      watch.start({ ...h, at: Date.now() });
+      if (here) { this.composing = false; this.state('Posted. Finding it on Hacker News…', 'wait'); }
+      return;
+    }
+    if (!here || !this.composing) return;
     this.changed();
     this.state(`${error || 'Hacker News didn’t take it'}. Your words are still here.`, 'error');
-    const how = this.$('.how');
-    if (how) { how.innerHTML = `Or <a href="${replyUrl(t)}" target="_blank" rel="noopener">post it on Hacker News’s own page ↗</a> (copy it first).`; }
+    this.offerHandoff(h);
   }
   /** Over to HN: the words stay here (a copy can fail, or be overwritten while signing in), with ways to copy them
    *  again, reopen HN, or go back and edit; meanwhile it watches for your reply. */
   private handed(h: Handoff, copied: boolean | null) {
+    this.cut();
     this.composing = false; this.busy = false;
     this.el.innerHTML = `${X}
-      <div class="to" id="reply-to">Over to Hacker News</div>
+      <div class="to" id="reply-to" tabindex="-1">Over to Hacker News</div>
       <p class="said">${copied ? 'Your words are copied.' : copied === null ? 'Your words are below.' : 'Copy your words below.'} In the page that opened, paste them and press <b>reply</b> (sign in there first if HN asks).</p>
       <textarea rows="3" readonly aria-label="Your reply">${esc(h.text)}</textarea>
       <p class="again"><button class="copy" type="button">Copy again</button><a href="${replyUrl(h)}" target="_blank" rel="noopener">Open it again ↗</a><button class="edit" type="button">Edit</button></p>
@@ -446,20 +480,21 @@ export class Reply {
     const ta = this.$<HTMLTextAreaElement>('textarea')!, c = this.$<HTMLButtonElement>('.copy')!;
     c.onclick = () => copy(h.text, ta).then((ok) => { c.textContent = ok ? 'Copied' : 'Select it and copy'; if (!ok) ta.select(); });
     this.$<HTMLButtonElement>('.edit')!.onclick = () => { watch.stop(); this.render(drafts.get(h.id) || h.text); this.$<HTMLTextAreaElement>('textarea')?.focus(); };
-    if (!TOUCH) c.focus({ preventScroll: true });
+    (TOUCH ? this.$('#reply-to') : c)?.focus({ preventScroll: true });
   }
   private notYet() {
     this.state('Not seen on Hacker News yet (its API can lag). If HN showed an error, your words are still here.', 'error');
   }
   /** It's there: where to see it, and HN's own rules for changing it */
   private posted(l: Landed) {
+    this.cut();
     this.composing = false; this.busy = false;
     const what = l.dead ? `It’s on Hacker News${l.by ? ` as <b>${esc(l.by)}</b>` : ''}, but HN marked it [dead], so others don’t see it.`
       : l.delayed ? 'It’s on Hacker News, held for a few minutes before others see it (HN shows it as [delayed]).'
       : `It’s on Hacker News${l.by ? ` as <b>${esc(l.by)}</b>` : ''}.${you.me ? ' In a minute or two you walk in by the lift and say it.' : ''}`;
     this.el.innerHTML = `${X}
       <div class="to" id="reply-to">Posted</div>
-      <p class="said">${what}</p>
+      <p class="said" role="status">${what}</p>
       <a class="post" href="${SITE}/item?id=${l.id}" target="_blank" rel="noopener">See it on Hacker News ↗</a>
       <p class="how">HN lets you edit or delete it there for two hours.${you.me ? ` Your HN name is kept in this browser only, to bring your replies and the answers to them here. <button class="forget" type="button">Forget it</button>` : ''}</p>`;
     this.$('.x')!.onclick = () => this.close();
