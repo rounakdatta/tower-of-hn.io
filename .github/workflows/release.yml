@@ -22,7 +22,11 @@ jobs:
         run: node --test packages/core/src/*.test.ts apps/towerd/src/*.test.ts apps/client/src/*.test.ts apps/extension/*.test.ts
       - name: Client builds
         working-directory: apps/client
-        run: npm ci --no-audit --no-fund && npx vite build
+        # the built page must keep towerd's support markers (HTML comments): a build that dropped them would leave
+        # SPONSOR_URL with nothing to fill
+        run: |
+          npm ci --no-audit --no-fund && npx vite build
+          for m in head door table; do grep -q "<!--support:$m-->" dist/index.html || { echo "the build dropped <!--support:$m-->"; exit 1; }; done
       - name: Worker parses
         run: python3 -c "import ast; ast.parse(open('apps/voice-worker/worker.py').read())"
 
