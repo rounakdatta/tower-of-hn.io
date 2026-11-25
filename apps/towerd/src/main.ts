@@ -51,7 +51,7 @@ const { support: SUPPORT, problems: supportProblems } = readSupport(process.env)
 console.log(JSON.stringify({ support: { on: !!SUPPORT, upi: !!SUPPORT?.upi, ...(supportProblems.length ? { refused: supportProblems } : {}) } }));
 const support = supportSite(SUPPORT);
 // the page must carry its markers, or nothing would point to /support: say so at boot, not to a visitor
-if (SUPPORT) { try { const missing = missingMarks(readFileSync(INDEX, 'utf8')); if (missing.length) console.warn(JSON.stringify({ support: { missing } })); } catch { /* no page yet: / answers 503 */ } }
+if (SUPPORT) { try { const missing = missingMarks(readFileSync(INDEX, 'utf8')); if (missing.length) console.warn(JSON.stringify({ support: { missing } })); } catch { /* no page to read: / answers as it always has */ } }
 for (const d of [LIVE, JOBS]) mkdirSync(d, { recursive: true });
 
 // ---------------------------------------------------------------- HN access

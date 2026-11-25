@@ -209,13 +209,17 @@ test('what towerd serves: off, nothing answers and nothing changes; on, /support
   // the page as served: filled, and rebuilt only when the file changes
   const first = site.index(f);
   assert.equal(first.toString(), withSupport(INDEX, on));
-  assert.equal(site.index({ body: Buffer.from('changed'), mtime: 1 }), first, 'same file: the same bytes');
-  assert.ok(site.index({ body: Buffer.from('<p>x</p><!--support:door-->'), mtime: 2 }).toString().includes('<p id="give">'));
+  // (identity, through assert.ok: a failing assert.equal of two Buffers has node's test runner diff them byte by byte,
+  // hundreds of MB a second for a page; a broken memo here once took the whole box down)
+  assert.ok(site.index({ body: Buffer.from('changed'), mtime: 1 }) === first, 'same file: the same bytes');
+  const next = '<p>x</p><!--support:door-->';
+  assert.equal(site.index({ body: Buffer.from(next), mtime: 2 }).toString(), withSupport(next, on), 'a new file: rebuilt');
   // and towerd only glues it in: read from the environment, asked first for every GET or HEAD, its page and its count
   const main = readFileSync(join(import.meta.dirname, 'main.ts'), 'utf8');
   assert.match(main, /readSupport\(process\.env\)/);
   assert.match(main, /const support = supportSite\(SUPPORT\);/);
-  assert.ok(main.indexOf('support.answer(') > main.indexOf("req.method !== 'GET' && req.method !== 'HEAD'") && main.indexOf('support.answer(') < main.indexOf("if (!url.pathname.startsWith('/live/')) {"));
+  const at = (s: string) => { const i = main.indexOf(s); assert.ok(i > 0, s); return i; };
+  assert.ok(at("req.method !== 'GET' && req.method !== 'HEAD'") < at('support.answer(') && at('support.answer(') < at("if (!url.pathname.startsWith('/live/')) {"));
   assert.match(main, /if \(p === INDEX\) file\.body = support\.index\(file\);/);
   assert.match(main, /\.\.\.support\.status\(\) \}\)\);/);
 });
