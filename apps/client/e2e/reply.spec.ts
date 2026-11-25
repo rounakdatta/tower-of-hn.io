@@ -92,7 +92,7 @@ test('a reply handed to HN survives a reload (a phone dropping the tab): the not
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
   const hn = await opened; await hn.waitForLoadState();
   await page.reload();                                                           // the room is gone, the hand-off isn't
-  await hn.locator('textarea[name=text]').fill('Posted while this tab was gone.');
+  await hn.locator('textarea[name=text]').click(); await hn.locator('textarea[name=text]').fill('Posted while this tab was gone.');
   await hn.locator('input[type=submit][value=reply]').click();
   await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
   await page.bringToFront();
@@ -173,7 +173,7 @@ test('HN says "posting too fast": your words stay, and the sheet says it hasn\'t
   let opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
   let hn = await opened; await hn.waitForLoadState();
-  await hn.locator('textarea[name=text]').fill('An earlier one.');
+  await hn.locator('textarea[name=text]').click(); await hn.locator('textarea[name=text]').fill('An earlier one.');
   await hn.locator('input[type=submit][value=reply]').click();
   await hn.waitForURL(/item/);
   await hn.close();
@@ -182,7 +182,7 @@ test('HN says "posting too fast": your words stay, and the sheet says it hasn\'t
   opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
   hn = await opened; await hn.waitForLoadState();
-  await hn.locator('textarea[name=text]').fill('Too soon after the last one.');
+  await hn.locator('textarea[name=text]').click(); await hn.locator('textarea[name=text]').fill('Too soon after the last one.');
   await hn.locator('input[type=submit][value=reply]').click();
   await expect(hn.locator('body')).toContainText("You're posting too fast. Please slow down. Thanks.");
   await page.bringToFront();
@@ -201,7 +201,7 @@ test('HN asks to confirm (commconfirm): reply once more there, and it lands', as
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
   const hn = await opened; await hn.waitForLoadState();
-  await hn.locator('textarea[name=text]').fill('Confirmed, eventually.');
+  await hn.locator('textarea[name=text]').click(); await hn.locator('textarea[name=text]').fill('Confirmed, eventually.');
   await hn.locator('input[type=submit][value=reply]').click();
   await expect(hn.locator('body')).toContainText('Please confirm that this is your comment');
   await expect(hn.locator('textarea[name=text]')).toHaveValue('Confirmed, eventually.');
@@ -220,7 +220,7 @@ test('an expired form, a captcha, or HN being down: HN\'s page says so; the word
   let opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
   let hn = await opened; await hn.waitForLoadState();
-  await hn.locator('textarea[name=text]').fill('Patient words.');
+  await hn.locator('textarea[name=text]').click(); await hn.locator('textarea[name=text]').fill('Patient words.');
   await hn.locator('input[type=submit][value=reply]').click();
   await expect(hn.locator('body')).toHaveText('Unknown or expired link.');
   await hn.close();
@@ -254,7 +254,7 @@ test('HN\'s API down: the sheet still opens, and finds your reply once the API i
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
   const hn = await opened; await hn.waitForLoadState();
-  await hn.locator('textarea[name=text]').fill('Through an outage, it still landed.');
+  await hn.locator('textarea[name=text]').click(); await hn.locator('textarea[name=text]').fill('Through an outage, it still landed.');
   await hn.locator('input[type=submit][value=reply]').click();
   await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
   await page.bringToFront();
@@ -298,7 +298,7 @@ test('a short reply is found word for word, and teaches the sheet no name', asyn
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
   const hn = await opened; await hn.waitForLoadState();
-  await hn.locator('textarea[name=text]').fill('Thanks, this helped!');
+  await hn.locator('textarea[name=text]').click(); await hn.locator('textarea[name=text]').fill('Thanks, this helped!');
   await hn.locator('input[type=submit][value=reply]').click();
   await hn.waitForURL(/\/item\?id=/);
   await page.bringToFront();
@@ -313,7 +313,7 @@ test('signing in as someone the sheet doesn\'t know: "as alice" is learned; "For
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
   const hn = await opened; await hn.waitForLoadState();
-  await hn.locator('textarea[name=text]').fill('Five words make a match!');                      // fixed on HN
+  await hn.locator('textarea[name=text]').click(); await hn.locator('textarea[name=text]').fill('Five words make a match!');                      // fixed on HN
   await hn.locator('input[type=submit][value=reply]').click();
   await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
   await page.bringToFront();

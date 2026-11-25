@@ -22,7 +22,7 @@ test('no serious or critical axe findings in any state: writing, handed over, po
   const hn = await opened; await hn.waitForLoadState();
   await expect(page.locator('#reply-to')).toHaveText('Over to Hacker News');
   expect(await axe(page)).toEqual([]);
-  await hn.locator('textarea[name=text]').fill('Checked by axe, all the way through.');
+  await hn.locator('textarea[name=text]').click(); await hn.locator('textarea[name=text]').fill('Checked by axe, all the way through.');
   await hn.locator('input[type=submit][value=reply]').click();
   await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
   await page.bringToFront();
