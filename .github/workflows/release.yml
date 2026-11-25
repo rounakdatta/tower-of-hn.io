@@ -60,6 +60,7 @@ jobs:
         with:
           name: e2e-results-${{ matrix.project }}
           path: apps/client/e2e/.results
+          include-hidden-files: true   # (.results is a dot folder: v4 skips those unless asked)
           retention-days: 7
 
   images:
