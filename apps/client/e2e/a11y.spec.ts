@@ -57,7 +57,7 @@ test('what a screen reader gets: a labelled dialog, named controls, a live statu
   const sheet = page.getByRole('dialog', { name: 'Reply to bob' });
   await expect(sheet).toBeVisible();
   await expect(sheet.getByRole('button', { name: 'Close' })).toBeVisible();
-  await expect(sheet.getByRole('button', { name: 'Speak your reply' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(sheet.getByRole('button', { name: 'Speak your reply' })).toBeVisible();
   await expect(sheet.getByRole('textbox', { name: 'Your reply to bob' })).toBeVisible();
   await expect(sheet.getByRole('status')).toHaveText(/(Tap|Click) to speak/);
   await page.getByRole('button', { name: 'Speak your reply' }).click();

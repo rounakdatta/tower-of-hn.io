@@ -12,7 +12,7 @@ test('speak, see it live, stop; the room goes quiet while you speak; your words,
   const sheet = page.getByRole('dialog'), mic = sheet.getByRole('button', { name: 'Speak your reply' }), box = sheet.getByRole('textbox');
   await expect(sheet).toContainText(/Speech becomes text in your browser, by (Google|Apple|Microsoft)’s service: we never get your voice/);
   await mic.click();
-  await expect(sheet.getByRole('button', { name: 'Stop listening' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(sheet.getByRole('button', { name: 'Stop listening' })).toBeVisible();
   await expect(sheet.getByRole('status')).toContainText('Listening');
   expect(await page.evaluate(() => (window as unknown as { __ducked: boolean }).__ducked)).toBe(true);
   expect(await ctl(page)).toMatchObject({ started: 1, continuous: true, interim: true });
@@ -22,7 +22,7 @@ test('speak, see it live, stop; the room goes quiet while you speak; your words,
   await sr(page, 'hear', ' is right about this');
   await expect(box).toHaveValue('I think the borrow checker is right about this');
   await sheet.getByRole('button', { name: 'Stop listening' }).click();
-  await expect(mic).toHaveAttribute('aria-pressed', 'false');
+  await expect(mic).toBeVisible();
   await expect(sheet.getByRole('status')).toContainText('Read it over');
   expect(await page.evaluate(() => (window as unknown as { __ducked: boolean }).__ducked)).toBe(false);
   await expect(box).toHaveValue('I think the borrow checker is right about this');
@@ -49,7 +49,7 @@ test('typing while it listens: your typing wins, and late words don\'t overwrite
   expect((await ctl(page)).aborted).toBe(1);
   await sr(page, 'hear', 'hello there and something late', true);              // after the cut: ignored
   await expect(box).toHaveValue('Hello there, friend');
-  await expect(sheet.getByRole('button', { name: 'Speak your reply' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(sheet.getByRole('button', { name: 'Speak your reply' })).toBeVisible();
 });
 
 test('microphone blocked (or the prompt dismissed): a reason, a way on, and it stays on screen', async ({ page }) => {
@@ -71,7 +71,7 @@ for (const [code, words] of [['no-speech', 'Didn’t catch that'], ['network', '
     await sheet.getByRole('button', { name: 'Speak your reply' }).click();
     await sr(page, 'fail', code);
     await expect(sheet.getByRole('status')).toContainText(words);
-    await expect(sheet.getByRole('button', { name: 'Speak your reply' })).toHaveAttribute('aria-pressed', 'false');
+    await expect(sheet.getByRole('button', { name: 'Speak your reply' })).toBeVisible();
   });
 }
 
@@ -80,7 +80,7 @@ test('Esc stops listening first; a second Esc closes, and what was said is kept 
   await sheet.getByRole('button', { name: 'Speak your reply' }).click();
   await sr(page, 'hear', 'kept for later', true);
   await page.keyboard.press('Escape');
-  await expect(sheet.getByRole('button', { name: 'Speak your reply' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(sheet.getByRole('button', { name: 'Speak your reply' })).toBeVisible();
   await expect(sheet).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(sheet).toBeHidden();

@@ -39,7 +39,9 @@ jobs:
         run: npm ci --no-audit --no-fund && npx playwright install --with-deps chromium firefox webkit
       - working-directory: apps/client
         run: npm run e2e
-      - if: failure()
+        env:
+          SHOTS: e2e/.results/shots   # the key screens, per engine and device, for review
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results
