@@ -118,7 +118,8 @@ test('content.js: a page message it won\'t pass on is still answered (the sheet 
   };
   const location = { origin: 'https://towerofhn.taptappers.club' };
   runInNewContext(CONTENT, { window, location, chrome: { runtime: { sendMessage: () => assert.fail('nothing should be sent on') } }, Number });
-  for (const l of listeners) l({ source: window, origin: location.origin, data: { tohn: 'post', parent: 1, story: 2, text: 'x'.repeat(8001) } });
+  for (const l of listeners) l({ source: window, origin: location.origin, data: { tohn: 'post', parent: 1, story: 2, text: 'x'.repeat(8001), nonce: 'n-1' } });
   assert.equal(posted.length, 1);
   assert.match(String((posted[0] as { error: string }).error), /too long/i);
+  assert.equal((posted[0] as { nonce: string }).nonce, 'n-1');                  // (matched to its own request)
 });

@@ -71,7 +71,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.kind === 'post') {
     const id = crypto.randomUUID();
     pending.set(id, { ...msg, reply });
-    chrome.windows.create({ url: `confirm.html#${id}`, type: 'popup', width: 420, height: 380 }).then((w) => windowOf.set(w.id, id), () => {});
+    chrome.windows.create({ url: `confirm.html#${id}`, type: 'popup', width: 420, height: 380 }).then((w) => windowOf.set(w.id, id),
+      () => { pending.delete(id); reply({ ok: false, error: 'The extension couldn’t open its window' }); });
     return true;                                       // the answer comes when you decide (or close the window)
   }
   if (msg.kind === 'confirm-get') { const p = pending.get(msg.id); reply(p ? { parent: p.parent, story: p.story, text: p.text } : null); return; }

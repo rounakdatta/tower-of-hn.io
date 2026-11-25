@@ -5,9 +5,10 @@ window.addEventListener('message', (e) => {
   if (e.data.tohn === 'hello') {
     chrome.runtime.sendMessage({ kind: 'whoami' }, (r) => window.postMessage({ tohn: 'here', user: r?.user ?? '' }, location.origin));
   } else if (e.data.tohn === 'post') {
-    const { parent, story, text } = e.data;
+    const { parent, story, text, nonce } = e.data;
     if (!Number.isInteger(parent) || !Number.isInteger(story) || typeof text !== 'string' || !text.trim()) return;
-    const answer = (ok, error) => window.postMessage({ tohn: 'posted', parent, ok, error }, location.origin);
+    // each answer carries the nonce it was asked with, so the page matches it to its own request (even a late one)
+    const answer = (ok, error) => window.postMessage({ tohn: 'posted', parent, nonce: typeof nonce === 'string' ? nonce : '', ok, error }, location.origin);
     if (text.length > 8000) return answer(false, 'Too long for the extension (8,000 characters): post it on Hacker News’s own page');
     chrome.runtime.sendMessage({ kind: 'post', parent, story, text, from: location.origin }, (r) =>
       answer(!!r?.ok, r ? r.error ?? '' : 'The extension didn’t answer: try again, or post it on Hacker News’s own page'));
