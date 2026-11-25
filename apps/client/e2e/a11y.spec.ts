@@ -19,7 +19,7 @@ test('no serious or critical axe findings in any state: writing, handed over, po
   expect(await axe(page)).toEqual([]);
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
-  const hn = await opened;
+  const hn = await opened; await hn.waitForLoadState();
   await expect(page.locator('#reply-to')).toHaveText('Over to Hacker News');
   expect(await axe(page)).toEqual([]);
   await hn.locator('textarea[name=text]').fill('Checked by axe, all the way through.');

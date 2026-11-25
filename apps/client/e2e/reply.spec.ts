@@ -22,7 +22,7 @@ test('first reply, signed out on HN: sign in there, paste, reply; the sheet find
   await shot(page, '1-compose');
   const opened = context.waitForEvent('page');
   await sheet.getByRole('button', { name: /Continue on Hacker News/ }).click(); taps++;
-  const hn = await opened;
+  const hn = await opened; await hn.waitForLoadState();
   await hn.waitForLoadState();
   expect(hn.url()).toBe(replyUrl(BOB.id, BOB.story));
   expect(await copied(page)).toBe(TEXT);
@@ -57,7 +57,7 @@ test('already signed in on HN (most readers): Reply, write, Continue, paste, rep
   await sheet.getByRole('textbox').fill('Short and to the point.'); taps++;
   const opened = context.waitForEvent('page');
   await sheet.getByRole('button', { name: /Continue on Hacker News/ }).click(); taps++;
-  const hn = await opened;
+  const hn = await opened; await hn.waitForLoadState();
   await paste(hn, page, browserName); taps += 2;
   await hn.locator('input[type=submit][value=reply]').click(); taps++;
   await hn.waitForURL(/\/item\?id=/);
@@ -90,7 +90,7 @@ test('a reply handed to HN survives a reload (a phone dropping the tab): the not
   await page.getByRole('dialog').getByRole('textbox').fill('Posted while this tab was gone.');
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
-  const hn = await opened;
+  const hn = await opened; await hn.waitForLoadState();
   await page.reload();                                                           // the room is gone, the hand-off isn't
   await hn.locator('textarea[name=text]').fill('Posted while this tab was gone.');
   await hn.locator('input[type=submit][value=reply]').click();
@@ -172,7 +172,7 @@ test('HN says "posting too fast": your words stay, and the sheet says it hasn\'t
   await page.getByRole('dialog').getByRole('textbox').fill('An earlier one.');
   let opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
-  let hn = await opened;
+  let hn = await opened; await hn.waitForLoadState();
   await hn.locator('textarea[name=text]').fill('An earlier one.');
   await hn.locator('input[type=submit][value=reply]').click();
   await hn.waitForURL(/item/);
@@ -181,7 +181,7 @@ test('HN says "posting too fast": your words stay, and the sheet says it hasn\'t
   await page.getByRole('dialog').getByRole('textbox').fill('Too soon after the last one.');
   opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
-  hn = await opened;
+  hn = await opened; await hn.waitForLoadState();
   await hn.locator('textarea[name=text]').fill('Too soon after the last one.');
   await hn.locator('input[type=submit][value=reply]').click();
   await expect(hn.locator('body')).toContainText("You're posting too fast. Please slow down. Thanks.");
@@ -200,7 +200,7 @@ test('HN asks to confirm (commconfirm): reply once more there, and it lands', as
   await page.getByRole('dialog').getByRole('textbox').fill('Confirmed, eventually.');
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
-  const hn = await opened;
+  const hn = await opened; await hn.waitForLoadState();
   await hn.locator('textarea[name=text]').fill('Confirmed, eventually.');
   await hn.locator('input[type=submit][value=reply]').click();
   await expect(hn.locator('body')).toContainText('Please confirm that this is your comment');
@@ -219,7 +219,7 @@ test('an expired form, a captcha, or HN being down: HN\'s page says so; the word
   mock.mode.hmacTtlMs = 0;                                                     // the form's token expires at once
   let opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
-  let hn = await opened;
+  let hn = await opened; await hn.waitForLoadState();
   await hn.locator('textarea[name=text]').fill('Patient words.');
   await hn.locator('input[type=submit][value=reply]').click();
   await expect(hn.locator('body')).toHaveText('Unknown or expired link.');
@@ -231,14 +231,14 @@ test('an expired form, a captcha, or HN being down: HN\'s page says so; the word
   mock.mode.hmacTtlMs = 1_800_000; mock.mode.captchaLogin = true;            // signing in again meets a captcha
   opened = context.waitForEvent('page');
   await page.getByRole('link', { name: /Open it again/ }).click();
-  hn = await opened;
+  hn = await opened; await hn.waitForLoadState();
   await hnLogin(hn);
   await expect(hn.locator('body')).toContainText('Validation required.');
   await hn.close();
   mock.mode.captchaLogin = false; mock.mode.siteDown = true;
   opened = context.waitForEvent('page');
   await page.getByRole('link', { name: /Open it again/ }).click();
-  hn = await opened;
+  hn = await opened; await hn.waitForLoadState();
   await expect(hn.locator('body')).toHaveText('Sorry.');
   await page.bringToFront();
   await expect(page.getByRole('dialog').getByRole('textbox')).toHaveValue('Patient words.');
@@ -253,7 +253,7 @@ test('HN\'s API down: the sheet still opens, and finds your reply once the API i
   await page.getByRole('dialog').getByRole('textbox').fill('Through an outage, it still landed.');
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
-  const hn = await opened;
+  const hn = await opened; await hn.waitForLoadState();
   await hn.locator('textarea[name=text]').fill('Through an outage, it still landed.');
   await hn.locator('input[type=submit][value=reply]').click();
   await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
@@ -283,7 +283,7 @@ test('a reply from someone else under the same comment is never taken for yours'
   await page.getByRole('dialog').getByRole('textbox').fill('My own careful words about lifetimes and borrowing here.');
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
-  const hn = await opened;
+  const hn = await opened; await hn.waitForLoadState();
   await hn.close();                                                              // you didn't post, but someone did
   await mock.handle({ method: 'POST', url: 'https://news.ycombinator.com/comment', headers: {}, body: new URLSearchParams({ acct: 'carol', pw: 'x', parent: String(BOB.id), text: 'Something else entirely about compilers.' }).toString() });
   await page.waitForTimeout(12_000);
@@ -297,7 +297,7 @@ test('a short reply is found word for word, and teaches the sheet no name', asyn
   await page.getByRole('dialog').getByRole('textbox').fill('Thanks, this helped!');
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
-  const hn = await opened;
+  const hn = await opened; await hn.waitForLoadState();
   await hn.locator('textarea[name=text]').fill('Thanks, this helped!');
   await hn.locator('input[type=submit][value=reply]').click();
   await hn.waitForURL(/\/item\?id=/);
@@ -312,7 +312,7 @@ test('signing in as someone the sheet doesn\'t know: "as alice" is learned; "For
   await page.getByRole('dialog').getByRole('textbox').fill('Five words make a match.');
   const opened = context.waitForEvent('page');
   await page.getByRole('button', { name: /Continue on Hacker News/ }).click();
-  const hn = await opened;
+  const hn = await opened; await hn.waitForLoadState();
   await hn.locator('textarea[name=text]').fill('Five words make a match!');                      // fixed on HN
   await hn.locator('input[type=submit][value=reply]').click();
   await hn.waitForURL(/\/item\?id=/);                                         // (HN has it: back to the room)
