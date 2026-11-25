@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Core, voice queue, HN formatting and extension tests
+      - name: Core, voice queue, reply and extension tests
         run: node --test packages/core/src/*.test.ts apps/towerd/src/*.test.ts apps/client/src/*.test.ts apps/extension/*.test.ts
       - name: Client builds
         working-directory: apps/client
@@ -30,8 +30,41 @@ jobs:
       - name: Worker parses
         run: python3 -c "import ast; ast.parse(open('apps/voice-worker/worker.py').read())"
 
+  # Replying, end to end: the reply sheet against a local mock of Hacker News (nothing reaches the real HN), in
+  # Chromium, Firefox and WebKit, on desktops, an iPhone and a Pixel (apps/client/e2e)
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:   # one job per engine and device, side by side
+        include:
+          - { project: chromium, browser: chromium }
+          - { project: firefox, browser: firefox }
+          - { project: webkit, browser: webkit }
+          - { project: iphone, browser: webkit }
+          - { project: pixel, browser: chromium }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - working-directory: apps/client
+        run: npm ci --no-audit --no-fund && npx playwright install --with-deps ${{ matrix.browser }}
+      - working-directory: apps/client
+        run: npm run e2e -- --project=${{ matrix.project }}
+        env:
+          SHOTS: e2e/.results/shots   # the key screens, per engine and device, for review
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-${{ matrix.project }}
+          path: apps/client/e2e/.results
+          include-hidden-files: true   # (.results is a dot folder: v4 skips those unless asked)
+          retention-days: 7
+
   images:
-    needs: test
+    needs: [test, e2e]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

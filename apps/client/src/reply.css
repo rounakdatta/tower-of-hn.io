@@ -1,0 +1,52 @@
+/* replying, by voice: the same glass as a card; a big microphone that breathes while it listens. Loaded with the sheet
+   (reply.ts), the first time you reply. It sits above a phone's keyboard (--kb, from the visual viewport). */
+#reply { position:fixed; left:max(12px, env(safe-area-inset-left)); right:max(12px, env(safe-area-inset-right)); bottom:max(calc(12px + env(safe-area-inset-bottom)), calc(var(--kb, 0px) + 8px)); z-index:7;
+         padding:18px 18px 14px; border-radius:18px; background:rgba(14,16,24,.9);
+         border:1px solid var(--line); backdrop-filter:blur(18px) saturate(1.2); -webkit-backdrop-filter:blur(18px) saturate(1.2); box-shadow:0 18px 60px rgba(0,0,0,.55);
+         opacity:0; transform:translateY(16px); pointer-events:none; visibility:hidden; transition:opacity .3s, transform .3s, visibility 0s .3s;
+         max-height:min(80vh, 640px, calc(var(--vh, 100vh) - 24px)); overflow:auto; overscroll-behavior:contain; text-align:center }
+#reply.show { opacity:1; transform:none; pointer-events:auto; visibility:visible; transition:opacity .3s, transform .3s }   /* (closed: out of reach of Tab and screen readers too) */
+#reply .x { position:absolute; right:10px; top:8px; width:36px; height:36px; border:0; border-radius:50%; background:rgba(255,255,255,.07); color:var(--mute); font-size:20px; cursor:pointer }
+#reply .to { font-size:15px; color:var(--mute); padding:0 40px; outline:none } #reply .to b { color:var(--ink) }
+#reply .quote, #reply .said { margin:8px 4px 14px; color:#d9cfc4; font-size:14px; line-height:1.45; text-align:left }
+#reply .quote { overflow:hidden; display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical }
+#reply .as { border:0; padding:0; background:none; font:inherit; color:#ffd2a8; cursor:pointer } #reply .as:hover { text-decoration:underline }
+#reply .mic { position:relative; width:72px; height:72px; border-radius:50%; border:0; margin:2px auto 6px; display:grid; place-items:center; cursor:pointer;
+              background:var(--hn); color:#fff; box-shadow:0 10px 30px rgba(255,106,26,.35) }
+#reply .mic svg { width:30px; height:30px; position:relative }
+#reply .mic .ring { position:absolute; inset:-8px; border-radius:50%; border:2px solid rgba(255,106,26,.55); opacity:0 }
+#reply.listening .mic { background:#ff4d3a } #reply.listening .mic .ring { animation:listen 1.3s ease-out infinite }
+@keyframes listen { 0% { transform:scale(.9); opacity:.9 } 100% { transform:scale(1.35); opacity:0 } }
+#reply .state { font-size:12.5px; color:var(--mute); margin-bottom:10px; min-height:1.2em }
+#reply .state.error { color:#ffb59e }
+#reply .state.wait { animation:breathe 1.6s ease-in-out infinite }
+#reply textarea { width:100%; box-sizing:border-box; background:rgba(255,255,255,.06); color:var(--ink); border:1px solid var(--line); border-radius:12px;
+                  padding:10px 12px; font:inherit; font-size:15px; line-height:1.45; resize:vertical; min-height:92px; text-align:left }
+#reply textarea[readonly] { min-height:0; color:#d9cfc4 }
+#reply textarea:focus { outline:none; border-color:rgba(255,106,26,.6) }
+#reply .foot { display:flex; justify-content:flex-end; min-height:0 }
+#reply .peek, #reply .again button, #reply .forget { border:0; padding:6px 2px 0; background:none; font:inherit; font-size:12px; color:var(--mute); cursor:pointer; text-decoration:underline; text-underline-offset:2px }
+#reply .peek:hover, #reply .again button:hover, #reply .again a:hover, #reply .forget:hover { color:var(--ink) }
+/* the preview: what Hacker News will make of it, in its own plain way */
+#reply .preview { text-align:left; padding:10px 12px; border-radius:12px; border:1px dashed var(--line); color:var(--ink); font-size:14px; line-height:1.45; max-height:40vh; overflow:auto; overflow-wrap:anywhere }
+#reply .preview p { margin:0 0 .7em } #reply .preview p:last-child { margin-bottom:0 } #reply .preview .none { color:var(--mute) }
+#reply .preview a { color:#ffd2a8 } #reply .preview pre { margin:0 0 .7em; white-space:pre-wrap; font:12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color:#d9cfc4 }
+#reply .again { display:flex; justify-content:center; flex-wrap:wrap; gap:4px 16px; margin:8px 0 10px; font-size:12.5px }
+#reply .again button { font-size:12.5px; padding:0 } #reply .again a { color:var(--mute); text-underline-offset:2px }
+#reply .me { display:inline-flex; align-items:baseline; gap:6px; font-size:13px; color:var(--mute) }
+#reply .me input { width:9.5em; margin:0; background:transparent; border:0; border-bottom:1px solid var(--line); color:var(--ink); font:inherit; padding:2px 2px }
+#reply .me input:focus { outline:none; border-bottom-color:rgba(255,106,26,.6) }
+/* the one button stays in reach: pinned to the bottom of the sheet when a short screen makes it scroll */
+#reply .post { position:sticky; bottom:0; display:block; width:100%; margin-top:12px; padding:13px 16px; border:0; border-radius:999px; background:var(--ink); color:#15110d; font-weight:750; font-size:15px; cursor:pointer; text-decoration:none; box-sizing:border-box; box-shadow:0 6px 0 6px rgba(14,16,24,.92) }
+#reply .post:disabled { opacity:1; background:#13151d; border:1px solid var(--line); color:var(--mute); cursor:default }
+#reply .post kbd { font:600 10.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding:2px 5px; margin-left:8px; border-radius:4px; border:1px solid rgba(0,0,0,.2); opacity:.6; vertical-align:1px }
+#reply .post:disabled kbd { border-color:var(--line) }
+#reply .how { margin:10px 2px 0; font-size:11.5px; color:var(--mute); line-height:1.45 } #reply .how a { color:var(--ink) }
+#reply :is(button, a):focus-visible { outline:2px solid #ffd2a8; outline-offset:2px }
+/* a phone's keyboard is up: the box and the button win the room that's left */
+#reply.kb .quote { -webkit-line-clamp:2; margin-bottom:8px } #reply.kb .how { display:none }
+#reply.kb .mic { width:52px; height:52px; margin-bottom:4px } #reply.kb .mic svg { width:24px; height:24px }
+@media (min-width: 900px) { #reply { left:auto; right:24px; bottom:24px; width:420px } }
+/* iOS zooms into a field set smaller than 16 px: these never are */
+@media (hover: none) { #reply textarea, #reply .me input { font-size:16px } }
+@media (prefers-reduced-motion: reduce) { #reply, #reply.show { transition:none } #reply.listening .mic .ring, #reply .state.wait { animation:none } #reply.listening .mic .ring { opacity:.8 } }

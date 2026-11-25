@@ -47,13 +47,21 @@ test('your words match what HN gives back for them (formatting and shortened lin
   assert.equal(asPosted(said), skeleton(hnPlain(api)));
 });
 
-test('yours: by name, by your exact words, by your words with a typo fixed on HN; never by someone else\'s', () => {
+test('yours: by name when we know it (and then only by name); else by five or more of your words', () => {
   const text = 'The borrow checker is the reason this compiles at all, not LLVM.';
   assert.equal(yours({ by: 'alice', text: 'anything' }, text, 'alice'), 'name');
-  assert.equal(yours({ by: 'bob', text: 'The borrow checker is the reason this compiles at all, not LLVM.' }, text, ''), 'exact');
+  assert.equal(yours({ by: 'bob', text }, text, 'alice'), '');                       // a known name: words don't count
+  assert.equal(yours({ by: 'bob', text: 'The borrow checker is the reason this compiles at all, not LLVM.' }, text, ''), 'words');
   assert.equal(yours({ by: 'bob', text: 'The borrow checker is the reason this compiles at all, not LLVM itself.' }, text, ''), 'words');
   assert.equal(yours({ by: 'carol', text: 'I disagree: LLVM is why it compiles, the checker only rejects.' }, text, ''), '');
   assert.equal(yours({ by: 'bob', text: '[delayed]' }, text, ''), '');
-  assert.equal(yours({ by: 'bob', text: 'Thanks!' }, 'thanks', ''), 'exact');
-  assert.equal(yours({ by: 'bob', text: 'Thanks a lot!' }, 'thanks', ''), '');      // too short to match loosely
+  assert.equal(yours({ by: 'bob', text: 'Thanks!' }, 'Thanks!', ''), 'same');       // short: word for word only (no name learned)
+  assert.equal(yours({ by: 'bob', text: 'Thanks, really!' }, 'Thanks!', ''), '');
+  assert.equal(yours({ by: 'bob', text: '谢谢你的解释' }, '谢谢你的解释', ''), 'same');    // a script without spaces
+  assert.equal(yours({ by: 'bob', text: '谢谢' }, '谢谢你的解释', ''), '');
+});
+
+test('entities HN could send, and ones it never would, decode safely', () => {
+  assert.equal(hnPlain('a &amp;constructor; b'), 'a &constructor; b');
+  assert.equal(hnPlain('&#99999999999; &#x1F600;'), '&#99999999999; 😀');
 });

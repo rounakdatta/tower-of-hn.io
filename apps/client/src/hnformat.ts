@@ -84,9 +84,11 @@ const ENT: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apo
 /** HN's comment HTML (as its API returns it) as plain text: paragraphs kept, tags out, entities decoded. */
 export function hnPlain(html: string): string {
   return html.replace(/<p>/gi, '\n\n').replace(/<[^>]*>/g, '')
-    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => e[0] === '#'
-      ? String.fromCodePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : Number(e.slice(1)))
-      : ENT[e.toLowerCase()] ?? m)
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+      if (e[0] !== '#') return Object.hasOwn(ENT, e.toLowerCase()) ? ENT[e.toLowerCase()] : m;
+      const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : Number(e.slice(1));
+      return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;          // (no such character: left as written)
+    })
     .replace(/\n{3,}/g, '\n\n').trim();
 }
 
@@ -105,12 +107,15 @@ function overlap(a: string[], b: string[]) {
   for (const w of b) { const k = n.get(w); if (k) { same++; n.set(w, k - 1); } }
   return (2 * same) / (a.length + b.length || 1);
 }
-/** Yours? By name, if we know it; else by your words (HN formats them, and its API gives back its HTML). */
-export function yours(c: { by?: string; text?: string }, text: string, me: string): 'name' | 'words' | 'exact' | '' {
-  if (me && c.by === me) return 'name';
+/** Yours? By name, if we know it (and then only by name: someone else's words never count). Without a name, by your
+ *  words, five or more of them (HN formats them, and its API gives back its HTML): a short "Thanks!" from someone
+ *  else under the same comment must never pass for yours. */
+export function yours(c: { by?: string; text?: string }, text: string, me: string): 'name' | 'words' | 'same' | '' {
+  if (me) return c.by === me ? 'name' : '';
   if (!c.text || c.text === '[delayed]') return '';
-  const a = asPosted(text), b = skeleton(hnPlain(c.text));
-  if (a && a === b) return 'exact';
-  const wa = a.split(' '), wb = b.split(' ');
-  return wa.length >= 5 && wb.length >= 5 && overlap(wa, wb) >= 0.8 ? 'words' : '';
+  const a = asPosted(text), b = skeleton(hnPlain(c.text)), wa = a.split(' '), wb = b.split(' ');
+  if (wa.length >= 5 && wb.length >= 5) return overlap(wa, wb) >= 0.8 ? 'words' : '';
+  // a short reply ("Thanks, this helped!"), or one in a script without spaces: word for word only, and never enough
+  // to learn a name from
+  return a !== '' && a === b ? 'same' : '';
 }

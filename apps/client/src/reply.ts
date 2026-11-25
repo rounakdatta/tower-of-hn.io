@@ -1,272 +1,523 @@
 // Replying, by voice. Walk up to someone (or sit at their table), say what you want to say back, read it, fix it,
-// and post it to Hacker News as yourself.
+// and post it to Hacker News as yourself. Loaded the first time you reply (it isn't part of the page's first load).
 //
-// Your words stay yours: your browser turns speech into text (its own recognition, nothing on our server), nothing
-// rewrites them (HN asks for human comments), and nothing is posted until you press Post. How it posts:
-//   - with the Tower of HN companion extension (desktop): straight from your browser, with your own Hacker News
-//     session; we never see your password or your cookie;
-//   - without it (any phone, any browser): a hand-off. The text is copied, HN's own reply page opens for that
-//     comment, you paste and press reply there.
-// And when someone answers you, you hear it: a reply to one of your comments on the floor you're on is said next at
-// its table and brought to your ears; one anywhere else on the tower gets a note that takes you there.
+// Your words stay yours: your browser turns speech into text (its own recognition; we never get the audio), nothing
+// rewrites them (HN asks for human comments: only a capital where a sentence starts), and nothing is posted until you
+// press reply on Hacker News's own page. How it posts:
+//   - without the extension (any phone, any browser): a hand-off. Your words are copied, HN's own reply page opens for
+//     that comment, you paste and press reply there (signing in first, on HN, if it asks). We never see a password.
+//   - with the Tower of HN companion extension (desktop): from your browser, with your own Hacker News session, after
+//     the extension's own confirmation window.
+// Either way the sheet then watches HN's public API for your reply under that comment, and says when it's there.
+//
+// Nothing you write is lost: a draft per comment is kept in this browser (a week, the latest 20), through closing the
+// sheet, a reload, or a phone dropping the tab while you're on HN; a hand-off survives a reload too.
 import { esc } from './util.ts';
+import { you } from './you.ts';
+import { hnHtml, hnPlain, asPosted, yours } from './hnformat.ts';
+import { heard, join, type Result } from './dictation.ts';
+import './reply.css';
 
 export interface ReplyTarget { id: number; by: string; story: number; title: string }
+/** your reply, seen on Hacker News */
+export interface Landed { id: number; parent: number; to: string; by: string; dead: boolean; delayed: boolean }
 
 type Rec = { start(): void; stop(): void; abort(): void; continuous: boolean; interimResults: boolean; lang: string;
-  onresult: ((e: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null;
+  onresult: ((e: { resultIndex: number; results: ArrayLike<Result> }) => void) | null;
   onend: (() => void) | null; onerror: ((e: { error: string }) => void) | null };
+type Item = { id: number; by?: string; text?: string; time?: number; kids?: number[]; dead?: boolean; deleted?: boolean } | null;
+type Handoff = { id: number; story: number; by: string; text: string; at: number; kids: number[] | null };
+
+const ua = navigator.userAgent;
 // (iOS has no speech recognition in a home-screen web app, though the constructor is there: typing there)
-const standaloneIOS = (/iP(hone|ad|od)/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1))
+const standaloneIOS = (/iP(hone|ad|od)/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1))
   && (matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true);
-const SR = standaloneIOS ? undefined : (window as unknown as { SpeechRecognition?: new () => Rec; webkitSpeechRecognition?: new () => Rec }).SpeechRecognition
+// (Brave has the constructor but no recogniser behind it: every start ends in a "network" error, brave-browser#2802)
+const SR = standaloneIOS || 'brave' in navigator ? undefined : (window as unknown as { SpeechRecognition?: new () => Rec; webkitSpeechRecognition?: new () => Rec }).SpeechRecognition
   ?? (window as unknown as { webkitSpeechRecognition?: new () => Rec }).webkitSpeechRecognition;
-const HN = 'https://hacker-news.firebaseio.com/v0';
+/** whose service turns your voice into text: the browser's own (every iPhone browser is Safari underneath) */
+const EAR = /iP(hone|ad|od)/.test(ua) || (/Safari\//.test(ua) && !/Chrom|Edg\//.test(ua)) ? 'Apple' : /Edg\//.test(ua) ? 'Microsoft' : 'Google';
+const TOUCH = matchMedia('(hover: none)').matches, ANDROID = /Android/.test(ua);
+const tap = TOUCH ? 'tap' : 'click', Tap = TOUCH ? 'Tap' : 'Click';
+const API = 'https://hacker-news.firebaseio.com/v0', SITE = 'https://news.ycombinator.com';
+const DRAFTS = 'tohn-drafts', HANDOFF = 'tohn-handoff', WEEK = 7 * 86_400_000;
+const WATCH_MS = 600_000, EVERY_MS = 5000;
+const X = '<button class="x" type="button" aria-label="Close">×</button>';
+const MIC = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12z" fill="currentColor"/></svg>';
+/** text HN will format (italics, code, links, paragraphs): worth a preview */
+const FORMATTED = /\*|https?:\/\/|\n[ \t]*\n|(^|\n) {2,}\S/;
 
-/** HN's HTML (paragraphs, links, entities) as plain text: parsed in an inert document (nothing in it can run) */
-function plain(html: string) {
-  const doc = new DOMParser().parseFromString(html.replace(/<p>/gi, '\n\n'), 'text/html');
-  return (doc.body.textContent ?? '').replace(/\n{3,}/g, '\n\n').trim();
+const item = (id: number): Promise<Item> => fetch(`${API}/item/${id}.json`, { cache: 'no-store', signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null));
+const replyUrl = (h: { id: number; story: number }) => `${SITE}/reply?id=${h.id}&goto=${encodeURIComponent(`item?id=${h.story}#${h.id}`)}`;
+const store = {
+  get<T>(k: string, or: T): T { try { const v = JSON.parse(localStorage.getItem(k) ?? 'null'); return v && typeof v === 'object' ? v : or; } catch { return or; } },
+  set(k: string, v: unknown) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode, or full */ } },
+};
+
+/** Drafts, one per comment you're answering: in this browser only, for a week, the latest 20. */
+export const drafts = {
+  get(id: number): string {
+    const d = store.get<Record<string, { text: string; at: number }>>(DRAFTS, {})[id];
+    return d && typeof d.text === 'string' && Date.now() - d.at < WEEK ? d.text : '';
+  },
+  put(id: number, text: string) {
+    const all = store.get<Record<string, { text: string; at: number }>>(DRAFTS, {}), now = Date.now();
+    if (text.trim()) all[id] = { text, at: now }; else delete all[id];
+    store.set(DRAFTS, Object.fromEntries(Object.entries(all).filter(([, d]) => d && typeof d.text === 'string' && now - d.at < WEEK).sort((a, b) => b[1].at - a[1].at).slice(0, 20)));
+  },
+};
+
+/**
+ * After a hand-off: is your reply on Hacker News yet? The comment's new answers (the ones it didn't have when you
+ * opened the sheet), matched to you by name, or by your words. Asked of HN's public API every few seconds while this
+ * page is visible (not while you're on HN's tab), for ten minutes, and once more when you come back after that. It
+ * outlives the sheet, and a reload (the hand-off is kept in this browser).
+ */
+class Watch {
+  h: Handoff | null = null;
+  private checked = new Set<number>();
+  private timer = 0;
+  private busy = false;
+  onFound: (l: Landed) => void = () => {};
+  onGiveUp: (h: Handoff) => void = () => {};
+
+  constructor() { addEventListener('visibilitychange', () => { if (!document.hidden && this.h) this.look(); }); }
+  start(h: Handoff) {
+    this.h = h; this.checked.clear();
+    store.set(HANDOFF, h);
+    clearTimeout(this.timer);
+    this.timer = window.setTimeout(() => this.look(), EVERY_MS);
+  }
+  stop() { this.h = null; clearTimeout(this.timer); store.set(HANDOFF, null); }
+  private async look() {
+    const h = this.h;
+    if (!h || this.busy) return;
+    clearTimeout(this.timer);
+    if (document.hidden) return;                                         // (back on this tab: a look at once)
+    const late = Date.now() - h.at > WATCH_MS;
+    this.busy = true;
+    try { if (await this.find(h)) return; } finally { this.busy = false; }
+    if (this.h !== h) return;
+    if (late) { this.stop(); this.onGiveUp(h); return; }                 // (that was the last look)
+    this.timer = window.setTimeout(() => this.look(), EVERY_MS);
+  }
+  /** one look: true when it's found (or the watch moved on) */
+  private async find(h: Handoff) {
+    const p = await item(h.id).catch(() => null);
+    if (!p) return false;                                                // HN's API is down or slow: next time
+    for (const k of (p.kids ?? []).filter((x) => !h.kids?.includes(x) && !this.checked.has(x)).slice(0, 20)) {
+      try {
+        const c = await item(k);
+        if (!c) continue;                                                // (no answer: ask again next time)
+        if (c.deleted) { this.checked.add(k); continue; }
+        // (no list of the answers from before you sent it on: only a recent one can be yours; a wide window, as
+        // this device's clock and HN's needn't agree)
+        if (!h.kids && (c.time ?? 0) < h.at / 1000 - 1800) { this.checked.add(k); continue; }
+        const how = yours(c, h.text, you.me);
+        // (a short reply counts only among the answers that are new since you opened the sheet)
+        if (!how || (how === 'same' && !h.kids)) { if (you.me || (c.text && c.text !== '[delayed]')) this.checked.add(k); continue; }   // (a held one: again)
+        if (how === 'words' && c.by) you.set(c.by);                    // that's you, then (never replaces a known name)
+        if (this.h !== h) return true;
+        this.stop();
+        this.onFound({ id: k, parent: h.id, to: h.by, by: c.by ?? '', dead: !!c.dead, delayed: c.text === '[delayed]' });
+        return true;
+      } catch { /* this one next time; the others now */ }
+    }
+    return false;
+  }
 }
+const watch = new Watch();
 
+// ---------------------------------------------------------------- the sheet
 export class Reply {
-  /** your Hacker News username (kept in this browser only): to find replies to you, and to know your reply landed */
-  me = localStorage.getItem('tohn-me') ?? '';
-  /** the companion extension answered (it posts with your own HN session) */
-  private ext = false;
   private el: HTMLElement;
   private rec: Rec | null = null;
   private listening = false;
   private target: ReplyTarget | null = null;
   private base = '';                                     // the text before this round of listening
+  private kids: number[] | null = null;                  // the answers that comment had when you opened the sheet
+  private said_ = '';                                    // their words, as shown (kept across re-renders)
+  /** posts asked of the extension, by nonce: its answer can come after the sheet gave up waiting, or was closed */
+  private asked = new Map<string, Handoff>();
+  private back: Element | null = null;                   // where the keyboard goes back to on close
+  private failed = '';                                   // a microphone problem being shown (until you try again)
+  private shut = '';                                     // why HN may not take a reply to this comment
+  private blocked = false;                               // ...and it surely won't (a deleted comment)
+  private saveTimer = 0;
+  private hushTimer = 0;
+  private extTimer = 0;
+  private busy = false;
+  private composing = false;
   /** the room goes quiet while you speak (so the microphone hears you, not the toys), and back after */
   onListen: (on: boolean) => void = () => {};
   onOpen: (on: boolean) => void = () => {};
+  /** your reply is on Hacker News: the sheet says so itself while it's open on that comment */
+  onLanded: (l: Landed) => void = () => {};
+  /** the words of the comment being answered, as soon as the room has them (from its voicing) */
+  said: (id: number, text: string) => void = () => {};
 
   constructor() {
     this.el = document.createElement('div');
     this.el.id = 'reply';
     this.el.setAttribute('role', 'dialog');
-    this.el.setAttribute('aria-label', 'Reply');
+    this.el.setAttribute('aria-labelledby', 'reply-to');
     document.body.appendChild(this.el);
-    // a companion extension says hello through the page (its content script listens on our origin)
-    addEventListener('message', (e) => {
-      if (e.source !== window || !e.data || typeof e.data !== 'object') return;
-      if (e.data.tohn === 'here') { this.ext = true; if (!this.me && typeof e.data.user === 'string' && e.data.user) this.setMe(e.data.user); }
-      if (e.data.tohn === 'posted' && this.target && e.data.parent === this.target.id) this.posted(!!e.data.ok, String(e.data.error ?? ''));
+    this.el.addEventListener('keydown', (e) => {
+      if (e.isComposing) return;                         // (an input method's own Esc and Enter)
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.escape(); }
+      else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && this.composing) { e.preventDefault(); this.post(); }
     });
-    window.postMessage({ tohn: 'hello' }, location.origin);
+    // the extension answers each post with the nonce it was asked with (late, or after the sheet closed, is fine)
+    addEventListener('message', (e) => {
+      if (e.source !== window || !e.data || typeof e.data !== 'object' || e.data.tohn !== 'posted') return;
+      const h = this.asked.get(String(e.data.nonce));
+      if (h) { this.asked.delete(String(e.data.nonce)); this.extAnswer(h, !!e.data.ok, String(e.data.error ?? '')); }
+    });
+    const keep = () => this.saveNow();
+    addEventListener('pagehide', keep);
+    addEventListener('visibilitychange', () => { if (document.hidden) keep(); });
+    watch.onFound = (l) => {
+      drafts.put(l.parent, '');
+      if (this.target?.id === l.parent) this.posted(l);
+      this.onLanded(l);
+    };
+    watch.onGiveUp = (h) => { if (this.target?.id === h.id && !this.composing) this.notYet(); };
   }
 
   get open() { return !!this.target; }
   get to() { return this.target; }
-  get canListen() { return !!SR; }
 
-  setMe(name: string) {
-    const n = name.trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 15);
-    this.me = n;
-    if (n) localStorage.setItem('tohn-me', n); else localStorage.removeItem('tohn-me');
-  }
+  /** Back after a reload with a reply handed to HN: keep watching for it (no sheet; a note when it's there). */
+  resume() { const h = store.get<Handoff | null>(HANDOFF, null); if (h && typeof h.text === 'string' && Date.now() - h.at < 1_800_000) watch.start(h); }
 
-  /** Open the sheet to answer comment `t`; their words are fetched to show what you're answering. */
+  /** Open the sheet to answer comment `t`: your draft for it, if there is one; their words, to show what you're
+   *  answering (the room's first, then HN's own). */
   show(t: ReplyTarget) {
-    this.stop();
-    this.target = t;
-    this.base = '';
+    if (this.target) this.saveNow();                     // (the last few keys, before anything changes)
+    this.cut();
+    if (!this.target) this.back = document.activeElement;
+    this.target = t; this.kids = null; this.failed = ''; this.shut = ''; this.blocked = false; this.said_ = ''; this.busy = false;
+    clearTimeout(this.extTimer);
     this.onOpen(true);
-    this.render('');
-    // what you're answering: the words the room already has at once, then HN's own text when it arrives
+    this.el.classList.add('show');                       // (first: nothing in a hidden sheet can take the focus)
+    const h = watch.h;
+    if (h && h.id === t.id) this.handed(h, null);
+    else { const d = drafts.get(t.id); this.render(d, d ? 'draft' : ''); }
+    visualViewport?.addEventListener('resize', this.fit);
+    visualViewport?.addEventListener('scroll', this.fit);
+    this.fit();
     let real = false;
     this.said = (id, text) => { if (!real && this.target?.id === id) this.quote(text); };
-    fetch(`${HN}/item/${t.id}.json`).then((r) => r.json()).then((it: { text?: string } | null) => {
-      if (this.target?.id !== t.id || !it?.text) return;
-      real = true;
-      this.quote(plain(it.text));
+    item(t.id).then((it) => {
+      if (this.target?.id !== t.id || !it) return;
+      this.kids = it.kids ?? [];
+      if (it.text) { real = true; this.quote(hnPlain(it.text)); }
+      if (it.deleted) this.closed('That comment was deleted: Hacker News takes no replies to it. Your words are kept here.', true);
+    }).catch(() => {});
+    // HN's FAQ: "Threads are closed to new comments after two weeks, or if the submission has been killed" (a warning:
+    // a story HN gives a second chance can look older than it is)
+    item(t.story).then((s) => {
+      if (this.target?.id === t.id && s && (s.dead || s.deleted || Date.now() / 1000 - (s.time ?? Infinity) > 14 * 86400)) {
+        this.closed('This thread looks closed: Hacker News takes no new comments after two weeks, or on a killed story. Your words are kept here.', false);
+      }
     }).catch(() => {});
   }
-  /** the words of the comment being answered, as soon as the room has them (from its voicing) */
-  said: (id: number, text: string) => void = () => {};
+  /** HN won't take a reply here: say why, before you write; a deleted comment can't be answered at all */
+  private closed(why: string, hard: boolean) {
+    this.shut = why; this.blocked ||= hard;
+    const post = this.$<HTMLButtonElement>('.post');
+    if (hard && post && this.composing) post.disabled = true;
+    if (this.composing) this.state(why, 'error');
+  }
   private quote(text: string) {
-    const q = this.el.querySelector('.their');
-    if (q) q.textContent = `“${text.slice(0, 260)}${text.length > 260 ? '…' : ''}”`;
+    this.said_ = `“${text.slice(0, 260)}${text.length > 260 ? '…' : ''}”`;
+    const q = this.el.querySelector('.quote');
+    if (q) q.textContent = this.said_;
   }
 
   close() {
-    this.stop();
+    this.cut();
+    this.saveNow();
     this.target = null;
-    this.el.classList.remove('show');
+    this.composing = false;
+    this.el.classList.remove('show', 'kb');
+    visualViewport?.removeEventListener('resize', this.fit);
+    visualViewport?.removeEventListener('scroll', this.fit);
     this.onOpen(false);
+    const b = this.back as HTMLElement | null;
+    this.back = null;
+    if (b?.isConnected && typeof b.focus === 'function' && b !== document.body) b.focus({ preventScroll: true });
+  }
+  /** Esc: stop listening first; then close (your draft stays) */
+  escape() { if (this.listening) this.hush(); else this.close(); }
+
+  /** The sheet sits above a phone's keyboard, and fits what's left of the screen. */
+  private fit = () => {
+    const v = visualViewport;
+    if (!v) return;
+    const kb = Math.abs(v.scale - 1) > 0.01 ? 0 : Math.max(0, Math.round(innerHeight - v.height - v.offsetTop));
+    this.el.style.setProperty('--kb', `${kb}px`);
+    this.el.style.setProperty('--vh', `${Math.round(v.height)}px`);
+    this.el.classList.toggle('kb', kb > 80);
+  };
+
+  private $<T extends HTMLElement>(s: string) { return this.el.querySelector(s) as T | null; }
+  private text() { return this.$<HTMLTextAreaElement>('textarea')?.value ?? ''; }
+  private state(s: string, kind: '' | 'error' | 'wait' = '') {
+    const el = this.$('.state');
+    if (!el) return;
+    el.textContent = s;
+    el.className = `state ${kind}`.trim();
+  }
+  private idle() {
+    if (this.shut) return this.shut;
+    if (this.failed) return this.failed;
+    if (!SR) return standaloneIOS ? 'No dictation in a home-screen app: type, or use your keyboard’s mic' : 'This browser can’t take dictation: type, or use your keyboard’s mic';
+    return this.text().trim() ? `Read it over, then send it (or ${tap} the mic to add more)` : `${Tap} to speak`;
   }
 
-  private text() { return (this.el.querySelector('textarea') as HTMLTextAreaElement | null)?.value ?? ''; }
-
-  private render(text: string) {
-    const t = this.target!, tap = matchMedia('(hover: none)').matches ? 'Tap' : 'Click';
-    // honest about what the button does: with the extension it posts; without, it continues on HN's own page
-    const act = this.ext ? 'Post to Hacker News' : 'Continue on Hacker News ↗';
-    const how = this.ext
-      ? `Posts as you, with your own Hacker News session (the Tower of HN extension). We never see your password.`
-      : `Opens Hacker News on that comment with your words copied: paste, then press reply.`;
-    const field = (label: string, ph: string) => `<div class="me"><label for="hn-me">${label}</label><input id="hn-me" type="text" value="${esc(this.me)}" placeholder="${ph}" autocomplete="username" spellcheck="false"></div>`;
-    this.el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>
-      <div class="to">Reply to <b>${esc(t.by)}</b>${this.me ? ` · <span class="as" role="button" tabindex="0" title="Change">as ${esc(this.me)}</span>` : ''}</div>
-      <p class="their">…</p>
-      ${SR ? `<button class="mic" type="button" aria-label="Speak your reply"><span class="ring"></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12z" fill="currentColor"/></svg></button>
-      <div class="state">${tap} to speak</div>` : `<div class="state">This browser can't hear you: type your reply</div>`}
-      <textarea rows="4" placeholder="${SR ? 'Your words appear here, and you can fix them' : 'Your reply'}" maxlength="6000">${esc(text)}</textarea>
-      <button class="post" type="button" ${text.trim() ? '' : 'disabled'}>${act}</button>
-      ${this.me ? '' : field('Your HN username', 'so your reply can walk in here')}
-      <p class="how">${how} Your words, exactly: nothing rewrites them.</p>`;
-    const q = (s: string) => this.el.querySelector(s) as HTMLElement;
-    q('.x').onclick = () => this.close();
-    const ta = q('textarea') as HTMLTextAreaElement, post = q('.post') as HTMLButtonElement;
-    ta.oninput = () => { post.disabled = !ta.value.trim(); if (!this.listening) this.base = ta.value; };
-    const me = this.el.querySelector('#hn-me') as HTMLInputElement | null;
-    if (me) me.onchange = () => this.setMe(me.value);
-    // "as you": tap to change the name (it opens the field in place)
-    const as = this.el.querySelector('.as') as HTMLElement | null;
-    if (as) as.onclick = () => { as.remove(); post.insertAdjacentHTML('afterend', field('Your HN username', 'so your reply can walk in here')); const f = this.el.querySelector('#hn-me') as HTMLInputElement; f.onchange = () => this.setMe(f.value); f.focus(); };
+  /** writing: the microphone, the box (yours to edit), and the one button that sends it on */
+  private render(text: string, why: '' | 'draft' = '') {
+    const t = this.target!;
+    this.composing = true;
+    const act = you.ext ? 'Post to Hacker News' : 'Continue on Hacker News ↗';
+    const how = you.ext
+      ? 'Posts as you, with your own Hacker News session (the Tower of HN extension): we never see your password.'
+      : 'Copies your words and opens that comment on Hacker News: paste, then press reply.';
+    this.el.innerHTML = `${X}
+      <div class="to" id="reply-to" tabindex="-1">Reply to <b>${esc(t.by)}</b>${you.me ? ` <button class="as" type="button" title="Not you? Change or forget it">as ${esc(you.me)}</button>` : ''}</div>
+      <p class="quote">${esc(this.said_ || '…')}</p>
+      ${SR ? `<button class="mic" type="button" aria-label="Speak your reply"><span class="ring"></span>${MIC}</button>` : ''}
+      <div class="state" role="status"></div>
+      <textarea rows="4" aria-label="Your reply to ${esc(t.by)}" placeholder="${SR ? 'Your words appear here, and you can fix them' : 'Your reply'}">${esc(text)}</textarea>
+      <div class="foot"><button class="peek" type="button" hidden>Preview</button></div>
+      <div class="preview" hidden></div>
+      <button class="post" type="button" aria-keyshortcuts="Meta+Enter Control+Enter" ${text.trim() && !this.blocked ? '' : 'disabled'}>${act}${TOUCH ? '' : ' <kbd aria-hidden="true">⌘↩</kbd>'}</button>
+      <p class="how">${how} Your words, exactly: nothing rewrites them.${SR ? ` Speech becomes text in your browser, by ${EAR}’s service: we never get your voice.` : ''}</p>`;
+    if (!TOUCH && !/Mac/.test(navigator.platform)) { const k = this.$('.post kbd'); if (k) k.textContent = 'Ctrl ↩'; }
+    this.state(why === 'draft' ? `Your draft is back. ${this.idle()}` : this.idle());
+    const ta = this.$<HTMLTextAreaElement>('textarea')!, post = this.$<HTMLButtonElement>('.post')!;
+    const peek = this.$<HTMLButtonElement>('.peek')!, pre = this.$('.preview')!;
+    this.$('.x')!.onclick = () => this.close();
+    ta.oninput = () => {
+      if (this.listening) this.cut();                    // typing takes over from the microphone
+      this.base = ta.value;
+      this.changed();
+    };
+    peek.hidden = !FORMATTED.test(text);
+    peek.onclick = () => {
+      const on = pre.hidden;
+      if (on) this.cut();
+      if (on) pre.innerHTML = hnHtml(this.text()) || '<p class="none">Nothing yet</p>';
+      pre.hidden = !on; ta.hidden = on;
+      peek.textContent = on ? 'Edit' : 'Preview';
+      if (!on) ta.focus({ preventScroll: true });
+    };
     post.onclick = () => this.post();
-    const mic = this.el.querySelector('.mic') as HTMLElement | null;
-    if (mic) mic.onclick = () => (this.listening ? this.stop() : this.listen());
-    this.el.classList.add('show');
+    const as = this.$<HTMLButtonElement>('.as');
+    if (as) as.onclick = () => this.rename(as);
+    const mic = this.$<HTMLButtonElement>('.mic');
+    if (mic) mic.onclick = () => (this.listening ? this.hush() : this.listen());
     // at a desk, the keyboard lands on the microphone (Enter talks); a phone keeps its keyboard down until you type
-    if (matchMedia('(hover: hover)').matches) (mic ?? ta).focus({ preventScroll: true });
+    // (its focus goes to the heading, which tells a screen reader where it is)
+    (TOUCH ? this.$('#reply-to') : mic ?? ta)?.focus({ preventScroll: true });
+  }
+  /** "as alice": not you? change it, or empty it to forget (it lives in this browser only) */
+  private rename(as: HTMLElement) {
+    as.outerHTML = `<span class="me"><label for="hn-me">as</label><input id="hn-me" type="text" value="${esc(you.me)}" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="hn-me-why"><span id="hn-me-why" hidden>Your Hacker News username, kept in this browser only. Empty it to forget it.</span></span>`;
+    const f = this.$<HTMLInputElement>('#hn-me')!;
+    f.onchange = () => you.set(f.value);
+    f.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); you.set(f.value); this.$<HTMLTextAreaElement>('textarea')?.focus(); } };
+    f.focus(); f.select();
+  }
+  /** the box changed (you, or the microphone): the button, the preview, and the draft keep up */
+  private changed() {
+    const ta = this.$<HTMLTextAreaElement>('textarea'), post = this.$<HTMLButtonElement>('.post'), peek = this.$<HTMLButtonElement>('.peek');
+    if (!ta || !post) return;
+    if (!this.busy) post.disabled = !ta.value.trim() || this.blocked;
+    if (peek && peek.hidden === FORMATTED.test(ta.value)) peek.hidden = !peek.hidden;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = window.setTimeout(() => this.saveNow(), 400);
+  }
+  private saveNow() {
+    clearTimeout(this.saveTimer);
+    if (this.target && this.composing) drafts.put(this.target.id, this.text());
   }
 
-  /** Start hearing you: what you say is added to the text, live; tap again (or pause) to stop. */
+  /** Start hearing you: what you say goes into the box, live, after what's there; tap again (or pause) to stop. */
   private listen() {
-    if (!SR || this.listening) return;
+    if (!SR || this.rec) return;
+    const ta = this.$<HTMLTextAreaElement>('textarea')!;
+    if (ta.hidden) this.$<HTMLButtonElement>('.peek')?.click();   // (out of the preview: you see what it writes)
     const rec = new SR();
     rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
-    const ta = this.el.querySelector('textarea') as HTMLTextAreaElement;
-    this.base = ta.value ? ta.value.replace(/\s*$/, ' ') : '';
+    this.base = ta.value;
+    this.failed = '';
     rec.onresult = (e) => {
-      let fin = '', mid = '';
-      for (let i = 0; i < e.results.length; i++) {
-        const r = e.results[i], w = r[0].transcript;
-        if (r.isFinal) fin += w; else mid += w;
-      }
-      ta.value = this.base + tidy(fin + mid);
-      (this.el.querySelector('.post') as HTMLButtonElement).disabled = !ta.value.trim();
+      if (this.rec !== rec) return;                      // (cut off: you typed, or closed the sheet)
+      ta.value = join(this.base, heard(e.results, ANDROID));
+      this.changed();
     };
-    const tap = matchMedia('(hover: none)').matches ? 'tap' : 'click';
-    rec.onerror = (e) => { this.state(e.error === 'not-allowed' ? 'The microphone is blocked for this site' : e.error === 'no-speech' ? `Didn’t catch that: ${tap} to try again` : `Couldn’t hear: ${tap} to try again`); };
-    rec.onend = () => { if (this.rec === rec) this.stop(); };
+    rec.onerror = (e) => { if (this.rec === rec) this.fail(e.error); };
+    rec.onend = () => { if (this.rec === rec) this.done(); };
     this.rec = rec;
-    try { rec.start(); } catch { this.state('Couldn’t start the microphone'); return; }
+    try { rec.start(); } catch { this.rec = null; this.fail('start'); return; }
     this.listening = true;
     this.el.classList.add('listening');
+    this.$('.mic')?.setAttribute('aria-label', 'Stop listening');
     this.state(`Listening… ${tap} when you’re done`);
     this.onListen(true);
   }
-
-  private stop() {
-    if (this.rec) { const r = this.rec; this.rec = null; try { r.stop(); } catch { /* done */ } }
-    if (this.listening) {
-      this.listening = false;
-      this.el.classList.remove('listening');
-      this.base = this.text();
-      const tap = matchMedia('(hover: none)').matches ? 'tap' : 'click';
-      this.state(this.text().trim() ? `Read it over, then send it (or ${tap} to add more)` : `${tap[0].toUpperCase() + tap.slice(1)} to speak`);
-      this.onListen(false);
-    }
+  /** you're done: the words still on their way finish this round (the end of the session closes it) */
+  private hush() {
+    const rec = this.rec;
+    if (!rec) return;
+    try { rec.stop(); } catch { /* already over */ }
+    clearTimeout(this.hushTimer);
+    this.hushTimer = window.setTimeout(() => { if (this.rec === rec) this.cut(); }, 3000);   // (it never said it ended)
+  }
+  /** stop at once, and drop whatever is still on its way (you started typing, or closed the sheet) */
+  private cut() {
+    const rec = this.rec;
+    if (!rec) return;
+    this.rec = null;
+    try { rec.abort(); } catch { /* already over */ }
+    this.done();
+  }
+  private done() {
+    clearTimeout(this.hushTimer);
+    this.rec = null;
+    if (!this.listening) return;
+    this.listening = false;
+    this.el.classList.remove('listening');
+    this.$('.mic')?.setAttribute('aria-label', 'Speak your reply');
+    this.base = this.text();
+    this.state(this.idle(), this.failed || this.shut ? 'error' : '');
+    this.saveNow();
+    this.onListen(false);
+  }
+  /** a microphone problem, in words, with a way on (it stays until you try again) */
+  private fail(code: string) {
+    const lang = navigator.language || 'your language';
+    const say: Record<string, string> = {
+      'not-allowed': 'The microphone is blocked for this site: allow it in your browser’s site settings, or type',
+      'service-not-allowed': 'Dictation is off on this device (on iPhone it needs Siri): type, or use your keyboard’s mic',
+      'audio-capture': 'No microphone found: type your reply',
+      'network': navigator.onLine ? `The dictation service didn’t answer: type, or ${tap} to try again` : `Dictation needs a connection: type, or ${tap} to try again`,
+      'language-not-supported': `Dictation doesn’t know ${lang} here: type your reply`,
+      'no-speech': `Didn’t catch that: ${tap} to try again`,
+      'aborted': '',
+    };
+    this.failed = say[code] ?? `Couldn’t hear you: ${tap} to try again`;
+    if (this.failed) this.state(this.failed, 'error');
+    if (!this.listening) this.state(this.idle(), this.failed || this.shut ? 'error' : '');
   }
 
-  private state(s: string) { const el = this.el.querySelector('.state'); if (el) el.textContent = s; }
-
-  /** Post: through the extension (your own session), or hand it to HN's reply page. */
+  /** Send it on: through the extension (your own session), or handed to HN's own reply page. */
   private post() {
     const t = this.target, text = this.text().trim();
-    if (!t || !text) return;
-    this.stop();
-    if (this.ext) {
-      this.state('Posting…');
-      (this.el.querySelector('.post') as HTMLButtonElement).disabled = true;
-      window.postMessage({ tohn: 'post', parent: t.id, story: t.story, text }, location.origin);   // answered with its parent
+    if (!t || !text || this.busy || !this.composing || this.blocked) return;
+    this.cut();
+    this.saveNow();
+    if (!navigator.onLine) { this.state('You’re offline. Your reply is kept here: send it when you’re back', 'error'); return; }
+    const h: Handoff = { id: t.id, story: t.story, by: t.by, text, at: Date.now(), kids: this.kids };
+    if (!you.ext) { this.handoff(h); return; }
+    this.busy = true;
+    this.$<HTMLButtonElement>('.post')!.disabled = true;
+    this.$('#reply-to')?.focus({ preventScroll: true });   // (not left on a button that just went out)
+    this.state('Confirm it in the extension’s window…', 'wait');
+    const nonce = crypto.randomUUID();
+    this.asked.set(nonce, h);
+    window.postMessage({ tohn: 'post', parent: t.id, story: t.story, text, nonce }, location.origin);
+    // no answer for two minutes: say so, and offer HN's own page; a late yes still counts (see extAnswer)
+    this.extTimer = window.setTimeout(() => {
+      if (this.target?.id !== t.id || !this.busy) return;
+      this.state('No answer from the extension yet. If you confirm in its window it still posts; or post it on HN’s own page:', 'error');
+      this.offerHandoff(h);
+    }, 120_000);
+  }
+  /** the hand-off: copy, and open HN's own reply form for that comment (a new tab, from this tap); then watch */
+  private handoff(h: Handoff) {
+    this.busy = true;
+    const post = this.$<HTMLButtonElement>('.post');
+    if (post) post.disabled = true;                        // (one tap, one tab)
+    const copied = copy(h.text, this.$<HTMLTextAreaElement>('textarea'));
+    window.open(replyUrl(h), '_blank', 'noopener');
+    watch.start(h);
+    if (!h.kids) item(h.id).then((p) => { if (p && !h.kids) { h.kids = p.kids ?? []; if (watch.h === h) watch.start(h); } }).catch(() => {});
+    copied.then((ok) => { if (this.target?.id === h.id && this.busy) this.handed(h, ok); });
+  }
+  private offerHandoff(h: Handoff) {
+    const how = this.$('.how');
+    if (!how) return;
+    how.innerHTML = '<button class="instead" type="button">Continue on Hacker News instead ↗</button>';
+    (how.firstElementChild as HTMLButtonElement).onclick = () => { this.busy = false; clearTimeout(this.extTimer); this.handoff({ ...h, at: Date.now() }); };
+  }
+  /** the extension's answer: posted (then find it on HN, sheet open or not), or why not, with HN's own page as a way on */
+  private extAnswer(h: Handoff, ok: boolean, error: string) {
+    const here = this.target?.id === h.id;
+    if (here) { clearTimeout(this.extTimer); this.busy = false; }
+    if (ok) {
+      drafts.put(h.id, '');
+      watch.start({ ...h, at: Date.now() });
+      if (here) { this.composing = false; this.state('Posted. Finding it on Hacker News…', 'wait'); }
       return;
     }
-    // the hand-off: copy, then open HN's own reply form for that comment (a new tab, from this tap)
-    const url = `https://news.ycombinator.com/reply?id=${t.id}&goto=${encodeURIComponent(`item?id=${t.story}#${t.id}`)}`;
-    const copy = () => navigator.clipboard?.writeText ? navigator.clipboard.writeText(text).then(() => true, () => false) : Promise.resolve(false);
-    copy().then((ok) => this.handed(url, text, ok));
-    window.open(url, '_blank', 'noopener');
+    if (!here || !this.composing) return;
+    this.changed();
+    this.state(`${error || 'Hacker News didn’t take it'}. Your words are still here.`, 'error');
+    this.offerHandoff(h);
   }
-  /** Over to HN: the words stay here (a copy can fail, or be overwritten by logging in), with a way to copy again,
-   *  and a done state: back here, the app says it's watching for your reply. */
-  private handed(url: string, text: string, copied: boolean) {
-    this.el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>
-      <div class="to">Over to Hacker News</div>
-      <p class="their">${copied ? 'Your reply is on the clipboard.' : 'Copy your reply below.'} Paste it in the box that opened and press <b>reply</b> (log in first if HN asks).</p>
-      <textarea rows="4" readonly>${esc(text)}</textarea>
-      ${this.me ? '' : `<div class="me"><label for="hn-me">Posted as</label><input id="hn-me" type="text" placeholder="your HN username, so you can walk in and say it" autocomplete="username" spellcheck="false"></div>`}
-      <button class="post done" type="button">Done, I posted it</button>
-      <p class="how"><a class="copy" href="#">Copy it again</a> · <a href="${url}" target="_blank" rel="noopener">Open it again ↗</a></p>`;
-    (this.el.querySelector('.x') as HTMLElement).onclick = () => this.close();
-    const me = this.el.querySelector('#hn-me') as HTMLInputElement | null;
-    if (me) me.onchange = () => this.setMe(me.value);
-    (this.el.querySelector('.done') as HTMLElement).onclick = () => { if (me?.value) this.setMe(me.value); this.close(); this.onDone(); };
-    const copy = this.el.querySelector('.copy') as HTMLAnchorElement, ta = this.el.querySelector('textarea') as HTMLTextAreaElement;
-    copy.onclick = (e) => {
-      e.preventDefault();
-      const done = (ok: boolean) => { copy.textContent = ok ? 'Copied' : 'Select the text and copy it'; };
-      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => done(true), () => { ta.select(); done(false); });
-      else { ta.select(); done(document.execCommand?.('copy') ?? false); }
-    };
+  /** Over to HN: the words stay here (a copy can fail, or be overwritten while signing in), with ways to copy them
+   *  again, reopen HN, or go back and edit; meanwhile it watches for your reply. */
+  private handed(h: Handoff, copied: boolean | null) {
+    this.cut();
+    this.composing = false; this.busy = false;
+    this.el.innerHTML = `${X}
+      <div class="to" id="reply-to" tabindex="-1">Over to Hacker News</div>
+      <p class="said">${copied ? 'Your words are copied.' : copied === null ? 'Your words are below.' : 'Copy your words below.'} In the page that opened, paste them and press <b>reply</b> (sign in there first if HN asks).</p>
+      <textarea rows="3" readonly aria-label="Your reply">${esc(h.text)}</textarea>
+      <p class="again"><button class="copy" type="button">Copy again</button><a href="${replyUrl(h)}" target="_blank" rel="noopener">Open it again ↗</a><button class="edit" type="button">Edit</button></p>
+      <div class="state wait" role="status">Watching for your reply on Hacker News…</div>`;
+    this.$('.x')!.onclick = () => this.close();
+    const ta = this.$<HTMLTextAreaElement>('textarea')!, c = this.$<HTMLButtonElement>('.copy')!;
+    c.onclick = () => copy(h.text, ta).then((ok) => { c.textContent = ok ? 'Copied' : 'Select it and copy'; if (!ok) ta.select(); });
+    this.$<HTMLButtonElement>('.edit')!.onclick = () => { watch.stop(); this.render(drafts.get(h.id) || h.text); this.$<HTMLTextAreaElement>('textarea')?.focus(); };
+    (TOUCH ? this.$('#reply-to') : c)?.focus({ preventScroll: true });
   }
-  /** you're back from HN, having posted */
-  onDone: () => void = () => {};
-  private posted(ok: boolean, error: string) {
-    if (!ok) { this.state(error || 'Hacker News didn’t take it: try again, or post it there'); (this.el.querySelector('.post') as HTMLButtonElement).disabled = false; return; }
-    this.el.innerHTML = `<button class="x" type="button" aria-label="Close">×</button><div class="to">Posted</div>
-      <p class="their">It’s on Hacker News. When the room catches up, you’ll walk in and say it.</p>`;
-    (this.el.querySelector('.x') as HTMLElement).onclick = () => this.close();
+  private notYet() {
+    this.state('Not seen on Hacker News yet (its API can lag): look at the thread before sending it again. If HN showed an error, your words are still here.', 'error');
+  }
+  /** It's there: where to see it, and HN's own rules for changing it */
+  private posted(l: Landed) {
+    this.cut();
+    this.composing = false; this.busy = false;
+    const what = l.dead ? `It’s on Hacker News${l.by ? ` as <b>${esc(l.by)}</b>` : ''}, but HN marked it [dead], so others don’t see it.`
+      : l.delayed ? 'It’s on Hacker News, held for a few minutes before others see it (HN shows it as [delayed]).'
+      : `It’s on Hacker News${l.by ? ` as <b>${esc(l.by)}</b>` : ''}.${you.me ? ' In a minute or two you walk in by the lift and say it.' : ''}`;
+    this.el.innerHTML = `${X}
+      <div class="to" id="reply-to">Posted</div>
+      <p class="said" role="status">${what}</p>
+      <a class="post" href="${SITE}/item?id=${l.id}" target="_blank" rel="noopener">See it on Hacker News ↗</a>
+      <p class="how">HN lets you edit or delete it there for two hours.${you.me ? ` Your HN name is kept in this browser only, to bring your replies and the answers to them here. <button class="forget" type="button">Forget it</button>` : ''}</p>`;
+    this.$('.x')!.onclick = () => this.close();
+    const f = this.$<HTMLButtonElement>('.forget');
+    if (f) f.onclick = () => { you.set(''); f.parentElement!.textContent = 'HN lets you edit or delete it there for two hours. Forgotten.'; };
+    this.$<HTMLElement>('.post')?.focus({ preventScroll: true });
   }
 }
 
-/** speech into a sentence: a capital to start (no other changes: the words are yours) */
-function tidy(s: string) {
-  const t = s.replace(/\s+/g, ' ').trim();
-  if (!t) return '';
-  return t[0].toUpperCase() + t.slice(1);
-}
-
-/**
- * Replies to you, anywhere on Hacker News: your recent comments, checked every couple of minutes while the page is
- * open and visible, for answers that weren't there before. (The HN API answers browsers directly: nothing of yours
- * goes through our server.)
- */
-export class Replies {
-  private seen = new Set<number>();
-  private primed = false;
-  private timer = 0;
-  onReply: (r: { id: number; by: string; parent: number; story?: number }) => void = () => {};
-
-  private name = '';
-  start(me: () => string) {
-    clearInterval(this.timer);
-    const tick = async () => {
-      const name = me();
-      if (!name || document.hidden) return;
-      if (name !== this.name) { this.name = name; this.seen.clear(); this.primed = false; }
-      try {
-        const u = await (await fetch(`${HN}/user/${encodeURIComponent(name)}.json`)).json() as { submitted?: number[] } | null;
-        const mine = (u?.submitted ?? []).slice(0, 25);
-        const items = await Promise.all(mine.map((id) => fetch(`${HN}/item/${id}.json`).then((r) => r.json()).catch(() => null))) as ({ id: number; kids?: number[]; type?: string; parent?: number } | null)[];
-        for (const it of items) {
-          if (!it || it.type !== 'comment') continue;
-          for (const k of it.kids ?? []) {
-            if (this.seen.has(k)) continue;
-            this.seen.add(k);
-            if (!this.primed) continue;                 // the first look only learns what's there already
-            const r = await (await fetch(`${HN}/item/${k}.json`)).json() as { by?: string; dead?: boolean; deleted?: boolean } | null;
-            if (r?.by && !r.dead && !r.deleted && r.by !== name) this.onReply({ id: k, by: r.by, parent: it.id });
-          }
-        }
-        this.primed = true;
-      } catch { /* offline: next time */ }
-    };
-    tick();
-    this.timer = window.setInterval(tick, 120_000);
-  }
+/** Your words onto the clipboard: within the tap (iOS asks for that), and the old way where there's no clipboard API */
+function copy(text: string, ta: HTMLTextAreaElement | null): Promise<boolean> {
+  const legacy = () => {
+    if (!ta) return false;
+    const [a, b] = [ta.selectionStart, ta.selectionEnd];
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { /* not allowed */ }
+    ta.setSelectionRange(a, b);
+    return ok;
+  };
+  if (!navigator.clipboard?.writeText) return Promise.resolve(legacy());
+  return Promise.race([navigator.clipboard.writeText(text).then(() => true, legacy), new Promise<boolean>((r) => setTimeout(() => r(false), 2000))]);
 }
