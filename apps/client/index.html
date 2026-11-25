@@ -317,7 +317,7 @@
   #enter:hover { background:#fff }
   #enter:disabled { opacity:.55; cursor:progress; box-shadow:none }
   #splash small { display:block; margin-top:18px; color:var(--mute) }
-</style>
+</style><!--support:head-->
 </head>
 <body data-mode="tower" class="door">
 <div id="scrim"></div>
@@ -341,14 +341,14 @@
 <div id="toast"></div>
 <button id="sitdown" class="pill" type="button"></button>
 <div id="profile" role="dialog" aria-label="Commenter"></div>
-<div id="controls"><button class="pill" id="answer" title="Answer whoever is speaking (R)">Reply</button><button class="pill" id="pause">Pause</button><button class="pill" id="next">Next table</button><button class="pill" id="leave">Stand up</button></div>
+<div id="controls"><button class="pill" id="answer" title="Answer whoever is speaking (R)">Reply</button><button class="pill" id="pause">Pause</button><button class="pill" id="next">Next table</button><button class="pill" id="leave">Stand up</button></div><!--support:table-->
 <div id="splash" class="show"><div class="inner">
   <h1>Tower <i>of</i> HN</h1>
   <p>The Hacker News front page, as a living tower. Every floor is a story, every table a thread. Walk in and hear the comments read aloud, in their own words, as they land.</p>
   <div id="stats"></div>
   <button id="enter" disabled>Waking the tower…</button>
   <small>Headphones on. Sound is half of it.</small>
-</div></div>
+</div><!--support:door--></div>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

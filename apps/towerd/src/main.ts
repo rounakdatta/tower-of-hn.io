@@ -12,7 +12,9 @@
 //      VOICE_TOKEN (runners must send it, if set), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
 //      deletes it after RETENTION_DAYS; tower keeps only what a floor can still play, AUDIO_GRACE_HOURS (24) after,
 //      at most AUDIO_MAX_MB (1024), and voices nothing new below DISK_FREE_MIN_PCT (15) free; tower-dry only says
-//      what tower would do), PRUNE_EVERY_S (housekeeping, 600)
+//      what tower would do), PRUNE_EVERY_S (housekeeping, 600), SPONSOR_URL (the maker's GitHub Sponsors page: a
+//      quiet line on the door, a credit at a table, /support; unset, none of it exists) and SPONSOR_UPI (a UPI ID for
+//      /support; see support.ts)
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync, brotliCompressSync, constants as zlibc } from 'node:zlib';
@@ -25,6 +27,7 @@ import { speakable } from '../../../packages/core/src/speakable.ts';
 import { VoiceQueue, band, type Entry } from './queue.ts';
 import { tagPrompt, parseTags, type Tag } from './tags.ts';
 import { versionOf, sweep, liveLines, type Version } from './store.ts';
+import { readSupport, withSupport, supportPage, SUPPORT_CSP } from './support.ts';
 
 const HN = 'https://hacker-news.firebaseio.com/v0';
 const UA = { 'User-Agent': 'towerofhn-towerd/0.1' };
@@ -44,6 +47,8 @@ const AUDIO = { grace: Math.max(1, Number(process.env.AUDIO_GRACE_HOURS) || 24) 
   maxBytes: Math.max(64, Number(process.env.AUDIO_MAX_MB) || 1024) * 1_048_576, freeMin: Number(process.env.DISK_FREE_MIN_PCT) || 15 };
 const PRUNE_MS = Math.max(10, Number(process.env.PRUNE_EVERY_S) || 600) * 1000;   // housekeeping (tests run it faster)
 console.log(JSON.stringify({ audio: { policy: AUDIO_POLICY, asked: process.env.AUDIO_POLICY ?? null, grace_h: AUDIO.grace / 3_600_000, max_mb: AUDIO.maxBytes / 1_048_576, free_min_pct: AUDIO.freeMin, retention_days: RETENTION_DAYS } }));
+const { support: SUPPORT, problems: supportProblems } = readSupport(process.env);
+console.log(JSON.stringify({ support: { on: !!SUPPORT, upi: !!SUPPORT?.upi, ...(supportProblems.length ? { refused: supportProblems } : {}) } }));
 for (const d of [LIVE, JOBS]) mkdirSync(d, { recursive: true });
 
 // ---------------------------------------------------------------- HN access
@@ -426,10 +431,21 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     for (const d of demand.values()) for (const c of d.who.keys()) ears.add(c);
     held();
     res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: vq.entries.size, demand: demand.size, backlog, listeners: ears.size, tower: live.tower.length, audience: audience(), voicing: voicingSummary(),
-      audio: { policy: AUDIO_POLICY, held: heldFor || null, free_pct: Math.round(freePct * 10) / 10, ...audio.last, dropped: audio.dropped, gets: clipGets } }));
+      audio: { policy: AUDIO_POLICY, held: heldFor || null, free_pct: Math.round(freePct * 10) / 10, ...audio.last, dropped: audio.dropped, gets: clipGets },
+      ...(SUPPORT ? { support: { views: supportViews } } : {}) }));
     return;
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
+  if (supportHtml && (url.pathname === '/support' || url.pathname === '/support/')) {
+    if (req.method === 'GET') supportViews++;
+    const head = { 'cache-control': 'no-cache', etag: supportHtml.tag, vary: 'accept-encoding' };
+    if (req.headers['if-none-match'] === supportHtml.tag) { res.writeHead(304, head); res.end(); return; }
+    const out = squeeze(req, '/support.html', supportHtml, false);
+    res.writeHead(200, { ...head, 'content-type': TYPES['.html'], ...(out.enc ? { 'content-encoding': out.enc } : {}),
+      'content-security-policy': SUPPORT_CSP, 'referrer-policy': 'strict-origin-when-cross-origin' });
+    res.end(req.method === 'HEAD' ? undefined : out.body);
+    return;
+  }
   if (!url.pathname.startsWith('/live/')) {
     // the client: index.html is always revalidated; everything under /assets/ is content-hashed, so forever
     let p = resolve(STATIC, '.' + decodeURIComponent(url.pathname));
@@ -441,6 +457,7 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     const forever = url.pathname.startsWith('/assets/');
     const file = readOr503(p, res);
     if (!file) return;
+    if (p === INDEX) file.body = indexPage(file);
     const out = squeeze(req, p, file, forever);
     res.writeHead(200, {
       'content-type': TYPES[extname(p)] ?? 'application/octet-stream',
@@ -484,6 +501,20 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
  * revision) and the client's script 3.7x. Brotli for the content-hashed assets (compressed once, served forever),
  * gzip for the rest. Audio is already compressed: never touched.
  */
+/** The client's page as served: the support markers filled, or emptied when it's off (then the page is byte for byte
+ *  the one Vite built before they existed). Rebuilt only when the file changes. */
+const INDEX = join(STATIC, 'index.html');
+let indexMemo: { mtime: number; body: Buffer } | null = null;
+function indexPage(f: { body: Buffer; mtime: number }) {
+  if (indexMemo?.mtime !== f.mtime) indexMemo = { mtime: f.mtime, body: Buffer.from(withSupport(f.body.toString('utf8'), SUPPORT)) };
+  return indexMemo.body;
+}
+/** /support, built once; views are counted as clips are (a number since start, nothing about who). */
+const supportHtml = SUPPORT ? (() => {
+  const body = Buffer.from(supportPage(SUPPORT));
+  return { body, mtime: Date.now(), tag: `"${createHash('sha1').update(body).digest('base64url').slice(0, 16)}"` };
+})() : null;
+let supportViews = 0;
 const squeezed = new Map<string, { mtime: number; enc: string; body: Buffer }>();
 let squeezedBytes = 0;
 function squeeze(req: import('node:http').IncomingMessage, p: string, f: { body: Buffer; mtime: number }, asset: boolean) {
