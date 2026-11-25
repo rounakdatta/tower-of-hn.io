@@ -6,8 +6,10 @@ window.addEventListener('message', (e) => {
     chrome.runtime.sendMessage({ kind: 'whoami' }, (r) => window.postMessage({ tohn: 'here', user: r?.user ?? '' }, location.origin));
   } else if (e.data.tohn === 'post') {
     const { parent, story, text } = e.data;
-    if (!Number.isInteger(parent) || !Number.isInteger(story) || typeof text !== 'string' || !text.trim() || text.length > 8000) return;
+    if (!Number.isInteger(parent) || !Number.isInteger(story) || typeof text !== 'string' || !text.trim()) return;
+    const answer = (ok, error) => window.postMessage({ tohn: 'posted', parent, ok, error }, location.origin);
+    if (text.length > 8000) return answer(false, 'Too long for the extension (8,000 characters): post it on Hacker News’s own page');
     chrome.runtime.sendMessage({ kind: 'post', parent, story, text, from: location.origin }, (r) =>
-      window.postMessage({ tohn: 'posted', parent, ok: !!r?.ok, error: r?.error ?? '' }, location.origin));
+      answer(!!r?.ok, r ? r.error ?? '' : 'The extension didn’t answer: try again, or post it on Hacker News’s own page'));
   }
 });

@@ -6,6 +6,7 @@
 // they go, and only its Post button sends them (a page, even a compromised one, can only ask).
 const HN = 'https://news.ycombinator.com';
 const pending = new Map();                             // confirmation id -> { parent, story, text, reply }
+const windowOf = new Map();                            // its confirmation window -> confirmation id
 
 async function whoami() {
   // the account HN thinks you're logged in as (its top bar links to your user page)
@@ -20,16 +21,18 @@ function words(html) {
     .replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ').trim();
 }
+/** The words alone: letters and digits, links left out (HN formats *this* as italics, and shortens long links) */
+const skeleton = (s) => s.replace(/https?:\/\/\S+/g, ' ').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 /** Already there? A post that timed out may have landed (HN returns no comment id): your reply under that comment,
- *  in the last quarter of an hour, with exactly these words. Only then is a retry skipped. */
+ *  in the last quarter of an hour, with these words. Only then is a retry skipped. */
 async function already(parent, user, text) {
   if (!user) return false;
-  const API = 'https://hacker-news.firebaseio.com/v0', want = text.replace(/\s+/g, ' ').trim(), since = Date.now() / 1000 - 900;
+  const API = 'https://hacker-news.firebaseio.com/v0', want = skeleton(text), since = Date.now() / 1000 - 900;
   const kids = (await (await fetch(`${API}/item/${parent}.json`)).json())?.kids ?? [];
   for (const k of kids.slice(0, 80)) {
     const it = await (await fetch(`${API}/item/${k}.json`)).json();
     if (it?.by !== user || !it.text || (it.time ?? 0) < since) continue;
-    if (words(it.text) === want) return true;
+    if (skeleton(words(it.text)) === want) return true;
   }
   return false;
 }
@@ -55,10 +58,12 @@ async function post({ parent, story, text }) {
       out = await r.text();
     }
   }
-  // success lands on the thread (whatever the thread itself says); anything else is HN explaining why not
+  // success lands on the thread (whatever the thread itself says); anything else is HN explaining why not, often as
+  // a bare line of text: its own words, when they're short enough to be a message
   if (r.url.includes('item?id=')) return { ok: true };
-  const why = /<td[^>]*>([^<]{8,160})<\/td>/.exec(out)?.[1]?.trim();
-  return { ok: false, error: why || 'Hacker News didn’t take it' };
+  const said = words(out.replace(/<(script|style)[\s\S]*?<\/\1>/gi, '').replace(/<(br|p|td|tr|div)\b[^>]*>/gi, ' '));
+  const known = /You're posting too fast[^.]*\.(?: Please slow down\.)?(?: Thanks\.)?|Unknown or expired link\.|You have to be logged in to comment\.|Please try again\.|Validation required\.|Sorry, we're not able to serve your requests this quickly\.|No such item\./.exec(said);
+  return { ok: false, error: known?.[0] ?? (said && said.length <= 160 ? said : 'Hacker News didn’t take it') };
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
@@ -66,8 +71,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.kind === 'post') {
     const id = crypto.randomUUID();
     pending.set(id, { ...msg, reply });
-    chrome.windows.create({ url: `confirm.html#${id}`, type: 'popup', width: 420, height: 380 });
-    return true;                                       // the answer comes when you decide
+    chrome.windows.create({ url: `confirm.html#${id}`, type: 'popup', width: 420, height: 380 }).then((w) => windowOf.set(w.id, id), () => {});
+    return true;                                       // the answer comes when you decide (or close the window)
   }
   if (msg.kind === 'confirm-get') { const p = pending.get(msg.id); reply(p ? { parent: p.parent, story: p.story, text: p.text } : null); return; }
   if (msg.kind === 'confirm') {
@@ -78,4 +83,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     post(p).then((r) => { p.reply(r); reply(r); }, (e) => { const r = { ok: false, error: String(e).slice(0, 120) }; p.reply(r); reply(r); });
     return true;
   }
+});
+// closing the confirmation window without deciding is a no (the page is told, instead of waiting forever)
+chrome.windows.onRemoved.addListener((wid) => {
+  const id = windowOf.get(wid);
+  windowOf.delete(wid);
+  const p = id && pending.get(id);
+  if (p) { pending.delete(id); p.reply({ ok: false, error: 'Not posted' }); }
 });
