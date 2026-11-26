@@ -320,6 +320,19 @@ export class Audience {
     return i;
   }
 
+  /** has person i a place of their own yet? (someone at a table since the room was laid out gets theirs when they first
+   *  step back) */
+  placed(i: number) { return i >= 0 && i < this.n && this.places[i].y > -50; }
+  /** Person i's place, given now: written into their texels (where they stand, which gallery), and into the ground's lists. */
+  place(i: number, pl: Place) {
+    const d = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;
+    this.places[i] = pl;
+    this.data[d] = pl.x; this.data[d + 1] = pl.y; this.data[d + 2] = pl.z; this.data[d + 3] = pl.facing; this.data[d + 23] = pl.level;
+    if (pl.level === 0) { const k = cellKey(pl.x, pl.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); this.ground.push(i); }
+    this.tex.needsUpdate = true;
+    this.lastSort = -1;
+  }
+
   /** Person i (an index into set()'s names) steps out to a table (true), or back to their place (false). `fade`: seconds. */
   away(i: number, away: boolean, now: number, fade = true) {
     if (i < 0 || i >= this.n) return;
