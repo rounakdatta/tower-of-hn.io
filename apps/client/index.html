@@ -267,6 +267,8 @@
     #focus .go { padding:11px 18px 11px 17px; font-size:15px }
     button, .pill, #focus { touch-action:manipulation; -webkit-tap-highlight-color:transparent }
   }
+  /* (TIMELINE on a phone) the line runs just above the pills (scrubber.css): the subtitles keep their 22 px above it */
+  @media (hover: none) { body.timeline[data-mode="table"] #subs { bottom:calc(8.5vh / 2 + 58px + env(safe-area-inset-bottom) / 2) } }
   @media (max-width: 700px), (hover: none) {
     body[data-mode="table"] #hint { display:none }
     #hint { white-space:normal; width:min(92vw, 520px); text-align:center; line-height:1.4 }

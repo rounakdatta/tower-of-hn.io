@@ -100,6 +100,7 @@ document.querySelector<HTMLElement>('#subs .who')!.onclick = () => { (w.__who as
 
 const scrubber = new Scrubber(host);
 scrubber.show(line, OTHERS, 0);
+document.body.classList.add('timeline');                  // (as main.ts does while it's shown: the subtitles make room on a phone)
 Object.assign(w, {
   __scrubber: scrubber, __line: line, __turns: turns, __lineOf: lineOf, __valueText: valueText, __others: OTHERS,
   __calls: calls, __asked: asked, __keys: keys, __pointer: pointer, __pills: pills,

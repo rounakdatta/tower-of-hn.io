@@ -159,7 +159,7 @@ function conversation(sp: TableSpot) {
   return { line: l, others: Math.max(0, stage.people - first.size), keys };
 }
 function showLine(sp: TableSpot) {
-  if (!timelineOn() || sp.bar) { scrubber.hide(); line = null; lineSpot = null; return; }
+  if (!timelineOn() || sp.bar) { hideLine(); return; }
   const c = conversation(sp);
   line = c.line; lineSpot = sp; lineOthers = c.others; lineAt = -1;
   // sitting down rewinds the room to where this conversation has got to: whoever hadn't joined it yet steps out, the
@@ -169,9 +169,12 @@ function showLine(sp: TableSpot) {
   const p = director.position(), k = p?.k ?? 0;
   audience.playhead(lineLast, false); audience.playhead(k);
   scrubber.show(line, lineOthers, (line.moments[k]?.start ?? 0) + (p?.into ?? 0));
+  document.body.classList.add('timeline');
+  // the first time ever: it rises by itself for a moment, once the letterbox is down, so there's no secret to find
+  if (!localStorage.getItem('tohn-timeline')) { localStorage.setItem('tohn-timeline', '1'); after(2.2, () => { if (line) scrubber.peek(); }); }
 }
 /** standing up: everyone is back (the room on foot is the whole floor), rippling in in the order they joined */
-function hideLine() { scrubber.hide(); line = null; lineSpot = null; if (room.stage) audience.playhead(lineLast + 1); }
+function hideLine() { scrubber.hide(); document.body.classList.remove('timeline'); line = null; lineSpot = null; if (room.stage) audience.playhead(lineLast + 1); }
 /** Play from comment k: the room as of then (whoever says it and the next two at the table, nobody else standing
  *  there), and its first words at once. */
 function seekTo(k: number) {

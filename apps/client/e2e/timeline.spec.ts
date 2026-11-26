@@ -121,10 +121,17 @@ test('at rest it is a hairline on the bar\'s top edge, and covers nothing', asyn
   expect(rail.height, 'a hairline').toBeGreaterThanOrEqual(1.5);
   expect(rail.height, 'a hairline').toBeLessThanOrEqual(2);
   expect([rail.left, rail.right], 'across the full width').toEqual([0, vw]);
-  expect(Math.abs(rail.top - bar.top), 'on the top edge of the letterbox').toBeLessThan(1);
-  expect(rail.bottom, 'inside the bar: not a pixel of the picture').toBeLessThanOrEqual(bar.top + 2.5);
-  const over = (a: R, b: R) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
   expect(pills).toHaveLength(4);
+  if (phone(info)) {
+    // On a phone the pills (40 px, lifted by half the home indicator's inset) stand over the bar's edge: the line runs
+    // just above them instead, clear enough that a finger on it isn't handed to a pill (touch adjustment, ~12 px)
+    expect(Math.min(...pills.map((p) => p.top)) - rail.bottom, 'clear of the pills').toBeGreaterThanOrEqual(11);
+    expect(rail.top, 'and no higher than it needs to be').toBeGreaterThan(bar.top - 40);
+  } else {
+    expect(Math.abs(rail.top - bar.top), 'on the top edge of the letterbox').toBeLessThan(1);
+    expect(rail.bottom, 'inside the bar: not a pixel of the picture').toBeLessThanOrEqual(bar.top + 2.5);
+  }
+  const over = (a: R, b: R) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
   expect(over(rail, subs), 'the hairline over the subtitles').toBe(false);
   expect(over(rail, hint), 'the hairline over the hint').toBe(false);
   expect(over(hit, subs), 'what takes a pointer, over the subtitles').toBe(false);

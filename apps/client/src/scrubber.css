@@ -7,6 +7,10 @@
       position:fixed; left:0; right:0; bottom:var(--bar); height:0; z-index:3; pointer-events:none;
       -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; transition:opacity .2s }
 @media (max-aspect-ratio: 4/5) { .tl { --bar:6.5vh } }
+/* On a phone the pills are 40 px tall and lifted by half the home indicator's inset, so they stand over the bar's edge:
+   there the line runs just above them instead, 12 px clear (a finger near a pill would be handed to the pill), and the
+   subtitles step up to keep their own room (index.html, body.timeline) */
+@media (hover: none) { .tl { --bar:calc(8.5vh / 2 + 36px + env(safe-area-inset-bottom) / 2) } }
 @media (min-resolution: 2dppx) { .tl { --hair:1.5px } }
 /* nothing to scrub (one comment), or a sheet is open over the room: out of sight, and out of Tab's reach */
 .tl[data-state="hidden"], body:is(.reply-open, .card-open) .tl { opacity:0; visibility:hidden; transition:opacity .2s, visibility 0s .2s }

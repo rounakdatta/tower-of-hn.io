@@ -36,7 +36,9 @@ const LINGER = 2500;                   // a finger has gone: it stays up this lo
 const HOLD = 1500;                     // after a seek the host's old time can still arrive: not for this long
 const GLANCE = 90, LEAVE = 160;        // a pointer must stay a moment to raise it (passing through to a pill doesn't), and goes a moment late
 // why it is raised: any one of these keeps it up
-const HOVER = 1, FOCUS = 2, TOUCH = 4, DRAG = 8;
+const HOVER = 1, FOCUS = 2, TOUCH = 4, DRAG = 8, PEEK = 16;
+/** the first time it appears: up for a moment, so a thumb knows there's a line to pull (nothing at rest says so) */
+const PEEK_FOR = 2600;
 /** comments a key moves by (Shift: ten; Page Up and Down always ten). Up and right are later, as on any slider: it is also how a screen reader's swipe arrives */
 const STEPS = new Map([['ArrowRight', 1], ['ArrowUp', 1], ['ArrowLeft', -1], ['ArrowDown', -1], ['PageUp', 10], ['PageDown', -10]]);
 const SVG = (cls: string) => `<svg class="${cls}" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path/></svg>`;
@@ -113,6 +115,15 @@ export class Scrubber {
     if (document.activeElement === this.knob) this.knob.blur();
     this.state();
   }
+
+  /** Raised for a moment by itself (the first time anyone sits down with it): what it is, shown once, then out of the way. */
+  peek() {
+    if (!this.on || !this.usable || this.open) return;
+    this.set(PEEK, true);
+    clearTimeout(this.tPeek);
+    this.tPeek = window.setTimeout(() => this.set(PEEK, false), PEEK_FOR);
+  }
+  private tPeek = 0;
 
   /** The playhead while it plays (a few times a second): only styles are written, nothing is measured. */
   setTime(t: number, playing: boolean) {
@@ -370,7 +381,7 @@ export class Scrubber {
 
   private reset() {
     if (this.drag) this.release(false, false);                          // (the host hears the drag end, and nothing is sought)
-    clearTimeout(this.tGlance); clearTimeout(this.tLeave); clearTimeout(this.tLinger); clearTimeout(this.tKey);
+    clearTimeout(this.tGlance); clearTimeout(this.tLeave); clearTimeout(this.tLinger); clearTimeout(this.tKey); clearTimeout(this.tPeek);
     this.tKey = 0;
     cancelAnimationFrame(this.raf);
     if (this.pid >= 0) { try { this.hit.releasePointerCapture(this.pid); } catch { /* not held */ } }   // (a finger still down on a timeline that went away)
