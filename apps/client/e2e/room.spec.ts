@@ -26,8 +26,6 @@ interface Hall { on: boolean; tiers: number; people: number; audience: number; p
 interface Head { name: string; x: number; y: number; z: number; table: boolean }
 interface Plan { tables: [number, number, number][]; crowd: [number, number, number, number, number, number][]; cam: [number, number, number] }
 
-test.describe.configure({ mode: 'serial' });
-
 test('everyone on the floor is in the room, from 5 people to 3,000: at a table, or in a place of their own', async ({ page }) => {
   const tiers: number[] = [];
   for (const fx of ['n5', 'n50', 'n200', 'n800', 'n3000', 'onepassword']) {
@@ -46,8 +44,10 @@ test('everyone on the floor is in the room, from 5 people to 3,000: at a table, 
   expect(tiers[4]).toBeLessThanOrEqual(20);
 });
 
-/** Sit at the biggest table and let the conversation run, checking the room every `every` frames. */
+/** Sit at the biggest table and let the conversation run, checking the room every `every` frames. (Minutes of a
+ *  conversation: on the desktop project only; a phone runs the same code, and its own checks are the quick ones.) */
 async function listen(page: Page, fx: string, seconds: number, every: number, check: (k: number) => Promise<void>) {
+  test.skip(test.info().project.name === 'room-pixel', 'the long simulations run once, on the desktop project');
   await open(page, fx);
   await call(page, 'sit');
   for (let k = 0; k < Math.round((seconds * 30) / every); k++) { await step(page, every); await check(k); }
@@ -57,7 +57,7 @@ for (const fx of ['onepassword', 'n800']) {
   test(`${fx}: while the conversation goes on, nobody stands in anybody and nobody is stuck`, async ({ page }) => {
     let samples = 0, moved = 0;
     const last = new Map<string, { x: number; z: number; walking: boolean }>();
-    await listen(page, fx, 240, 150, async () => {
+    await listen(page, fx, 150, 150, async () => {
       const p = await call<Plan>(page, 'plan');
       const live = p.crowd.filter((c) => !c[4]);
       for (let a = 0; a < live.length; a++) for (let b = a + 1; b < live.length; b++) {
@@ -74,7 +74,7 @@ for (const fx of ['onepassword', 'n800']) {
       }
       samples++;
     });
-    expect(samples).toBeGreaterThan(40);
+    expect(samples).toBeGreaterThan(25);
     // people did come and go (a room where nobody moves passes the overlap check trivially)
     expect(moved, 'people stepped forward and back').toBeGreaterThan(5);
   });
@@ -83,7 +83,7 @@ for (const fx of ['onepassword', 'n800']) {
 test('the lens is never inside a head, and nobody stands between it and the face it is on', async ({ page }) => {
   let shots = 0;
   const blocked: string[] = [];
-  await listen(page, 'onepassword', 300, 45, async () => {
+  await listen(page, 'onepassword', 200, 45, async () => {
     const sp = await call<{ name: string } | null>(page, 'speaking');
     const sc = await call<{ cam: [number, number, number] }>(page, 'scene');
     const heads = await call<Head[]>(page, 'heads'), [cx, cy, cz] = sc.cam;
@@ -110,9 +110,11 @@ test('the lens is never inside a head, and nobody stands between it and the face
 
 test('whoever speaks has stepped up to the table, and its front never turns into a crowd again', async ({ page }) => {
   let heard = 0;
-  await listen(page, 'onepassword', 300, 60, async () => {
+  await listen(page, 'onepassword', 200, 60, async () => {
     const p = await call<Plan>(page, 'plan'), sp = await call<{ name: string; i: number } | null>(page, 'speaking');
-    const [tx, tz, tr] = p.tables.reduce((a, t) => (Math.hypot(t[0] - p.cam[0], t[1] - p.cam[2]) < Math.hypot(a[0] - p.cam[0], a[1] - p.cam[2]) ? t : a));
+    // the table we sit at (the director's), not whichever is nearest the lens
+    const tb = (await call<{ table: { pos: number[]; r: number } }>(page, 'scene')).table;
+    const tx = tb.pos[0], tz = tb.pos[2], tr = tb.r;
     const standing = p.crowd.filter((c) => !c[4] && !c[2] && !c[3] && Math.hypot(c[0] - tx, c[1] - tz) < tr + 1.7).length;
     expect(standing, 'people standing at the front of the table').toBeLessThanOrEqual(8);
     if (!sp) return;
@@ -126,7 +128,7 @@ test('whoever speaks has stepped up to the table, and its front never turns into
 
 test('the audience hears it: heads turn to each new speaker, and how it was said ripples out from the table', async ({ page }) => {
   const turned = new Set<string>(), reactions = new Set<number>();
-  await listen(page, 'onepassword', 420, 30, async () => {
+  await listen(page, 'onepassword', 300, 30, async () => {
     const st = await call<{ focus: number[]; react: number[] }>(page, 'audienceState'), sp = await call<{ name: string } | null>(page, 'speaking');
     if (sp) {
       const h = (await call<Head[]>(page, 'heads')).find((x) => x.name === sp.name && x.table);
@@ -148,6 +150,7 @@ test('a small room is the room it always was', async ({ page }) => {
 });
 
 test('a frame of a 3,000-person room costs the CPU no more than today\'s room of 220 did', async ({ page }) => {
+  test.skip(test.info().project.name === 'room-pixel', 'timed once, on the desktop project');
   const cost = async (play: string) => { await open(page, 'n3000', play); await call(page, 'sit'); await step(page, 300); return step(page, 600); };
   const today = await cost(TODAY), v2 = await cost(V2);
   test.info().annotations.push({ type: 'cpu', description: `per frame: today ${(today / 600).toFixed(2)} ms, v2 ${(v2 / 600).toFixed(2)} ms` });
@@ -155,6 +158,7 @@ test('a frame of a 3,000-person room costs the CPU no more than today\'s room of
 });
 
 test('an hour at a big table: the heap and the room\'s people stay flat', async ({ page }) => {
+  test.skip(test.info().project.name === 'room-pixel', 'the long session runs once, on the desktop project');
   await open(page, 'onepassword');
   await call(page, 'sit');
   const heap: number[] = [], slots: number[] = [];

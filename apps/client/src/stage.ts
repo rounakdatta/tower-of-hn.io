@@ -66,10 +66,17 @@ export class Stage {
   fill(floor: Floor, keep: Keep[], roomY: number) {
     const convo = this.spots.filter((s) => !s.bar), atTable = this.atTable;
     // everyone on the floor, by their earliest comment (HN ids rise with time): the first to come stand nearest
-    const first = new Map<string, { id: number; table: number }>();
+    // (their place is near the conversation they first joined among those in the room: the floor's lower threads
+    // aren't laid out, and someone who commented there first is still nearest the one here they joined)
+    const first = new Map<string, { id: number; table: number; at: number }>();
     floor.tables.forEach((t) => {
       const k = convo.findIndex((s) => s.table.root === t.root);
-      for (const u of t.turns) { const f = first.get(u.by); if (!f || u.id < f.id) first.set(u.by, { id: u.id, table: k }); }
+      for (const u of t.turns) {
+        const f = first.get(u.by) ?? { id: Infinity, table: -1, at: Infinity };
+        if (u.id < f.id) f.id = u.id;
+        if (k >= 0 && u.id < f.at) { f.at = u.id; f.table = k; }
+        first.set(u.by, f);
+      }
     });
     const order = [...first.entries()].sort((a, b) => a[1].id - b[1].id || (a[0] < b[0] ? -1 : 1));
     this.people = order.length;
@@ -106,8 +113,12 @@ export class Stage {
     const home = this.audience.places[a];
     if (home.level === 0 || !spot) {
       const r = Math.hypot(home.x, home.z) || 1, inner = R - HALL.GLASS - (HALL.BAND_ROWS - 1) * HALL.ROW - 0.5;
-      const k = Math.min(1, inner / r);
-      return new THREE.Vector3(home.x * k, 0, home.z * k);
+      // (never among a table's chairs: from just inside the rows, back toward their place until clear of every table)
+      for (let k = Math.min(1, inner / r); k < 1; k += 0.1 / r) {
+        const x = home.x * k, z = home.z * k;
+        if (this.tables.every((t) => Math.hypot(x - t.x, z - t.z) > t.r + 0.85)) return new THREE.Vector3(x, 0, z);
+      }
+      return new THREE.Vector3(home.x, 0, home.z);
     }
     const t = spot.pos, dx = home.x - t.x, dz = home.z - t.z, d = Math.hypot(dx, dz) || 1;
     const edge = spot.radius + HALL.FRONT + HALL.LANE - 0.15;

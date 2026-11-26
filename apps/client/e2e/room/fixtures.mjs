@@ -15,6 +15,7 @@ const SIZES = [5, 50, 200, 800, 3000];
 function rng(seed) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
 const EMO = ['contemplative', 'contemplative', 'contemplative', 'mundane', 'mundane', 'stern', 'excited', 'joyful', 'angry', 'nervous', 'sad', 'surprised', 'tender'];
 const NAMES = ['tptacek', 'patio11', 'pg', 'dang', 'jacquesm', 'rayiner', 'pjc50', 'kragen', 'nostrademons', 'walterbell', 'simonw', 'jerf', 'Animats', 'dragontamer', 'zokier', 'kccqzy', 'throwaway', 'mike_hearn', 'jart', 'gwern'];
+const STANCES = ['inform', 'inform', 'inform', 'agree', 'disagree', 'question', 'inform', 'correct', 'agree', 'joke', 'inform', 'question', 'praise'];
 const nameOf = (k) => (k < NAMES.length ? NAMES[k] : `${NAMES[k % NAMES.length]}_${((k * 2654435761) >>> 0).toString(36).slice(0, 4)}`);
 
 /** A thread with n commenters (deterministic: the same n always gives the same floor). */
@@ -80,7 +81,11 @@ export function write(name, floor) {
         env: Array.from({ length: frames }, (_, f) => Math.round(255 * Math.max(0, Math.sin((f / 30) * Math.PI * 4.2 + c)) * (0.55 + 0.45 * Math.sin(f / 7.3)))),
         shape: Array.from({ length: frames }, (_, f) => Math.round(127 + 120 * Math.sin(f / 5.1 + u.id))) });
     }
-    writeFileSync(join(dir, u.v[0]), JSON.stringify({ id: u.id, by: u.by, emotion: u.v[2] ?? 'mundane', stance: 'inform', intensity: u.v[3] ?? 0.4, cues: [], dur, clips, links: [], code: [] }));
+    // how it's said (the floor files carry the mood; the stance is the sidecar's): spread the way the tagger spreads
+    // real threads, by the comment's id, so the room has questions, agreement, pushback and the odd joke to act
+    const st = STANCES[u.id % STANCES.length];
+    writeFileSync(join(dir, u.v[0]), JSON.stringify({ id: u.id, by: u.by, emotion: u.v[2] ?? 'mundane', stance: st, intensity: u.v[3] ?? 0.4,
+      cues: st === 'joke' ? ['joke'] : st === 'question' ? ['question'] : [], dur, clips, links: [], code: [] }));
   }
   return { name, sid, root: floor.tables.reduce((a, t) => (new Set(t.turns.map((u) => u.by)).size > new Set(a.turns.map((u) => u.by)).size ? t : a)).root, people: people.size };
 }

@@ -361,6 +361,7 @@ export class Audience {
   private sort(camera: THREE.PerspectiveCamera) {
     // a slightly wider frustum than the lens, so a glide between sorts never shows anyone missing at the edges
     const fov = camera.fov;
+    camera.updateMatrixWorld();                           // (the rig has just moved it: this frame's view, not the last one's)
     camera.fov = Math.min(170, fov * 1.25); camera.updateProjectionMatrix();
     this.m.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.m);
