@@ -21,10 +21,11 @@ export class VoiceQueue<J extends { rev: string }> {
 
   private now: () => number;
   readonly leaseMs: number;
-  /** The least urgent band a standby (a patient runner) may take. 3 (the default): anything, once the others have gone
-   *  quiet. 2: only what a listener is waiting on, never background work: when everything on the tower is voiced ahead
-   *  (VOICE_AHEAD=all), a standby on a throttled node would otherwise grind through the whole tower alone. */
-  standbyBand: Band = 3;
+  /** A standby (a patient runner) takes only jobs more urgent than this. Infinity (the default): anything, once the
+   *  others have gone quiet. With everything on the tower voiced ahead (VOICE_AHEAD=all), towerd sets 2000: what
+   *  listeners wait on and the first words of new tables, never the deep background, which a standby on a throttled
+   *  node would otherwise grind through alone. */
+  standbyBelow = Infinity;
   constructor(now: () => number = Date.now, leaseMs = 20_000) { this.now = now; this.leaseMs = leaseMs; }
 
   /** The queue becomes `target` ([id, prio, upto], most urgent first). A job being voiced stays until it's done
@@ -55,7 +56,7 @@ export class VoiceQueue<J extends { rev: string }> {
     if (patience && this.othersAlive(runner, patience * 1000)) return undefined;
     let best: Entry<J> | undefined;
     for (const e of this.entries.values()) {
-      if (e.lease || (patience && band(e.prio) > this.standbyBand)) continue;
+      if (e.lease || (patience && e.prio >= this.standbyBelow)) continue;
       if (!best || e.prio < best.prio || (e.prio === best.prio && e.since < best.since)) best = e;
     }
     return best;

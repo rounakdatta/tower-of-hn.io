@@ -31,7 +31,7 @@ import { versionOf, sweep, liveLines, type Version } from './store.ts';
 import { readSupport, supportSite, missingMarks } from './support.ts';
 
 // HN_API: a stand-in for HN's Firebase API (staging and load tests run against a mock, never against HN)
-const HN = (process.env.HN_API ?? 'https://hacker-news.firebaseio.com/v0').replace(/\/$/, '');
+const HN = (process.env.HN_API || 'https://hacker-news.firebaseio.com/v0').replace(/\/$/, '');   // (empty: unset)
 const UA = { 'User-Agent': 'towerofhn-towerd/0.1' };
 const PORT = Number(process.env.PORT ?? 8787);
 const VAR = resolve(process.env.VAR ?? join(import.meta.dirname, '../../../var'));
@@ -43,7 +43,7 @@ const MAX_QUEUED = 48;                               // the most urgent of what'
  *  of the best tables only while someone has the page open. all: everything on the tower, always, as it arrives (every
  *  table's first turn before any table's second, top floors first), so a listener finds it voiced: voicing then scales
  *  with new comments, not with listeners. The runners' spare cores pay for it; the standby beside the data never does. */
-const VOICE_AHEAD = process.env.VOICE_AHEAD === 'all' ? 'all' : 'audience';
+const VOICE_AHEAD = (process.env.VOICE_AHEAD ?? '').trim().toLowerCase() === 'all' ? 'all' : 'audience';
 /** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
 // v3: comments are said the way people read them aloud (packages/core spoken.ts); older audio plays until re-voiced
 const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v3';
@@ -122,12 +122,15 @@ const crowdPrio = (d: { prio: number; who: Map<string, number> }) => {
 };
 /** listener-driven voicing still waiting (head.load): clients stop waiting on unvoiced lines when it runs long */
 let backlog = 0;
-/** how much of the tower a listener would find voiced (whole turns; /status): measured each time the queue is planned */
-const cover = { turns: 0, voiced: 0, openings: 0 };
+/** how much of the tower a listener would find voiced (/status), measured each time the queue is planned: whole turns
+ *  in the current voice, openings (first clips only), stale (an older VOICE_VERSION's, playing until re-voiced) */
+const cover = { turns: 0, voiced: 0, openings: 0, stale: 0 };
 type Job = NonNullable<ReturnType<typeof jobFor>>;
 /** what runners may claim (in memory: towerd plans it every couple of seconds; runners hold leases) */
 const vq = new VoiceQueue<Job>();
-if (VOICE_AHEAD === 'all') vq.standbyBand = 2;        // the standby voices for listeners only: never the whole tower
+if (VOICE_AHEAD === 'all') vq.standbyBelow = 2000;   // the standby: listeners and first words only, never the whole tower
+console.log(JSON.stringify({ voicing: { ahead: VOICE_AHEAD, asked: process.env.VOICE_AHEAD ?? null, hn: process.env.HN_API ? 'stand-in' : 'hacker-news' } }));
+if (VOICE_AHEAD === 'all' && AUDIO_POLICY === 'age') console.warn(JSON.stringify({ voicing: { warn: 'VOICE_AHEAD=all keeps the whole tower voiced: with AUDIO_POLICY=age that is ~0.3 GB a day kept RETENTION_DAYS; tower keeps ~0.5 GB in all' } }));
 const stale = new Set<number>();                     // voiced with an older VOICE_VERSION: re-voice in the background
 const partial = new Set<number>();                   // playable, but the worker is still voicing the rest of it
 /** clips voiced so far of a partial comment (a whole one counts as all of them): openings are measured in clips */
@@ -206,13 +209,13 @@ function wanted(): [number, number, number][] {
     add(d.id, crowdPrio(d), d.upto);
   }
   const convo = (f: FloorSnapshot) => f.tables.filter((t) => t.turns.length >= 2);
-  cover.turns = cover.voiced = cover.openings = 0;
+  cover.turns = cover.voiced = cover.openings = cover.stale = 0;
   live.tower.forEach((sid, rank) => {
     const f = floors.get(sid);
     if (!f) return;
     for (const t of f.tables) for (const u of t.turns) {
       cover.turns++;
-      if (live.voiced.has(u.id)) { if (partial.has(u.id)) cover.openings++; else cover.voiced++; }
+      if (live.voiced.has(u.id)) { if (stale.has(u.id)) cover.stale++; else if (partial.has(u.id)) cover.openings++; else cover.voiced++; }
     }
     // first words of every table on every floor, so whoever sits down anywhere hears someone at once: two clips
     // (about twenty seconds) at the best tables of the top floors, which covers voicing the rest on three cores

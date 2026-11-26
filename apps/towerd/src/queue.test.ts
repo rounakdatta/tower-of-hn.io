@@ -138,19 +138,25 @@ test('a seat its listener left becomes background work: it no longer outranks an
   assert.equal(q.beat(l.lease!.token)!.yield, true, 'a floor in focus now goes first');
 });
 
-test('a standby limited to listeners\' bands never takes background work, even with nobody else around', async () => {
+test('a standby limited to the urgent end takes seats and first words, never the deep background, even alone', async () => {
   const c = clockAt(), q = new VoiceQueue<J>(c.now);
-  q.standbyBand = 2;
-  q.plan([[1, 7000, 0], [2, 9000, 0]], make);
+  q.standbyBelow = 2000;
+  q.hear('fast', 0);                                   // a fast runner was around, then went quiet (its node dropped off)
+  q.plan([[1, 7000, 0], [2, 9000, 0], [3, 5000, 0]], make);
+  c.t.now += 16_000;
   const slow = q.claim('slow', 15, 5_000);
   let got: unknown = 'pending';
   slow.promise.then((e) => { got = e ? e.id : null; });
-  c.t.now += 16_000; q.sweep();
   await new Promise((r) => setImmediate(r));
-  assert.equal(got, 'pending', 'background only: the standby waits');
-  q.plan([[1, 7000, 0], [2, 9000, 0], [3, 4, 0]], make);   // someone sits down
+  assert.equal(got, 'pending', 'deep background only: the standby waits, though nobody else is around');
+  q.plan([[1, 7000, 0], [2, 9000, 0], [3, 5000, 0], [4, 1999, 1]], make);   // a new table's first words
   await new Promise((r) => setImmediate(r));
-  assert.equal(got, 3, 'a seat is the standby\'s to take');
-  const fast = (await q.claim('fast').promise)!;
-  assert.equal(fast.id, 1, 'a fast runner still takes background work');
+  assert.equal(got, 4, 'first words are the standby\'s to take');
+  const again = q.claim('slow', 15, 5_000);
+  let got2: unknown = 'pending';
+  again.promise.then((e) => { got2 = e ? e.id : null; });
+  q.plan([[1, 7000, 0], [2, 9000, 0], [3, 5000, 0], [5, 3, 0]], make);       // someone sits down
+  await new Promise((r) => setImmediate(r));
+  assert.equal(got2, 5, 'so is a seat');
+  assert.equal((await q.claim('fast').promise)?.id, 3, 'a fast runner still takes the deep background, most urgent first');
 });

@@ -15,6 +15,8 @@
 import { Agent, request } from 'undici';
 
 const [, , BASE, N = '100', SECS = '120', ...rest] = process.argv;
+// staging only: never the live site (its names, its in-cluster Service), which this would make voice for fake listeners
+if (/towerof(hn|han)|taptappers\.club/i.test(new URL(BASE).hostname)) { console.error('load.mjs: that is the live site; load tests run against a staging copy only'); process.exit(2); }
 const opt = (k, d) => { const i = rest.indexOf(k); return i < 0 ? d : rest[i + 1]; };
 const RAMP = Number(opt('--ramp', 5)), TAG = opt('--tag', 'load');
 let seed = Number(opt('--seed', 1));
@@ -77,7 +79,7 @@ async function listener(k) {
     try {
       const r = await request(BASE + path, { method: 'POST', dispatcher: agent, headers: { 'x-real-ip': ip, 'content-type': 'text/plain' }, body: JSON.stringify(body) });
       await r.body.arrayBuffer();
-      note('want', performance.now() - t, 0, r.statusCode < 400 || r.statusCode === 429);
+      note(r.statusCode === 429 ? 'want-429' : 'want', performance.now() - t, 0, r.statusCode < 400 || r.statusCode === 429);   // (a 429 is towerd's limiter working: counted apart)
     } catch { note('want', performance.now() - t, 0, false); }
   }
   // the page, once (index.html names its assets)

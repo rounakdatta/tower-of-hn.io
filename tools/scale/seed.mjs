@@ -10,6 +10,11 @@ import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [, , MOCK, VAR, VV = 'v3'] = process.argv;
+// a fresh, empty staging volume only: these names are towerd's own, so on a real /data they would replace real clips
+import { existsSync, readdirSync } from 'node:fs';
+if (existsSync(join(VAR, 'voiced.jsonl')) || (existsSync(join(VAR, 'live/c')) && readdirSync(join(VAR, 'live/c')).length)) {
+  console.error('seed.mjs: VAR already holds voicing; seed only an empty staging volume'); process.exit(2);
+}
 const snap = await (await fetch(`${MOCK.replace(/\/$/, '')}/snapshot`)).json();
 const live = join(VAR, 'live'), cdir = join(live, 'c');
 mkdirSync(cdir, { recursive: true });
