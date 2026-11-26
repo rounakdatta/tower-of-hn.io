@@ -1,8 +1,7 @@
 # Tower of HN: launch readiness (26 Nov 2026)
 
-> Status 26 Nov, 18:30 IST: everything below is live and measured, except the capacity test (§4). Its abort rules
-> keep it from starting while any node is busy, and kanmani's 5-minute load stayed at 11–17 all evening. It runs in
-> kanmani's quiet hours instead (27 Nov, from 05:00 IST), and this file is updated in place when it has.
+> Status 27 Nov, 05:30 IST: everything below is live and measured. The capacity test (§4) ran on staging on 27 Nov,
+> 05:05–05:17 IST, in kanmani's quiet hours.
 
 ## The answer
 
@@ -46,7 +45,9 @@ positions each):
   kanmani, 1 sit in 88.
 - Expect ~0.1–0.4 s less from India. These runs come from the US, ~200 ms from Singapore per round trip.
 
-**Can it hold hundreds of people?** Not measured yet: the staging test runs in kanmani's quiet hours (§4).
+**Can it hold hundreds of people?** Yes. One towerd held 500 listeners on staging, the test's whole ramp, with no
+errors and no slowdown as the crowd grew, on a third of a core. On its 300m share of kanmani alone that's about 430, more when kanmani is
+calm; with a CDN in front, the crowd's size stops mattering (§4).
 
 **Is kanmani overloaded while the others idle?** Yes, measured.
 - kanmani runs 43 of the 54 pods on about 1.5 real cores. Steal took 15–73% of its CPU every day this week.
@@ -235,8 +236,30 @@ longer. Steady state is still covered: ~3× against 0.9–3 h of new speech an h
   CDN in front (the public-launch plan in `docs/SCALING.md`: Cloudflare, cache rules already written) changes that: every
   edge asks the origin for `head.json` about once a second and for each clip once, whatever the audience.
 
-**Measured on staging (vizerizz).** Pending: the run on 27 Nov from 05:00 IST. No attempt on 26 Nov got as far as the
-load: kanmani's 5-minute load stayed at 11–17, far over its abort line of 4.2.
+**Measured on staging (vizerizz), 27 Nov 05:05–05:17 IST: 500 listeners, with no errors. The ceiling wasn't
+reached:** 500 was the top of the ramp, and latency didn't grow on the way up.
+- **The setup.** towerd 0.5.14 with one core of its own, a mock of HN, and synthetic audio of real sizes. 500 simulated
+  listeners on a US machine joined one a second, then stayed 3 minutes.
+- **At 500:** 631 requests a second, 33 Mbit/s, towerd at 348m CPU (a third of its core) and ~250 MiB of memory. Over
+  the 3 minutes: 573–657 requests a second, 22–28 Mbit/s, 324–384m.
+- **towerd's cost:** 0.76 millicores per request a second. By CPU alone, one core would serve ~1,300 requests a second:
+  roughly 1,000 settled listeners (an estimate; the test stopped at 500).
+- **Latency at 500 was what it was at 10.** p99 is the slowest request in a hundred.
+  - `head.json`: p50 91 ms, p99 ~115 ms;
+  - deltas, floors and sidecars: p99 ~180 ms;
+  - clips: p50 181 ms, p99 ~360 ms.
+- **Those are round trips, not server time.** One round trip from the US machine to Paris takes 90 ms. A `head.json`
+  takes one; a clip (~27 KB) two to four.
+  - So against the bound set beforehand (every kind's p99 ≤ 250 ms, no errors), the count is 0: clips over this path
+    miss it even at 10 listeners. With 500 ms as the bound, all 500 pass.
+- **Three blips** of 10 s each, where p99 rose to 0.7–1.2 s: at 120, 150 and 500 listeners. None came between 160 and
+  490, so they don't follow the crowd's size; the data doesn't show what caused them.
+- **Nothing stopped it.** kanmani's 5-minute load peaked at 1.8 (its abort line was 2.6), vizerizz's at 2.0 (line 2.8),
+  jomjom's at 0.4; memory at most 63%. Production answered every check.
+- **Production's voicing** ran at one lane for those 14 minutes (05:04–05:18), then went back to two lanes of two
+  threads.
+- **Version.** This measured towerd 0.5.14. Production has since moved to web 0.5.15 (crowd and timeline); its server
+  differs only in accepting those two flags.
 
 **Voicing capacity, the other half.** With jomjom out (§3.2), only vizerizz voices: two lanes, ~3× real time,
 ~11 turns a minute.
@@ -251,7 +274,14 @@ load: kanmani's 5-minute load stayed at 11–17, far over its abort line of 4.2.
   - a small GPU runner (`KOKORO_PROVIDER=cuda`, 50–100× real time). That would make "everything voiced" hold at any
     hour.
 
-**What that means for kanmani.** Pending, with the run above.
+**What that means for kanmani.**
+- Staging's towerd had one core on vizerizz (Xeon Gold 6230, no steal) and used ~350m of it at 500.
+- On kanmani, towerd is promised 300m (its CPU request) and gets more when the node is calm. kanmani has about 1.5 real
+  cores in all, under heavy steal (time its host gives the cores to other machines).
+- **About 430 listeners** fit in that 300m (500 × 300 / 348), sending about 20–30 Mbit/s. That's a floor on a normal
+  day. In a storm like 26 Nov's (63% steal) every share shrinks with the node, towerd's too.
+- A CDN in front (`docs/SCALING.md`) keeps the origin's load flat whatever the audience: each edge asks for `head.json`
+  about once a second and for each clip once.
 
 ## 5. The cluster
 
