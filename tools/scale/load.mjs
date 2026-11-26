@@ -5,7 +5,8 @@
 //   - sits at a table (floors and tables chosen as people do: the top of the tower, the best tables, more often),
 //     asks for its voicing (POST /want, renewed every 30 s), and plays it turn by turn in real time: each turn's
 //     sidecar and clips, fetched a few turns ahead; an unvoiced turn is waited on 4 s, then skipped
-//   - hears the room: every 4-9 s a clip from another table on its floor (the murmur), from its own cache when it has it
+//   - hears the room: the three nearest other tables play on at the same time (the client's mixer), and every 4-9 s a
+//     clip from another table drifts across (the director's murmur); all from its own cache when it has them
 //   - after a few minutes, another table (60%) or another floor (40%)
 // Each listener has its own connections (keep-alive) and its own address (X-Real-Ip, as Traefik would set it), and
 // its own HTTP cache for immutable files (a browser never fetches a clip twice).
@@ -120,15 +121,33 @@ async function listener(k) {
   while (!head && Date.now() < end) await sleep(200);
   let sid = null, table = null, ti = 0;
   while (Date.now() < end) {
-    if (!sid || rnd() < 0.4) { sid = head.tower[pick(head.tower.length, 1.4)]; table = null; }
+    let entered = false;
+    if (!sid || rnd() < 0.4) { sid = head.tower[pick(head.tower.length, 1.4)]; table = null; entered = true; }
     const f = floors.get(sid) ?? await loadFloor(sid);
     if (!f) { sid = null; await sleep(1000); continue; }
     const convo = f.tables.map((t, i) => [t, i]).filter(([t]) => t.turns.length >= 2);
+    if (entered) {                                   // walking onto a floor: the first words of its best six tables (prewarm)
+      for (const [t] of convo.slice(0, 6)) {
+        const v = t.turns[0].v;
+        if (!v) continue;
+        const side = await get('/live/' + v[0], 'sidecar', { json: true, immutable: true });
+        if (side?.clips) for (const c of side.clips.slice(0, 2)) await get('/live/' + c.u, 'clip', { immutable: true });
+      }
+    }
     if (!convo.length) { sid = null; await sleep(500); continue; }
     [table, ti] = convo[pick(convo.length, 1.8)];
     await post('/want', { story: sid, table: ti, from: 0 });
     let asked = Date.now(), murmurAt = Date.now() + 4000;
     const stay = Date.now() + (90 + rnd() * 240) * 1000;
+    // the room: the three nearest other tables play on (the client's mixer), each turn's sidecar and clips fetched as
+    // it starts, in real time, while this listener stays
+    const room = convo.filter(([t]) => t !== table).sort(() => rnd() - 0.5).slice(0, 3).map(([t]) => (async () => {
+      for (let j = 0; j < t.turns.length && Date.now() < Math.min(stay, end); j++) {
+        const u = t.turns[j];
+        if (u.v) { const side = await get('/live/' + u.v[0], 'sidecar', { json: true, immutable: true }); if (side?.clips) for (const c of side.clips) await get('/live/' + c.u, 'clip', { immutable: true }); }
+        await sleep(Math.min(Math.min(stay, end) - Date.now(), ((u.v ? Number(u.v[1]) || 5 : 4) * 1000) + (u.gapMs ?? 300)));
+      }
+    })());
     for (let k = 0; k < table.turns.length && Date.now() < Math.min(stay, end); k++) {
       // prefetch: this turn and the next three, as the director does
       for (const u of table.turns.slice(k, k + 4)) if (u.v) {
@@ -149,6 +168,7 @@ async function listener(k) {
         await sleep(Math.min(1000, until - Date.now()));
       }
     }
+    await Promise.all(room);
   }
   stop = true;
   await poller;
