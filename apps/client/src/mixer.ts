@@ -263,9 +263,12 @@ export class Mixer {
     // nobody speaks from across the room: the speaker comes to the table first (or, if the room is full, speaks
     // from the table without a body)
     const here = this.room.callOver(turn.by, p.spot, now);
-    if (here === 'coming' || here === 'busy') {
-      if (this.waited(p, `call:${turn.id}`, now) > 30) this.next(p, turn);
-      return;
+    // (cue, mid-comment: they're already saying it, from the table: no waiting again before each clip)
+    if ((here === 'coming' || here === 'busy') && !(this.sync.play('cue') && p.done)) {
+      const w = this.waited(p, `call:${turn.id}`, now);
+      if (w > 30) { this.next(p, turn); return; }
+      // cue: no table goes quiet for long while someone comes over: they speak as they come (from the table)
+      if (!this.sync.play('cue') || w < (here === 'coming' ? 0.8 : 2)) return;
     }
     if (r.side.clips.length <= p.done) {                // nothing new yet (still being voiced), or nothing at all
       if (!r.side.partial) { this.next(p, turn); return; }
@@ -332,9 +335,21 @@ export class Mixer {
     if (r && (r.side.clips.length > p.done || !r.side.partial || p.loading.has(path))) return r;
     if (!p.loading.has(path)) {
       p.loading.add(path);
+      const keep = (x: Ready) => { const have = p.ready.get(turn.id); if (!have || x.side.clips.length >= have.side.clips.length) p.ready.set(turn.id, x); };
       this.sync.sidecar(path)
-        .then(async (side) => ({ side, bufs: await Promise.all(side.clips.map((c) => this.audio.load(this.sync.url(c.u)))) }))
-        .then((x) => { const have = p.ready.get(turn.id); if (!have || x.side.clips.length >= have.side.clips.length) p.ready.set(turn.id, x); })
+        .then(async (side) => {
+          const loads = side.clips.map((c) => this.audio.load(this.sync.url(c.u)));
+          if (!this.sync.play('stream') || loads.length < 2) return keep({ side, bufs: await Promise.all(loads) });
+          // stream: the table can start on the first clip; the rest join in order as they decode
+          const bufs: AudioBuffer[] = [];
+          for (let k = 0; k < loads.length; k++) {
+            try { bufs.push(await loads[k]); } catch (e) {
+              if (k) keep({ side: { ...side, clips: side.clips.slice(0, k), partial: false }, bufs: bufs.slice() });   // ends on what was said
+              throw e;
+            }
+            keep({ side: k < loads.length - 1 ? { ...side, clips: side.clips.slice(0, k + 1), partial: true } : side, bufs: bufs.slice() });
+          }
+        })
         .catch(() => { /* tried again when asked again */ })
         .finally(() => setTimeout(() => p.loading.delete(path), 3000));
     }

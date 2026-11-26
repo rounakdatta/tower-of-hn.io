@@ -113,7 +113,8 @@ export class Director {
     this.perf?.reset();
     this.perf = new Performer(this.crowd, spot, (n) => this.ix(n), (c, k) => this.pushChair(c, k));
     this.heroAt = 0; this.staged.clear();
-    this.cursor = this.audio.now() + 1.6;           // let the establishing shot breathe
+    // let the establishing shot breathe (quick: the first voice comes in under the shot, so sitting down is answered at once)
+    this.cursor = this.audio.now() + (this.sync.play('quick') ? 0.6 : 1.6);
     for (const s of spot.seats) { const i = this.ix(s.name); if (i >= 0) this.crowd.active.add(i); }
     this.wide(now, true);
     this.shotUntil = now + 2.6;
@@ -172,10 +173,29 @@ export class Director {
     if (!p) {
       this.loadingId.set(path, turn.id);
       p = this.sync.sidecar(path).then(async (side) => {
-        const bufs = await Promise.all(side.clips.map((c) => this.audio.load(this.sync.url(c.u))));
-        const r = { side, bufs }, have = this.ready.get(turn.id);
-        if (!have || side.clips.length >= have.side.clips.length) this.ready.set(turn.id, r);
-        return r;
+        const loads = side.clips.map((c) => this.audio.load(this.sync.url(c.u)));
+        const keep = (r: { side: Sidecar; bufs: AudioBuffer[] }) => {
+          const have = this.ready.get(turn.id);
+          if (!have || r.side.clips.length >= have.side.clips.length) this.ready.set(turn.id, r);
+          return r;
+        };
+        if (this.sync.play('stream') && loads.length > 1) {
+          // stream: playable from its first clip, as a comment still being voiced is; the rest join in order as they
+          // decode (milliseconds each, long before the clip before them ends)
+          const bufs: AudioBuffer[] = [];
+          let r = { side, bufs };
+          for (let k = 0; k < loads.length; k++) {
+            try { bufs.push(await loads[k]); } catch (e) {
+              // a clip that won't come: the comment ends on what was said (as when its last clip failed to voice),
+              // rather than the table waiting 30 s in silence for the rest; a later retry can still bring it whole
+              if (k) keep({ side: { ...side, clips: side.clips.slice(0, k), partial: false }, bufs: bufs.slice() });
+              throw e;
+            }
+            r = keep({ side: k < loads.length - 1 ? { ...side, clips: side.clips.slice(0, k + 1), partial: true } : side, bufs: bufs.slice() });
+          }
+          return r;
+        }
+        return keep({ side, bufs: await Promise.all(loads) });
       }).catch(() => { setTimeout(() => this.loading.delete(path), 5000); return null; });   // retry, but not every frame
       this.loading.set(path, p);
     }
@@ -268,7 +288,7 @@ export class Director {
       const fresh = this.clipsDone === 0;
       if (fresh) {
         // audio voiced while HN still showed a placeholder ([delayed]): the real text is being re-voiced; skip it meanwhile
-        if (r.side.clips.length === 1 && /^\s*\[(delayed|flagged|dead|deleted|removed)\]\s*$/i.test(r.side.clips[0].t)) {
+        if (r.side.clips.length === 1 && !r.side.partial && /^\s*\[(delayed|flagged|dead|deleted|removed)\]\s*$/i.test(r.side.clips[0].t)) {
           if (this.floor && !this.spot.tableOf) this.sync.want(this.floor.story.id, this.spot.index, this.turnIdx);
           this.turnIdx++;
           continue;
@@ -281,7 +301,9 @@ export class Director {
             // (its own timer: waitSince is reset every frame the audio is ready, which kept this escape from firing)
             if (!this.callingSince) this.callingSince = now;
             if (now - this.callingSince > 30) { this.turnIdx++; this.callingSince = 0; continue; }   // they never came
-            return;
+            // cue: the table never sits in silence for long: someone on their way starts talking as they come (a
+            // beat after), someone busy at another table after two seconds; the voice comes from the table
+            if (!this.sync.play('cue') || now - this.callingSince < (here === 'coming' ? 0.8 : 2)) return;
           }
           this.callingSince = 0;
         }
@@ -297,6 +319,19 @@ export class Director {
       });
       this.cursor = t;
       if (this.room) { const sp = this.ix(turn.by); if (sp >= 0) this.room.speaking(sp, t); }   // nobody calls them away mid-sentence
+      // cue: whoever speaks next comes over now, while this is said, not when their turn has come
+      if (fresh && this.room && !this.spot.bar && this.sync.play('cue')) {
+        let until = t;
+        for (const u of turns.slice(this.turnIdx + 1, this.turnIdx + 3)) {
+          until += (u.v?.[1] ?? 10) + 1;
+          if (u.by === turn.by || this.skipIds.has(u.id)) continue;
+          const coming = this.room.callOver(u.by, this.spot, at);
+          // theirs is the next word here: once here or on their way, no other table calls them away meanwhile (they'd
+          // walk off, and back); someone still busy elsewhere is left free to come when they're done
+          const i = this.room.who(u.by);
+          if (i >= 0 && (coming === 'here' || coming === 'coming')) this.room.speaking(i, until);
+        }
+      }
       if (r.side.partial) { this.clipsDone = r.side.clips.length; this.partialId = turn.id; continue; }   // the rest is on its way
       this.clipsDone = 0;
       this.turnIdx++;
@@ -432,7 +467,7 @@ export class Director {
     // a link said where it stood rides on its sentence's clip (shown as written, with the link's text in it); one standing
     // alone has a clip of its own, shown as its URL
     const link = s.side.links.find((l) => l.url === s.clip.t || (!!l.text && s.clip.t.includes(l.text)));
-    this.ui.placard(link ? { url: link.url, domain: link.domain, at: this.crowd.headPos(s.who) } : null);
+    this.ui.placard(link ? { url: link.url, domain: link.domain, at: s.who >= 0 ? this.crowd.headPos(s.who) : new THREE.Vector3(this.spot!.pos.x, this.roomY + 1.1, this.spot!.pos.z) } : null);
     this.ui.code(s.side.code.find((c) => c.startsWith(s.clip.t.slice(0, 40))) ?? null);
     // pick a shot
     const first = s.side.clips[0] === s.clip;
