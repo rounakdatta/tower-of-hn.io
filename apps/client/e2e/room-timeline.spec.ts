@@ -105,6 +105,29 @@ test('a drag across the whole conversation fetches only where it rested, and ask
   for (const w of wants) expect(w.from, 'asks start where the conversation now is').toBeGreaterThan(0);
 });
 
+test('the card and the caption never sit on each other', async ({ page }) => {
+  await seat(page, 'onepassword');
+  const subs = page.locator('#subs'), touch = !!test.info().project.use.hasTouch;
+  const d = await drag(page, 0.3, 0.5);
+  // while a drag holds the conversation, the caption (its words from before the drag) goes: the card says where you are
+  await expect(subs).toHaveCSS('opacity', '0');
+  await d.up();
+  await page.waitForTimeout(400); await step(page, 6);
+  // let go: the voice and its caption, and the card out of their way
+  await expect(subs).toHaveClass(/show/);
+  await expect(subs).toHaveCSS('opacity', '1');
+  await expect(page.locator('#timeline')).toHaveAttribute('data-card', 'off');
+  if (touch) return;
+  // pointing along the line again: the card, and the caption stepped up clear of it
+  const c = await at(page, 0.7);
+  await page.mouse.move(c.x, c.y);
+  await expect(page.locator('#timeline')).not.toHaveAttribute('data-card', 'off');
+  await expect(page.locator('#timeline .tl-card')).toHaveCSS('visibility', 'visible');
+  await page.waitForTimeout(350);                                            // (the caption's step is a 0.2 s ease)
+  const card = (await page.locator('#timeline .tl-card').boundingBox())!, cap = (await subs.boundingBox())!;
+  expect(cap.y + cap.height, `the caption's foot (${(cap.y + cap.height).toFixed(0)}) above the card's top (${card.y.toFixed(0)})`).toBeLessThanOrEqual(card.y + 1);
+});
+
 test('the playhead follows the voice, and pausing stops it', async ({ page }) => {
   await seat(page, 'onepassword');
   const v = async () => Number(await slider(page).getAttribute('aria-valuenow'));

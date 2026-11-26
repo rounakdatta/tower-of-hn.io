@@ -65,6 +65,7 @@ export class Scrubber {
   private tGlance = 0; private tLeave = 0; private tLinger = 0; private tKey = 0;
   private raf = 0;
   private lastF = -1; private ariaS = -1; private ariaK = -1; private lastX = -1;
+  private offX = 0; private lastX0 = 0;   // where a seek let go, and the pointer's last x (the card stays away until it moves on)
   private cardK = -1; private said: string | null = null; private tries = 0;
   private track: HTMLElement; private pos: HTMLElement; private done: HTMLElement; private lit: HTMLElement;
   private knob: HTMLElement; private hit: HTMLElement; private total: HTMLElement; private guide: HTMLElement; private card: HTMLElement;
@@ -110,6 +111,7 @@ export class Scrubber {
 
   hide() {
     this.reset();
+    delete this.el.dataset.card;
     this.on = false;
     for (const type of ['pointerdown', 'pointerup', 'pointercancel']) removeEventListener(type, this.any as EventListener, true);
     if (document.activeElement === this.knob) this.knob.blur();
@@ -286,6 +288,8 @@ export class Scrubber {
   }
 
   private move = (e: PointerEvent) => {
+    if (this.el.dataset.card && Math.abs(e.clientX - this.offX) >= SLOP) delete this.el.dataset.card;
+    this.lastX0 = e.clientX;
     if (e.pointerId === this.pid) {
       this.cursor = e.clientX;
       if (!this.drag && Math.abs(e.clientX - this.x0) >= SLOP) this.grab();
@@ -318,6 +322,7 @@ export class Scrubber {
     this.set(DRAG, false);
     if (seek && Number.isNaN(this.lastScrub)) this.scrub(this.view);   // (a tap is over before a frame has run: the host still hears where; a drag has been heard, and its last word is the seek's)
     this.host.onScrubbing(false);
+    if (seek) { this.el.dataset.card = 'off'; this.offX = this.lastX0; }   // (the caption now says who: the card comes back when the pointer moves on)
     if (seek) this.seek(turnAt(this.line, this.view));
     else { this.view = this.t; this.paint(); this.aria(false); }
   }
@@ -350,6 +355,7 @@ export class Scrubber {
 
   private key = (e: KeyboardEvent) => {
     if (!this.usable || e.altKey || e.ctrlKey || e.metaKey) return;      // (Alt+Left is Back)
+    delete this.el.dataset.card;
     const ms = this.line.moments, step = STEPS.get(e.key);
     let to: number;
     if (step) {

@@ -140,7 +140,7 @@
   body[data-mode="table"] #floorbar .pill { padding:4px 11px; font-size:12px }
 
   #subs { position:fixed; left:50%; bottom:calc(8.5vh + 22px); transform:translateX(-50%); width:min(880px, 92vw); text-align:center; z-index:3; pointer-events:none;
-          opacity:0; transition:opacity .25s; font-size:clamp(16px, 2.1vw, 21px); line-height:1.42; text-shadow:0 2px 6px rgba(0,0,0,.9), 0 0 24px rgba(0,0,0,.7) }
+          opacity:0; transition:opacity .25s, translate .2s ease; font-size:clamp(16px, 2.1vw, 21px); line-height:1.42; text-shadow:0 2px 6px rgba(0,0,0,.9), 0 0 24px rgba(0,0,0,.7) }
   #subs.show { opacity:1 }
   #subs .who { font-weight:700; margin-right:.55em; letter-spacing:.2px }
   #subs .said { color:#f6f2ea; transition:color .4s }
@@ -269,6 +269,10 @@
   }
   /* (TIMELINE on a phone) the line runs just above the pills (scrubber.css): the subtitles keep their 22 px above it */
   @media (hover: none) { body.timeline[data-mode="table"] #subs { bottom:calc(8.5vh / 2 + 58px + env(safe-area-inset-bottom) / 2) } }
+  /* the timeline's card and the caption share the bottom of the picture: while the card shows, the caption steps up over
+     it; while a drag holds the conversation, the caption (the words from before the drag) goes */
+  body:has(#timeline:is([data-state="open"], [data-state="drag"]):not([data-card="off"])) #subs { translate:0 -86px }
+  body.scrubbing #subs { opacity:0 }
   @media (max-width: 700px), (hover: none) {
     body[data-mode="table"] #hint { display:none }
     #hint { white-space:normal; width:min(92vw, 520px); text-align:center; line-height:1.4 }

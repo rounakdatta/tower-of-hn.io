@@ -131,6 +131,7 @@ let line: Line | null = null, lineSpot: TableSpot | null = null, lineOthers = 0,
 let scrubTimer = 0, keySeek = 0, keyTo = -1, lineHeld = 0, lineLast = 0;
 const scrubber = new Scrubber({
   onScrubbing(on) {
+    document.body.classList.toggle('scrubbing', on);
     if (!director.spot) return;
     if (on) { director.hold(true); director.establish(clock); return; }   // the wide shot: the room filling and emptying as you drag
     // a drag that ended without a seek (cancelled): the conversation goes on from where it was, the room as it was

@@ -58,6 +58,8 @@ body:is(.reply-open, .card-open) .tl * { pointer-events:none }
            opacity:0; visibility:hidden; transition:opacity .15s, visibility 0s .15s }
 .tl:is([data-state="open"], [data-state="drag"]) :is(.tl-card, .tl-guide) { opacity:1; visibility:visible; transition:opacity .15s }
 .tl:is([data-state="open"], [data-state="drag"]) .tl-guide { opacity:.38 }
+/* just after a seek it goes (the caption says who is speaking now), until the pointer moves on */
+.tl[data-card="off"] :is(.tl-card, .tl-guide) { opacity:0; visibility:hidden; transition:opacity .15s, visibility 0s .15s }
 .tl-when { font-size:12px; line-height:1.35; color:var(--mute); font-variant-numeric:tabular-nums; white-space:nowrap } .tl-when b { color:var(--ink); font-weight:650 }
 .tl-says { display:flex; gap:.55em; margin-top:3px; font-size:13.5px; line-height:1.4; white-space:nowrap }
 .tl-by { flex:none; max-width:55%; overflow:hidden; text-overflow:ellipsis; font-weight:700 }

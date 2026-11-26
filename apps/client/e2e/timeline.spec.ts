@@ -374,6 +374,23 @@ test('stood up with the button down (the timeline goes away mid-drag): the drag 
 
 // ---------------------------------------------------------------- the card
 
+test('after a seek the card steps aside (the caption says who is speaking now) until the pointer moves on', async ({ page }) => {
+  const p = await pointerOf(page, 'mouse');
+  await frames(page);
+  const g = await geometry(page), { y, x } = await spot(page, 0.3);
+  await p.down(x, y);
+  await glide(p, x, at(g, 0.6), y, 10);
+  await expect(page.locator('.tl-card')).toHaveCSS('visibility', 'visible');
+  await p.up();
+  await expect.poll(async () => (await calls(page)).seek.length).toBe(1);
+  await expect(page.locator('.tl-card')).toHaveCSS('visibility', 'hidden');
+  await expect(page.locator('.tl')).toHaveAttribute('data-state', 'open');                  // (the line stays up: the pointer is on it)
+  await p.move(at(g, 0.6) + 3, y);
+  await expect(page.locator('.tl-card'), 'a twitch is not moving on').toHaveCSS('visibility', 'hidden');
+  await p.move(at(g, 0.6) + 14, y);
+  await expect(page.locator('.tl-card')).toHaveCSS('visibility', 'visible');
+});
+
 test('the card is inside a 390 px screen at both ends, and in the middle it is centred on the pointer', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 780 });
   await expect.poll(() => page.evaluate(() => innerWidth)).toBe(390);
