@@ -133,7 +133,7 @@ def main():
             continue
         stop = r.get('tNext') or r['tEnd']
         cold = sit_metrics(r, r['tSit'], r['table'], stop)
-        cold.update(kind='cold', label=r['label'], mobile=r.get('mobile'), story=r['story'], table=r['table'])
+        cold.update(kind='cold', label=r['label'], mobile=r.get('mobile'), story=r['story'], table=r['table'], arm=r.get('arm'))
         rows.append(cold)
         if r.get('tNext'):
             # the next table: whichever the director sat at after N (the first table whose turn plays after tNext)
@@ -166,12 +166,14 @@ def main():
         if not xs:
             return f'{name:34} n=0'
         return f'{name:34} n={len(xs):3}  p50 {pct(xs,.5):7.0f}  p95 {pct(xs,.95):7.0f}  max {max(xs):7.0f}'
+    arms = sorted({x.get('arm') for x in rows if x.get('kind')}, key=lambda a: a or '')
     for mobile in (False, True):
         for kind in ('cold', 'warm'):
-            rs = [x for x in rows if x.get('kind') == kind and bool(x.get('mobile')) == mobile]
+          for arm in arms:
+            rs = [x for x in rows if x.get('kind') == kind and bool(x.get('mobile')) == mobile and x.get('arm') == arm]
             if not rs:
                 continue
-            print(f"\n== {'phone (Pixel 7, CPU 4x slower)' if mobile else 'desktop'} · {kind}: {len(rs)} sits, {sum(1 for x in rs if x.get('first_ms') is None)} with no voice heard")
+            print(f"\n== {'phone (Pixel 7, CPU 4x slower)' if mobile else 'desktop'} · {kind}{' · arm ' + arm if arm else ''}: {len(rs)} sits, {sum(1 for x in rs if x.get('first_ms') is None)} with no voice heard")
             for ready in (True, False):
                 sub = [x for x in rs if x.get('ready_before') is ready]
                 if not sub:

@@ -6,7 +6,8 @@
 // server and the decoding, not software rendering.
 //
 // usage: node listen.mjs BASE PLAN.json OUT.jsonl [--mobile] [--listen 45] [--warm 25]
-//   PLAN.json: [{ "story": sid, "table": rootId, "from": 0, "label": "..." }, ...]  (see plan.mjs)
+//   PLAN.json: [{ "story": sid, "table": rootId, "from": 0, "label": "...", "arm": "A", "q": "play=" }, ...]
+//   (see plan.mjs; q is added to the page's query: an A/B arm, e.g. play=stream,cue,quick)
 //   BASE: https://towerofhn.taptappers.club (the tailnet door) or http://towerofhan.apps.svc.cluster.local:8787
 // env: CHROME (executable), PW (playwright-core module path), RESOLVE (host=ip[,host=ip]: Chrome's resolver rules)
 import { readFileSync, appendFileSync } from 'node:fs';
@@ -48,7 +49,7 @@ for (const c of plan) {
   page.on('pageerror', (e) => errors.push(String(e).slice(0, 200)));
   const rec = { ...c, mobile: MOBILE, rank, at: Date.now() };
   try {
-    const q = `?record&realaudio&manual&story=${c.story}&table=${c.table}${c.from ? `&from=${c.from}` : ''}`;
+    const q = `?record&realaudio&manual&story=${c.story}&table=${c.table}${c.from ? `&from=${c.from}` : ''}${c.q ? `&${c.q}` : ''}`;
     rec.tLoad = Date.now();
     await page.goto(`${BASE}/${q}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.waitForFunction(() => window.__ready && window.__tohn, null, { timeout: 60_000 });
