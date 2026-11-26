@@ -1,7 +1,8 @@
 # Tower of HN: launch readiness (26 Nov 2026)
 
-> Status 17:05 IST: everything below is live and measured, except the capacity test (§4), which waits for a calm
-> cluster; this file is updated in place when it has run.
+> Status 26 Nov, 18:30 IST: everything below is live and measured, except the capacity test (§4). Its abort rules
+> keep it from starting while any node is busy, and kanmani's 5-minute load stayed at 11–17 all evening. It runs in
+> kanmani's quiet hours instead (27 Nov, from 05:00 IST), and this file is updated in place when it has.
 
 ## The answer
 
@@ -19,7 +20,7 @@
 
 **What changed** (all live, each behind a switch with a one-line rollback):
 1. **Voice ahead** (`VOICE_AHEAD=all`, 14:14 IST): the whole tower is voiced as comments arrive, so listeners find it
-   ready. Coverage rose from 48% at deploy to 85% by 16:50, still climbing; new comments are voiced within minutes of arriving.
+   ready. Coverage rose from 48% at deploy to 85% by 16:50 and 95% by 18:00; new comments are voiced within minutes of arriving.
 2. **The client stops making you wait** (`CLIENT_FLAGS=stream,cue,quick`, 15:50 IST, after an A/B on the live site):
    - first voice 1.08 s typical (was 1.65 s);
    - p95 under 2 s on desktop and phones;
@@ -45,7 +46,7 @@ positions each):
   kanmani, 1 sit in 88.
 - Expect ~0.1–0.4 s less from India. These runs come from the US, ~200 ms from Singapore per round trip.
 
-**Can it hold hundreds of people?** TBD (staging capacity test)
+**Can it hold hundreds of people?** Not measured yet: the staging test runs in kanmani's quiet hours (§4).
 
 **Is kanmani overloaded while the others idle?** Yes, measured.
 - kanmani runs 43 of the 54 pods on about 1.5 real cores. Steal took 15–73% of its CPU every day this week.
@@ -232,8 +233,8 @@ longer. Steady state is still covered: ~3× against 0.9–3 h of new speech an h
   CDN in front (the public-launch plan in `docs/SCALING.md`: Cloudflare, cache rules already written) changes that: every
   edge asks the origin for `head.json` about once a second and for each clip once, whatever the audience.
 
-**Measured on staging (vizerizz).** TBD (the test waits for a calm cluster: its first attempt refused to start while
-kanmani's load was 11).
+**Measured on staging (vizerizz).** Pending: the run on 27 Nov from 05:00 IST. No attempt on 26 Nov got as far as the
+load: kanmani's 5-minute load stayed at 11–17, far over its abort line of 4.2.
 
 **Voicing capacity, the other half.** With jomjom out (§3.2), only vizerizz voices: two lanes, ~3× real time,
 ~11 turns a minute.
@@ -248,7 +249,7 @@ kanmani's load was 11).
   - a small GPU runner (`KOKORO_PROVIDER=cuda`, 50–100× real time). That would make "everything voiced" hold at any
     hour.
 
-**What that means for kanmani.** TBD
+**What that means for kanmani.** Pending, with the run above.
 
 ## 5. The cluster
 
