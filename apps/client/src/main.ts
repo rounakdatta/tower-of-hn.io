@@ -555,6 +555,8 @@ async function enterFloor(sid: number, push = false, listen = false) {
         for (const u of f.tables[k].turns) {
           if (known.has(u.id)) continue;
           mixer.breaking(sp, u);
+          // (CROWD_V2) a reply just landed on HN: the hall leans in toward that table
+          if (room.stage) audience.react('lean', sp.pos.x, sp.pos.z, clock + 0.3, 0.7);
           const me = you.me, parent = u.replyTo !== undefined ? f.tables[k].turns.find((x) => x.id === u.replyTo) : undefined;
           if (me && u.by === me) { mixer.spotlight(sp, u.id); ui.toast(`<b>That’s you</b>, walking in to say it`, () => walkToTable(sp)); continue; }
           if (me && parent?.by === me && !heard.has(u.id)) {
