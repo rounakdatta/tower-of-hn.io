@@ -69,6 +69,9 @@ export class Audience {
     react: uniform(new THREE.Vector4(0, 0, -100, 0)), reactAmp: uniform(0),
     /** the playhead (in narration turns, eased): who has joined by now */
     at: uniform(1e9),
+    /** 1, or 0 under prefers-reduced-motion: the sway, the bounce, the nods and the leaning stop; where heads turn
+     *  (who is speaking) and the faces' reactions stay, they are the information */
+    motion: uniform(1),
     /** the highest gallery drawn: 0 from outside the glass (the hall rises through the floors above; from outside, a
      *  floor near the top of the tower would have it showing over the roof) */
     levels: uniform(99),
@@ -82,6 +85,8 @@ export class Audience {
   private atTarget = 1e9;
   /** ground-level people bucketed by metre (the director asks who stands near a shot) */
   private grid = new Map<number, number[]>();
+  /** everyone on the ground (the standing room): what walkers and you, on foot, keep clear of */
+  ground: number[] = [];
 
   constructor() {
     const lods: [number, number, number, number][] = [[16, 2, 20, 14], [10, 2, 12, 9], [6, 1, 8, 6]];
@@ -129,6 +134,12 @@ export class Audience {
     return { pos, facing, phase, height, width, here, tl, nod: is(REACT.nod), laugh: is(REACT.laugh), gasp: is(REACT.gasp), lean: is(REACT.lean), P1, P2, P3 };
   }
 
+  /** how far a body tips (radians, about its feet): leaning in, rocked back by a gasp, shaken by a laugh */
+  private pitchOf(p: ReturnType<Audience['person']>) {
+    return p.lean.mul(0.16).sub(p.gasp.mul(0.12)).add(p.laugh.mul(abs(sin(p.tl.mul(11)))).mul(-0.05)).mul(this.u.motion);
+  }
+  private swayOf(p: ReturnType<Audience['person']>) { return sin(uTime.mul(0.31).add(p.phase.mul(6.28))).mul(0.045).mul(this.u.motion); }
+
   private bodyMaterial() {
     const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.62, metalness: 0 });
     const vHere = varying(float(0)), vCol = varying(vec3(0));
@@ -138,13 +149,12 @@ export class Audience {
       const breathe = sin(uTime.mul(1.6).add(p.phase.mul(6.28))).mul(0.008);
       local.assign(local.mul(vec3(p.width.mul(breathe.add(1)), p.height.mul(breathe.mul(0.6).add(1)), p.width.mul(breathe.add(1)))));
       // a slow sway and a shift of weight; leaning in, or back, with the room
-      const sway = sin(uTime.mul(0.31).add(p.phase.mul(6.28))).mul(0.045);
-      const pitch = p.lean.mul(0.16).sub(p.gasp.mul(0.12)).add(p.laugh.mul(abs(sin(p.tl.mul(11)))).mul(-0.05));
+      const sway = this.swayOf(p), pitch = this.pitchOf(p);
       const cy = cos(pitch), sy = sin(pitch);
       const y1 = local.y.mul(cy).sub(local.z.mul(sy)), z1 = local.y.mul(sy).add(local.z.mul(cy));
       const a = p.facing.add(sway), ca = cos(a), sa = sin(a);
       const x2 = local.x.mul(ca).add(z1.mul(sa)), z2 = local.x.negate().mul(sa).add(z1.mul(ca));
-      const bounce = abs(sin(p.tl.mul(13))).mul(0.03).mul(p.laugh);
+      const bounce = abs(sin(p.tl.mul(13))).mul(0.03).mul(p.laugh).mul(this.u.motion);
       // arriving or leaving: they grow from a little smaller as they fade in (never a pop)
       const s = mix(float(0.8), float(1), p.here).mul(step(0.002, p.here));
       const n = normalGeometry, ny = n.y.mul(cy).sub(n.z.mul(sy)), nz = n.y.mul(sy).add(n.z.mul(cy));
@@ -175,10 +185,10 @@ export class Audience {
         .add(max(cap(0.2), smoothstep(-0.1, -0.4, n.z).mul(step(-0.3, n.y))).mul(0.05).mul(isS(5)))
         .add(smoothstep(0.82, 0.97, n.dot(vec3(0, 0.82, -0.57))).mul(0.07).mul(isS(3)));
       const local = positionGeometry.add(n.mul(lift)).toVar();
-      // where the head is: on top of the body, swaying with it
-      const sway = sin(uTime.mul(0.31).add(p.phase.mul(6.28))).mul(0.045);
-      const top = float(STAND).mul(p.height).add(0.17);
-      const headAt = p.pos.add(vec3(0, top, 0));
+      // where the head is: on top of the body, as the body sways and tips (leaning in, rocked by a gasp)
+      const sway = this.swayOf(p), bp = this.pitchOf(p), ba = p.facing.add(sway);
+      const top = float(STAND).mul(p.height).add(0.17), ty = top.mul(cos(bp)), tz = top.mul(sin(bp));
+      const headAt = p.pos.add(vec3(tz.mul(sin(ba)), ty, tz.mul(cos(ba))));
       // where they look: whoever is speaking (from A to B, a beat later the further they are, each in their own time);
       // one in eight are elsewhere, as people in a crowd are
       const lag = length(p.pos.sub(this.u.focusB)).mul(0.05).add(p.phase.mul(0.45)).add(0.12);
@@ -190,9 +200,9 @@ export class Audience {
       const elsewhere = step(p.phase, float(0.125));
       const yaw = mix(clamp(yawW, -1.05, 1.05), sin(uTime.mul(0.2).add(p.phase.mul(40))).mul(0.6), elsewhere);
       const pitchTo = atan(to.y.negate(), length(vec2(to.x, to.z))).clamp(-0.45, 0.75);
-      const nod = sin(uTime.mul(0.9).add(p.phase.mul(10.7))).mul(0.03).add(sin(p.tl.mul(8)).mul(0.12).mul(p.nod)).sub(p.laugh.mul(0.14)).sub(p.gasp.mul(0.08));
+      const nod = sin(uTime.mul(0.9).add(p.phase.mul(10.7))).mul(0.03).add(sin(p.tl.mul(8)).mul(0.12).mul(p.nod)).sub(p.laugh.mul(0.14)).sub(p.gasp.mul(0.08)).mul(this.u.motion);
       const pitch = mix(pitchTo, float(0.05), elsewhere).add(nod);
-      const roll = sin(uTime.mul(0.7).add(p.phase.mul(9))).mul(0.03);
+      const roll = sin(uTime.mul(0.7).add(p.phase.mul(9))).mul(0.03).mul(this.u.motion);
       // the head's rotation: roll, then pitch (nodding), then yaw (body facing + sway + where they look)
       const cr = cos(roll), sr = sin(roll), cp = cos(pitch), sp = sin(pitch), a = p.facing.add(sway).add(yaw), ca = cos(a), sa = sin(a);
       const rot = (v: ReturnType<typeof vec3>) => {
@@ -200,7 +210,7 @@ export class Audience {
         const y1 = y0.mul(cp).sub(v.z.mul(sp)), z1 = y0.mul(sp).add(v.z.mul(cp));
         return vec3(x0.mul(ca).add(z1.mul(sa)), y1, x0.negate().mul(sa).add(z1.mul(ca)));
       };
-      const bounce = abs(sin(p.tl.mul(13))).mul(0.039).mul(p.laugh);
+      const bounce = abs(sin(p.tl.mul(13))).mul(0.039).mul(p.laugh).mul(this.u.motion);
       const s = mix(float(0.8), float(1), p.here).mul(step(0.002, p.here));
       normalLocal.assign(rot(normalGeometry));
       vHere.assign(p.here);
@@ -258,13 +268,13 @@ export class Audience {
     const rows = Math.max(1, Math.ceil(n / ROW));
     this.data = new Float32Array(ROW * TEXELS * rows * 4);
     this.live = new Float32Array(ROW * rows * 4);
-    this.grid.clear();
+    this.grid.clear(); this.ground = [];
     for (let i = 0; i < n; i++) {
       const pl = this.places[i], lk: Look = lookOf(names[i]), o = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;
       this.data.set([pl.x, pl.y, pl.z, pl.facing, lk.skin.r, lk.skin.g, lk.skin.b, lk.phase, lk.outfit.r, lk.outfit.g, lk.outfit.b, lk.height,
         lk.hair.r, lk.hair.g, lk.hair.b, lk.width, lk.eye, lk.gap, lk.brow, lk.mouth, lk.style, lk.glasses ? 1 : 0, lk.beard ? 1 : 0, pl.level], o);
       this.live.set([-1, 0, -100, 0], i * 4);
-      if (pl.level === 0 && places[i]) { const k = cellKey(pl.x, pl.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); }
+      if (pl.level === 0 && places[i]) { const k = cellKey(pl.x, pl.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); this.ground.push(i); }
     }
     this.tex.dispose(); this.liveTex.dispose();
     this.tex = new THREE.DataTexture(this.data, ROW * TEXELS, rows, THREE.RGBAFormat, THREE.FloatType);
@@ -273,9 +283,7 @@ export class Audience {
     this.u.data.value = this.tex; this.u.live.value = this.liveTex;
     for (const m of this.meshes) {
       for (const [g, a] of [[m.body.geometry, 'pid'], [m.head.geometry, 'pid']] as const) {
-        const attr = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, n)), 1);
-        attr.setUsage(THREE.DynamicDrawUsage);
-        (g as THREE.InstancedBufferGeometry).setAttribute(a, attr);
+        (g as THREE.InstancedBufferGeometry).setAttribute(a, new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, n)), 1));
       }
       m.pid = m.body.geometry.getAttribute('pid') as THREE.InstancedBufferAttribute;
       m.hpid = m.head.geometry.getAttribute('pid') as THREE.InstancedBufferAttribute;
@@ -300,11 +308,11 @@ export class Audience {
       lk.hair.r, lk.hair.g, lk.hair.b, lk.width, lk.eye, lk.gap, lk.brow, lk.mouth, lk.style, lk.glasses ? 1 : 0, lk.beard ? 1 : 0, place.level], o);
     this.live.set([-1, 0, -100, 0], i * 4);
     this.names.push(name); this.places.push(place); this.n++;
-    if (place.level === 0) { const k = cellKey(place.x, place.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); }
+    if (place.level === 0) { const k = cellKey(place.x, place.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); this.ground.push(i); }
     for (const m of this.meshes) for (const at of [m.pid, m.hpid]) if (at.array.length < this.n) {
       // (the index lists hold everyone at most: grow them with the room)
       const g = at === m.pid ? m.body.geometry : m.head.geometry, next = new THREE.InstancedBufferAttribute(new Float32Array(this.n + 64), 1);
-      next.setUsage(THREE.DynamicDrawUsage); g.setAttribute('pid', next);
+      g.setAttribute('pid', next);
       if (at === m.pid) m.pid = next; else m.hpid = next;
     }
     this.tex.needsUpdate = this.liveTex.needsUpdate = true;
@@ -336,12 +344,21 @@ export class Audience {
   present(i: number) { const o = i * 4; return this.live[o + 1] < 0.5 && (this.live[o] < 0 || this.live[o] <= this.u.at.value + 0.5); }
 
   /** Heads turn to whoever is speaking now (a world point), a ripple from those nearest. `now`: the scene clock. */
-  focus(at: THREE.Vector3, now: number) {
-    const u = this.u, k = smooth01((now - u.focusT.value - 0.12) / 1.2), y = at.y - this.group.position.y;
-    if (Math.abs(u.focusB.value.x - at.x) + Math.abs(u.focusB.value.y - y) + Math.abs(u.focusB.value.z - at.z) < 0.15) return;
+  focus(at: THREE.Vector3, now: number, who = -1) {
+    const u = this.u, y = at.y - this.group.position.y;
+    // the same speaker, moving (walking up to the table): heads follow them, the turn already under way carries on
+    if (who >= 0 && who === this.focusWho) {
+      u.focusB.value.set(at.x, y, at.z);
+      if (now - u.focusT.value > 2.5) u.focusA.value.copy(u.focusB.value);   // (long since turned: nothing to blend from)
+      return;
+    }
+    if (who < 0 && Math.abs(u.focusB.value.x - at.x) + Math.abs(u.focusB.value.y - y) + Math.abs(u.focusB.value.z - at.z) < 0.15) return;
+    this.focusWho = who;
+    const k = smooth01((now - u.focusT.value - 0.12) / 1.2);
     u.focusA.value.lerpVectors(u.focusA.value, u.focusB.value, k);           // from wherever heads had got to
     u.focusB.value.set(at.x, y, at.z); u.focusT.value = now;
   }
+  private focusWho = -1;
   /** A reaction ripples out from (x, z) through everyone here: a laugh, a gasp, nods, leaning in. */
   react(kind: Reaction, x: number, z: number, now: number, amp = 1) {
     // one ripple at a time: a smaller one (nods for points) never cuts off a bigger one still going through the room
@@ -359,10 +376,10 @@ export class Audience {
     const jumped = camera.position.distanceToSquared(this.camAt) > 0.36;
     if (!jumped && now - this.lastSort < SORT_EVERY && this.lastSort >= 0) return;
     this.lastSort = now; this.camAt.copy(camera.position);
-    this.sort(camera);
+    this.sort(camera, now);
   }
 
-  private sort(camera: THREE.PerspectiveCamera) {
+  private sort(camera: THREE.PerspectiveCamera, now: number) {
     // a slightly wider frustum than the lens, so a glide between sorts never shows anyone missing at the edges
     const fov = camera.fov;
     camera.updateMatrixWorld();                           // (the rig has just moved it: this frame's view, not the last one's)
@@ -374,7 +391,7 @@ export class Audience {
     const lists = this.meshes.map((m) => m.pid.array as Float32Array), counts = [0, 0, 0];
     for (let i = 0; i < this.n; i++) {
       const o = i * 4;
-      if (this.live[o + 1] > 0.5 && this.live[o + 2] < -50) continue;                 // away, no fade to show
+      if (this.live[o + 1] > 0.5 && (this.live[o + 2] < -50 || now - this.live[o + 2] > 0.4)) continue;   // away (faded out, or never shown)
       if (this.live[o] >= 0 && this.live[o] > Math.max(this.u.at.value, this.atTarget) + 0.6) continue;   // not joined yet
       const d = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;
       if (this.data[d + 23] > this.u.levels.value) continue;          // a gallery, seen from outside the glass
@@ -408,15 +425,17 @@ export class Audience {
   /** The person whose head is under a ray (anyone here), or -1. */
   pick(ray: THREE.Ray) {
     let best = -1, bestT = Infinity;
-    const c = new THREE.Vector3(), y0 = this.group.position.y;
+    const c = this.pc, q = this.pq, y0 = this.group.position.y;
     for (let i = 0; i < this.n; i++) {
-      if (!this.present(i)) continue;
+      if (!this.present(i) || this.places[i].level > this.u.levels.value) continue;
       this.headAt(i, c); c.y += y0;
-      const t = ray.closestPointToPoint(c, new THREE.Vector3()).distanceTo(c) < 0.24 ? ray.origin.distanceTo(c) : Infinity;
+      const t = ray.closestPointToPoint(c, q).distanceTo(c) < 0.24 ? ray.origin.distanceTo(c) : Infinity;
       if (t < bestT) { bestT = t; best = i; }
     }
     return best;
   }
+  private pc = new THREE.Vector3();
+  private pq = new THREE.Vector3();
   /** person i's head, room space (their resting pose) */
   headAt(i: number, out: THREE.Vector3) {
     const d = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;

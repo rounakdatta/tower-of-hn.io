@@ -115,6 +115,8 @@ director.room = room; director.ambient = true;
 const audience = new Audience();
 const stage = new Stage(crowd, audience, interior, room);
 scene.add(audience.group);
+audience.group.visible = false;                           // (drawn, and its shaders built, only once a room uses it)
+if (matchMedia('(prefers-reduced-motion: reduce)').matches) audience.u.motion.value = 0;
 stage.clock = () => clock;
 director.galleries = () => interior.galleryCount;
 const crowdV2 = () => sync.play('crowd');
@@ -144,7 +146,7 @@ walk.obstacles = () => {
   const put = (x: number, z: number, r: number) => { const o = (obstacleList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = x; o.z = z; o.r = r; };
   for (const s of spots) if (!s.bar) put(s.pos.x, s.pos.z, s.radius + 0.42);
   for (const p of crowd.people) if (!p.hidden) put(p.pose.pos.x + (p.shove?.x ?? 0), p.pose.pos.z + (p.shove?.z ?? 0), 0.34);   // where they stand
-  if (room.stage) for (let i = 0; i < audience.n; i++) { const pl = audience.places[i]; if (pl.level === 0 && audience.present(i)) put(pl.x, pl.z, 0.34); }
+  if (room.stage) for (const i of audience.ground) { if (audience.present(i)) { const pl = audience.places[i]; put(pl.x, pl.z, 0.34); } }
   obstacleList.length = n;
   return obstacleList;
 };
@@ -160,10 +162,9 @@ crowd.keepClear = () => {                              // asked every frame anyo
   }
   if (mode !== 'tower') { const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = camera.position.x; o.z = camera.position.z; o.r = 0.3; }
   // (CROWD_V2) the audience on the ground: walkers keep to the lanes, never through anyone standing in their place
-  if (room.stage) for (let i = 0; i < audience.n; i++) {
-    const pl = audience.places[i];
-    if (pl.level !== 0 || !audience.present(i)) continue;
-    const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = pl.x; o.z = pl.z; o.r = 0.27;
+  if (room.stage) for (const i of audience.ground) {
+    if (!audience.present(i)) continue;
+    const pl = audience.places[i], o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = pl.x; o.z = pl.z; o.r = 0.27;
   }
   if (clearList.length !== n) clearList.length = n;
   return clearList;
@@ -486,7 +487,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
   const lay = interior.layout(floor, roomYaw, deepTable);
   spots = lay.spots;
   const v2 = crowdV2();
-  room.stage = v2 ? stage : null; director.audience = v2 ? audience : null;
+  room.stage = v2 ? stage : null; director.audience = v2 ? audience : null; audience.group.visible = v2;
   crowd.set(v2 ? stage.trim(spots, lay.people) : lay.people);
   if (!v2) { audience.set([], []); interior.galleries(0); }
   room.reset(spots, interior.door);
@@ -517,8 +518,9 @@ async function enterFloor(sid: number, push = false, listen = false) {
     Math.max(2.6, Math.min(4.0, 2.0 + far / 26)), clock, () => {
       if (activeStory !== sid || mode !== 'floor') return;
       walk.begin(stand, Math.atan2(-stand.x, -stand.z));     // facing into the room
-      const crowdN = v2 ? stage.people : sync.head?.people?.[sid] ?? 0;
-      ui.card(`Floor ${rank + 1} · ${floor.story.comments.toLocaleString('en-US')} comments${crowdN > 1 ? ` · ${crowdN.toLocaleString('en-US')} people` : ''}`, floor.story.title);
+      // (CROWD_V2) the honest count: everyone who commented, the people the hall holds
+      ui.card(v2 ? `Floor ${rank + 1} · ${floor.story.comments.toLocaleString('en-US')} comments${stage.people > 1 ? ` · ${stage.people.toLocaleString('en-US')} people` : ''}`
+        : `Floor ${rank + 1} · ${floor.story.comments} comments`, floor.story.title);
       ui.tableLabels(spots, roomY, walkToTable, bestSpot(false));
       ui.showLabels(true); map.show(true);
       chose = ui.chosen = false;
@@ -810,6 +812,8 @@ function aimAt(x: number, y: number): { kind: 'person'; i: number } | { kind: 'a
   floorPlane.constant = -roomY;
   return { kind: null, at: ray.ray.intersectPlane(floorPlane, hitPoint) ? hitPoint.clone() : undefined };
 }
+/** has `name` said something at one of this room's tables (so R can answer it here)? */
+function canReply(name: string) { return spots.some((s) => s.table.turns.some((t) => t.by === name)); }
 /** whoever is at a point on the screen (at a table, or in the audience), by name */
 function nameAt(a: ReturnType<typeof aimAt>) { return a.kind === 'person' ? crowd.people[a.i].name : a.kind === 'audience' ? a.name : null; }
 /** the table you're standing beside (close enough to sit), if any */
@@ -1032,11 +1036,11 @@ function frame(dt: number, draw = true) {
     ui.sitDown(t ? { name: t.table.turns[0]?.by ?? '', go: () => sit(t, true), key: !touch } : null);
     ui.signs(walk.pos, mixer.focus, (s) => mixer.speaking(s));
     walkSubtitles();
-    map.draw(clock, spots, walk.pos, walk.yaw, { focus: mixer.focus, talking: (s) => !!mixer.speaking(s), people: room.stage ? crowd.people.filter((p) => !p.hidden) : crowd.people, door: interior.door, lift: uLift.value });
+    map.draw(clock, spots, walk.pos, walk.yaw, { focus: mixer.focus, talking: (s) => !!mixer.speaking(s), people: crowd.people, door: interior.door, lift: uLift.value });
     // first person at a desk: what the dot in the middle is on, and what a click would do
     if (walk.locked && ++aimTick % 6 === 0) {
       const a = aimAt(innerWidth / 2, innerHeight / 2);
-      ui.aim(nameAt(a) ? `${nameAt(a)} · click to meet them · R to reply` : a.kind === 'table' ? (nearTable() === a.spot ? 'Click or E to sit down' : 'Click to walk over') : '');
+      ui.aim(nameAt(a) ? `${nameAt(a)} · click to meet them${canReply(nameAt(a)!) ? ' · R to reply' : ''}` : a.kind === 'table' ? (nearTable() === a.spot ? 'Click or E to sit down' : 'Click to walk over') : '');
     }
   } else if (mode === 'floor') ui.sitDown(null);
   neonTick(clock);
@@ -1046,7 +1050,7 @@ function frame(dt: number, draw = true) {
   if (room.stage && interior.group.visible) {
     stage.tidy(audio.now());
     // on foot, heads turn to whoever is speaking at the table you're with (seated, the director says who)
-    if (mode === 'floor' && mixer.focus) { const l = mixer.speaking(mixer.focus); if (l && l.who >= 0) audience.focus(crowd.headPos(l.who, focusAt), clock); }
+    if (mode === 'floor' && mixer.focus) { const l = mixer.speaking(mixer.focus); if (l && l.who >= 0) audience.focus(crowd.headPos(l.who, focusAt), clock, l.who); }
     audience.update(camera, clock, dt);
   }
   ui.update();
@@ -1193,6 +1197,7 @@ if (recording) {
   // ?fps: what a real device manages, in a corner (median frames a second over the last two, and what's drawn): the
   // number to read on a phone when checking a big room by hand
   const fpsTag = params.has('fps') ? Object.assign(document.body.appendChild(document.createElement('div')), { id: 'fps' }) : null;
+  fpsTag?.setAttribute('aria-hidden', 'true');             // (a reading for whoever is checking, not part of the page)
   if (fpsTag) fpsTag.style.cssText = 'position:fixed;left:8px;top:calc(env(safe-area-inset-top) + 56px);z-index:9;font:600 11px/1.3 ui-monospace,monospace;color:#cfe;background:rgba(0,0,0,.55);padding:3px 6px;border-radius:6px;pointer-events:none;font-variant-numeric:tabular-nums';
   const gaps: number[] = [];
   let fpsAt = 0;
