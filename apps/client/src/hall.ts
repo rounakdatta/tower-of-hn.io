@@ -50,12 +50,13 @@ function row(out: Cell[], r: number, y: number, level: number, a0: number, ok: (
   }
 }
 
-/** The ground's standing room: rows along the glass, clear of every table's fishbowl and of whatever must stay free. */
-function groundCells(R: number, tables: HallTable[], keep: Keep[]): Cell[] {
+/** The ground's standing room: rows along the glass, clear of every table's fishbowl and of whatever must stay free.
+ *  (`rows`: more rows fill the floor inward: the "standing crowd" direction prototyped against galleries) */
+function groundCells(R: number, tables: HallTable[], keep: Keep[], rows: number = HALL.BAND_ROWS): Cell[] {
   const out: Cell[] = [];
   const ok = (x: number, z: number) => tables.every((t) => Math.hypot(x - t.x, z - t.z) > t.r + HALL.FRONT + HALL.LANE + HALL.SPACING / 2)
     && keep.every((k) => Math.hypot(x - k.x, z - k.z) > k.r);
-  for (let k = 0; k < HALL.BAND_ROWS; k++) {
+  for (let k = 0; k < rows && R - HALL.GLASS - k * HALL.ROW > 0.6; k++) {
     const r = R - HALL.GLASS - k * HALL.ROW;
     row(out, r, 0, 0, (k % 2) * 0.5 * (HALL.SPACING / r), ok);
   }
@@ -99,13 +100,16 @@ export class Hall {
   /** galleries in use: the highest level anyone stands on */
   used = 0;
 
-  constructor(R: number, tables: HallTable[], keep: Keep[], expected: number) {
+  /** (`o.rows`, `o.tiers`: the directions prototyped against this one: a floor full of standing rows, no galleries) */
+  private maxTiers: number;
+  constructor(R: number, tables: HallTable[], keep: Keep[], expected: number, o: { rows?: number; tiers?: boolean } = {}) {
     this.R = R; this.tables = tables;
-    this.cells = groundCells(R, tables, keep);
+    this.cells = groundCells(R, tables, keep, o.rows);
     this.ground = this.cells.length;
     this.perTier = tierCells(R, 1).length;
+    this.maxTiers = o.tiers === false ? 0 : HALL.MAX_TIERS;
     this.taken = new Uint8Array(0);
-    this.grow(tiersFor(expected, this.ground, this.perTier));
+    this.grow(Math.min(this.maxTiers, tiersFor(expected, this.ground, this.perTier)));
   }
 
   private grow(tiers: number) {
@@ -145,7 +149,7 @@ export class Hall {
     let o = this.orderFor(h), k = this.next.get(h) ?? 0;
     while (k < o.length && this.taken[o[k]]) k++;
     if (k >= o.length) {
-      if (this.tiers >= HALL.MAX_TIERS) return null;
+      if (this.tiers >= this.maxTiers) return null;
       this.grow(this.tiers + 1);
       o = this.orderFor(h); k = 0;
       while (k < o.length && this.taken[o[k]]) k++;

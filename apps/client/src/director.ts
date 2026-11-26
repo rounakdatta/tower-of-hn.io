@@ -11,6 +11,7 @@ import type { Rig } from './rig.ts';
 import { R, FLOOR_H } from './world.ts';
 import type { UI } from './ui.ts';
 import type { Room } from './room.ts';
+import type { Audience } from './audience.ts';
 
 /** How a speaker's face sits for each delivery (the voice moves it from there, syllable by syllable). */
 
@@ -89,6 +90,11 @@ export class Director {
   }
   /** the room's choreography: speakers walk over to this table before they speak (one person per commenter) */
   room: Room | null = null;
+  /** CROWD_V2: everyone else in the room (their heads turn to the speaker, reactions ripple through them, and no shot
+   *  is ever taken from inside them) */
+  audience: Audience | null = null;
+  /** CROWD_V2: galleries above the room (the wide shot looks up at them) */
+  galleries = () => 0;
   /** the mixer plays the other tables for real: no random murmur on top */
   ambient = false;
   /** the turn the table has got to */
@@ -447,7 +453,7 @@ export class Director {
     const riser = this.crowd.headPos(plan.S).add(new THREE.Vector3(0, 0.3, 0));
     const here = new Set(this.spot!.seats.map((st) => this.ix(st.name)));
     for (let j = 0; j < this.crowd.people.length; j++) {
-      if (here.has(j) || this.crowd.seed(j, 11) > 0.72 || this.glances.some((g) => g.i === j)) continue;
+      if (here.has(j) || this.crowd.isHidden(j) || this.crowd.seed(j, 11) > 0.72 || this.glances.some((g) => g.i === j)) continue;
       const d = this.crowd.headPos(j).distanceTo(riser);
       if (d > 7) continue;
       const from = now + push + 0.15 + d * 0.11 + this.crowd.seed(j, 12) * 0.5;
@@ -472,6 +478,7 @@ export class Director {
     // pick a shot
     const first = s.side.clips[0] === s.clip;
     const plan = this.perf!.plan(s, this.sched);
+    if (this.audience) this.crowdHears(s, plan, first, now);
     if (first && plan.stand) {
       if (!this.heroAt) {                       // staged too late (audio arrived just in time): stage it now
         this.riseShot(plan.S, plan.A);
@@ -501,6 +508,20 @@ export class Director {
       }
     }
     this.reactionAt = s.end - s.start > 7 ? now + (s.end - s.start) * 0.55 : 0;
+  }
+
+  /** The audience hears it too: heads turn to whoever speaks, and how it's said ripples out from the table (a gasp at a
+   *  heated line, nods when someone agrees, leaning in at a question, a laugh at the end of a joke). */
+  private crowdHears(s: Scheduled, plan: ReturnType<Performer['plan']>, first: boolean, now: number) {
+    const a = this.audience!, sp = this.spot!;
+    if (s.who >= 0) a.focus(this.crowd.headPos(s.who, this.tmp), now);
+    else a.focus(this.tmp.set(sp.pos.x, this.roomY + 1.1, sp.pos.z), now);
+    if (!first) return;
+    const at = this.audio.now(), x = sp.pos.x, z = sp.pos.z;
+    if (plan.stand || plan.ST === 'retort' || plan.C.includes('insult') || (plan.E === 'angry' && plan.I >= 0.45)) a.react('gasp', x, z, now + 0.35, Math.min(1, 0.6 + plan.I * 0.5));
+    else if (plan.laughEnd) a.react('laugh', x, z, now + Math.max(0, plan.end - at - 1.0), 0.9);
+    else if (plan.ST === 'question' || plan.C.includes('question')) a.react('lean', x, z, now + 0.6, 0.8);
+    else if (plan.ST === 'agree' || plan.ST === 'praise') a.react('nod', x, z, now + 0.9, 0.8);
   }
 
   // ---------------------------------------------------------------- performance: blocking, gestures, reactions
@@ -581,6 +602,24 @@ export class Director {
         if (t2 < 0.93 && d2 < 0.25) sc -= ((0.25 - d2) * 8 + 0.6) * s.w;
       }
     }
+    // (CROWD_V2) the audience standing near the shot: never a lens inside them, nor one of them across a face
+    if (this.audience) for (const j of this.audNear) {
+      this.audience.headAt(j, h); h.y += Y0;
+      const bottom = Y0 + this.audience.places[j].y, neck = h.y - 0.2, dh = p.distanceTo(h);
+      const ay = Math.max(bottom, Math.min(neck, p.y)), da = Math.hypot(p.x - h.x, p.y - ay, p.z - h.z);
+      if (dh < 0.5 || da < 0.45) return -Infinity;
+      if (dh < 1.7) {
+        const ang = Math.acos(Math.max(-1, Math.min(1, h.clone().sub(p).divideScalar(dh).dot(look)))), rad = Math.asin(Math.min(1, 0.27 / dh));
+        const inFrame = Math.max(0, Math.min(1, (half + rad - ang) / (2 * rad)));
+        if (inFrame > 0) sc -= (1.7 - dh) * 4.5 * inFrame;
+      }
+      for (const s of subjects) {
+        const [d1, t1] = segPoint(p, s.head, h);
+        if (t1 < 0.93 && d1 < 0.3) sc -= (0.3 - d1) * 14 * s.w;
+        const [d2, t2] = segSeg(p, s.head, h.x, bottom, h.z, h.x, neck, h.z);
+        if (t2 < 0.93 && d2 < 0.25) sc -= ((0.25 - d2) * 8 + 0.6) * s.w;
+      }
+    }
     for (const s of subjects) {
       // the sightline must clear the tabletop
       if (tr && p.y < Y0 + 0.8) {
@@ -600,6 +639,7 @@ export class Director {
   }
   private tmp = new THREE.Vector3();
   private nearby: number[] = [];
+  private audNear: number[] = [];
   /** who the current shot is on (they cheat their face toward the lens) */
   private onCamera = -1;
 
@@ -612,9 +652,11 @@ export class Director {
     const reach = dist * 1.45 + 2, hp = new THREE.Vector3();
     this.nearby = [];
     for (let j = 0; j < this.crowd.people.length; j++) {
+      if (this.crowd.isHidden(j)) continue;
       this.crowd.headPos(j, hp);
       if (Math.hypot(hp.x - target.x, hp.z - target.z) < reach || subjects.some((s) => s.i === j)) this.nearby.push(j);
     }
+    if (this.audience) this.audience.near(target.x, target.z, reach, this.audNear); else this.audNear.length = 0;
     for (const a of [0, 0.3, -0.3, 0.6, -0.6, 0.95, -0.95, 1.3, -1.3]) {
       for (const m of [1, 0.85, 1.2, 0.7, 1.45]) {
         for (const h of [lift, lift + 0.22, lift - 0.12]) {
@@ -623,6 +665,21 @@ export class Director {
           if (sc > bestScore) { bestScore = sc; best = p; }
         }
       }
+    }
+    if (!best && this.audience && this.spot) {
+      // (CROWD_V2) nothing round the subject works (a full room): from inside the table's own circle, between its edge
+      // and the people at its front, a little above head height, looking at them. That circle is kept clear for this.
+      const c = this.spot.pos;
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2, r = this.spot.radius + 0.62;
+        for (const y of [1.55, 1.8, 1.3]) {
+          const p = new THREE.Vector3(c.x + Math.cos(a) * r, this.roomY + y, c.z + Math.sin(a) * r);
+          const sc = this.score(p, subjects, near, fov) - 1.5;
+          if (sc > bestScore) { bestScore = sc; best = p; }
+        }
+      }
+      // and if even that is taken: straight over the middle of the tabletop, which nobody ever stands in
+      best ??= new THREE.Vector3(c.x, this.roomY + 1.75, c.z);
     }
     if (o.dry) return bestScore;
     if (!best) best = target.clone().add(dir.clone().multiplyScalar(dist)).setY(target.y + lift);
@@ -647,6 +704,17 @@ export class Director {
     if (inward.lengthSq() < 0.04) inward.set(0, 0, 1);
     inward.normalize();
     const target = c.clone().setY(this.roomY + 0.95);
+    if (this.galleries() > 0) {
+      // a hall: from behind the table (the side away from the middle of the room), low, looking past it and up across
+      // the void, so the table sits in the bottom of the frame and the far galleries rise behind it, all those faces
+      const up = new THREE.Vector3(c.x * 0.35, this.roomY + 3.4, c.z * 0.35);
+      const back = c.clone().sub(up).setY(0);
+      if (back.lengthSq() < 0.04) back.set(0, 0, 1);
+      back.normalize();
+      const from = c.clone().addScaledVector(back, this.spot.radius + 1.35);
+      this.frame(up, back, from.distanceTo(up.clone().setY(from.y)), 1.15 - (up.y - this.roomY), 66, [{ i: -1, head: target, w: 0.3 }], new Set(), { glide: glide ? 2.2 : 0, now, name: 'wide hall' });
+      return;
+    }
     this.frame(target, inward, this.spot.radius * 2 + 1.9, 0.85, 52, [{ i: -1, head: target, w: 0.3 }], new Set(), { glide: glide ? 2.2 : 0, now, name: 'wide' });
   }
 

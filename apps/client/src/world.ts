@@ -172,6 +172,10 @@ export class Tower {
   private m = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   hidden = -1;                          // slot whose slab is opened (we're inside it)
+  /** inside a floor with galleries (CROWD_V2): its hall rises through the floors above, so none of the tower is drawn
+   *  while we're in there (from inside, only the city shows through the glass anyway) */
+  inside = false;
+  private shell: THREE.Object3D[] = [];
   /** the slot whose glass is clearing (flying in or out), and how far (0 solid .. 1 clear) */
   doorSlot = -1;
   private door!: THREE.Mesh;
@@ -211,6 +215,7 @@ export class Tower {
     beacon.position.y = TOWER_TOP + 1.2 + 9.2;
     this.sign = neonSign();
     scene.add(lobby, entrance, crown, spire, beacon, this.sign);
+    this.shell = [lobby, entrance, crown, spire, beacon, this.sign];
 
     // floors: one instanced draw for all thirty
     const geo = new THREE.CylinderGeometry(R, R, FLOOR_H * 0.94, 96, 1);
@@ -350,6 +355,8 @@ export class Tower {
   }
 
   update(now: number, dt: number) {
+    for (const o of this.shell) o.visible = !this.inside;
+    this.searchlights.visible = !this.inside;
     const v = new THREE.Vector3(), s3 = new THREE.Vector3();
     // three copies round each band: copy 0 is centred at 60°; the sign's two copies at 90°
     this.qFace.setFromAxisAngle(this.yAxis, this.faceYaw - Math.PI / 3);
@@ -370,7 +377,7 @@ export class Tower {
         s.y += (s.yTarget - s.y) * (1 - Math.exp(-dt * 3));
       }
       s.scale += (s.scaleTarget - s.scale) * (1 - Math.exp(-dt * 4));
-      const hide = i === this.hidden || s.sid === null;
+      const hide = this.inside || i === this.hidden || s.sid === null;
       const sc = hide ? 0 : s.scale;
       v.set(s.dir.x * s.r, s.y, s.dir.y * s.r);
       this.floors.setMatrixAt(i, this.m.compose(v, this.q, s3.set(i === this.doorSlot ? 0 : sc, i === this.doorSlot ? 0 : sc, i === this.doorSlot ? 0 : sc)));
