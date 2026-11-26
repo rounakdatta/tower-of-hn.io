@@ -145,6 +145,29 @@ reviewed by a separate read-only reviewer before merging. Every behaviour is beh
 Also new: `cover` in `/status` (how much of the tower is voiced), the switches logged at boot, `HN_API` (staging),
 `?play=` for side-by-side tests, and `tools/scale/`.
 
+**Looked at, kept or left alone:**
+- **Already right, verified rather than rebuilt:**
+  - streaming synthesis: a comment plays from its first clip of ≤110 characters while the rest is voiced, and clips are
+    cached by version;
+  - request coalescing: one voicing per comment, however many ask;
+  - a priority queue: a seat beats the background and preempts mid-clip;
+  - a warm, resident model: lanes live for days, 1.7–2.4 s to load;
+  - client prefetch of the next four turns.
+- **Not done, because they change the audio (your rule):**
+  - int8 quantisation, ~2× faster on vizerizz's AVX-512 VNNI;
+  - shorter first clips;
+  - a lighter Opus setting.
+  - Any of them needs a blind A/B first.
+- **Tried live, then reverted: four lanes of one thread on vizerizz instead of two of two.**
+  - First the audio: on a GitHub runner, one thread and two threads produced **bit-identical** output on all 8 test
+    clips, so the layout can't change the voices.
+  - Then 10 minutes in production (17:29–17:38 IST): the total was 3.67× real time against 3.08×, **+19%**.
+  - But each lane voices at 0.9× instead of 1.54×. A listener at a not-yet-voiced comment would hear it with small
+    gaps.
+  - My rule, set before the trial, wanted +30% for that trade, so it went back at 17:39.
+  - It's a measured option for catch-up hours: `MAX_LANES: "4"`, `THREADS: "1"`, memory 5Gi.
+- **A GPU runner** would make "everything voiced" hold at any hour. It's a cost decision for you (see §4).
+
 ## 3.1 The client flags, A/B-tested on the live site before switching them on
 
 After voice-ahead went live, the same machine heard the same tables both ways: the old client (`?play=`) and the new
@@ -220,8 +243,8 @@ kanmani's load was 11).
   to be voiced. A listener who sits at one still gets it voiced first (they jump the queue).
 - For a launch with many listeners, add voicing capacity, in order of cost:
   - jomjom's cooling cleaned, then one lane back (`NODE_LANES`, merged);
-  - vizerizz at four lanes of one thread: about +25% throughput, with output equivalent but not bit-identical, to be
-    verified first;
+  - vizerizz at four lanes of one thread: +19% throughput, bit-identical audio, but slower single comments (tried
+    live and reverted, §3);
   - a small GPU runner (`KOKORO_PROVIDER=cuda`, 50–100× real time). That would make "everything voiced" hold at any
     hour.
 
