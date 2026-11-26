@@ -65,8 +65,30 @@ jobs:
           include-hidden-files: true   # (.results is a dot folder: v4 skips those unless asked)
           retention-days: 7
 
+  # The room itself (three.js, in SwiftShader: no GPU here): the crowd at every size against recorded and synthetic
+  # floors, the camera, the timeline, Chromium on a desktop and a Pixel (apps/client/e2e/room*.spec.ts)
+  room:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - working-directory: apps/client
+        run: npm ci --no-audit --no-fund && npx playwright install --with-deps chromium
+      - working-directory: apps/client
+        run: npm run e2e:room
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: room-results
+          path: apps/client/e2e/.results
+          include-hidden-files: true
+          retention-days: 7
+
   images:
-    needs: [test, e2e]
+    needs: [test, e2e, room]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
