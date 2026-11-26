@@ -511,11 +511,12 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     // not in memory: read without holding up anyone else (on a busy node a slow disk read stalled every request behind
     // it), and once, however many ask for the same file at the same moment
     readLive(p).then((f) => {
-      if (res.writableEnded || res.destroyed) return;
-      if (!f) { if (url.pathname.startsWith('/live/c/')) clipGets.missing++; res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
-      if (clip) clipGets.disk++;
+      if (!f) { if (url.pathname.startsWith('/live/c/')) clipGets.missing++; } else if (clip) clipGets.disk++;
+      if (res.writableEnded || res.destroyed) return;            // (counted anyway: they asked)
+      if (!f) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
       sendLive(req, res, p, isHead, clip, f);
-    }, () => { if (!res.headersSent) { res.writeHead(503, { 'cache-control': 'no-store', 'retry-after': '2' }); res.end(); } });
+    }, () => { if (!res.headersSent) { res.writeHead(503, { 'cache-control': 'no-store', 'retry-after': '2' }); res.end(); } })
+      .catch((e) => { console.error('live', String(e).slice(0, 160)); if (!res.headersSent) { res.writeHead(500); res.end(); } });
     return;
   }
   if (!h) {
@@ -538,7 +539,9 @@ function readLive(p: string) {
     r = (async () => {
       const st = await fsp.stat(p).catch(() => null);
       if (!st || st.isDirectory()) return null;
-      const body = await fsp.readFile(p);
+      // (gone between the two: taken down or pruned mid-read, which is a 404, as it always was)
+      const body = await fsp.readFile(p).catch((e) => { if (e?.code === 'ENOENT') return null; throw e; });
+      if (!body) return null;
       const cur = hot.get(p);                         // written (and kept) meanwhile: that copy is the newest
       if (cur) return cur;
       // taken down or pruned while we read (deletes drop the hot copy and unlink together, in one step): never put it
