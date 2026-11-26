@@ -26,28 +26,40 @@ async function seat(page: Page, fx: string, extra = '') {
   await step(page, 90);
 }
 const slider = (page: Page) => page.getByRole('slider', { name: 'Conversation timeline' });
-/** the scrubber's line: where x% of the conversation is on screen (across its track, on its hit strip) */
+/** the scrubber's line: where x% of the conversation is on screen (just above the line itself: on a phone the strip
+ *  also reaches down over the letterbox, where the pills are, and a pill sits on top there) */
 async function at(page: Page, f: number) {
-  const track = (await page.locator('#timeline .tl-track').boundingBox())!, hit = (await page.locator('#timeline .tl-hit').boundingBox())!;
-  return { x: track.x + track.width * f, y: hit.y + hit.height / 2 };
+  const track = (await page.locator('#timeline .tl-track').boundingBox())!;
+  return { x: track.x + track.width * f, y: track.y - 8 };
 }
-/** drag the playhead from one fraction of the line to another with the real mouse, stepping the scene while it moves */
-async function drag(page: Page, from: number, to: number, steps = 12) {
-  const a = await at(page, from), b = await at(page, to);
-  await page.mouse.move(a.x, a.y - 30); await page.mouse.move(a.x, a.y);      // (hover reveals it)
-  await page.mouse.down();
-  for (let s = 1; s <= steps; s++) { await page.mouse.move(a.x + ((b.x - a.x) * s) / steps, a.y); await step(page, 3); }
+/** A drag along the line, as the device makes one: the mouse on a desktop; on a phone a finger, through the browser's
+ *  own touch input (CDP), which takes the path a real one does (touch-action, capture, the pointer events it makes). */
+async function drag(page: Page, from: number, to: number, steps = 12, frames = 3) {
+  const a = await at(page, from), b = await at(page, to), touch = !!test.info().project.use.hasTouch;
+  const pts = Array.from({ length: steps }, (_, s) => ({ x: a.x + ((b.x - a.x) * (s + 1)) / steps, y: a.y }));
+  if (!touch) {
+    await page.mouse.move(a.x, a.y - 30); await page.mouse.move(a.x, a.y);      // (hover reveals it)
+    await page.mouse.down();
+    for (const p of pts) { await page.mouse.move(p.x, p.y); if (frames) await step(page, frames); }
+    return { up: () => page.mouse.up(), to: async (f: number) => { const c = await at(page, f); await page.mouse.move(c.x, c.y); } };
+  }
+  const cdp = await page.context().newCDPSession(page);
+  const touchAt = (type: 'touchStart' | 'touchMove' | 'touchEnd', x: number, y: number) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y, id: 1 }] });
+  await touchAt('touchStart', a.x, a.y);
+  for (const p of pts) { await touchAt('touchMove', p.x, p.y); if (frames) await step(page, frames); }
+  let last = pts[pts.length - 1];
+  return { up: () => touchAt('touchEnd', last.x, last.y), to: async (f: number) => { const c = await at(page, f); last = c; await touchAt('touchMove', c.x, c.y); } };
 }
 
 test('scrubbing back empties the room of everyone who hadn\'t joined yet; forward, they\'re back', async ({ page }) => {
   await seat(page, 'onepassword');
-  await drag(page, 0.5, 0.02);
+  const d = await drag(page, 0.5, 0.02);
   await step(page, 60);
   const early = await call<Hall>(page, 'hall');
-  await page.mouse.move((await at(page, 0.98)).x, (await at(page, 0.98)).y);
+  await d.to(0.98);
   await step(page, 60);
   const late = await call<Hall>(page, 'hall');
-  await page.mouse.up();
+  await d.up();
   // the 1Password table's 179 people: most of them only ever spoke there
   expect(late.present - early.present, `present early ${early.present}, late ${late.present}`).toBeGreaterThan(100);
   expect(late.present).toBeLessThanOrEqual(late.people);
@@ -55,9 +67,8 @@ test('scrubbing back empties the room of everyone who hadn\'t joined yet; forwar
 
 test('letting go plays from that comment at once, with its caption', async ({ page }) => {
   await seat(page, 'onepassword');
-  await drag(page, 0.1, 0.6);
-  const k = (await call<Pos>(page, 'position'))?.k;
-  await page.mouse.up();
+  const d = await drag(page, 0.1, 0.6);
+  await d.up();
   await step(page, 6);                                                       // 0.2 s
   const pos = await call<Pos>(page, 'position'), sp = await call<{ name: string } | null>(page, 'speaking');
   const turns = await page.evaluate(() => (window as unknown as W).__tohn.turns() as { by: string }[]);
@@ -66,7 +77,6 @@ test('letting go plays from that comment at once, with its caption', async ({ pa
   await expect(page.locator('#subs')).toHaveClass(/show/);
   // (the name leads the caption; "→ whoever they answer" may follow it)
   await expect(page.locator('#subs .who')).toHaveText(new RegExp(`^${turns[pos.k].by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`));
-  void k;
 });
 
 test('a drag across the whole conversation fetches only where it rested, and asks the server for nothing until let go', async ({ page }) => {
@@ -79,17 +89,15 @@ test('a drag across the whole conversation fetches only where it rested, and ask
   const ofTable = () => sidecars.filter((u) => own.has(Number(/\/c\/(\d+)\./.exec(u)?.[1]))).length;
   const before = ofTable();
   // a fast drag, as a hand makes one: no rest anywhere until the end
-  const a = await at(page, 0.05), b = await at(page, 0.95);
-  await page.mouse.move(a.x, a.y - 30); await page.mouse.move(a.x, a.y); await page.mouse.down();
-  for (let s = 1; s <= 40; s++) await page.mouse.move(a.x + ((b.x - a.x) * s) / 40, a.y);
+  const d = await drag(page, 0.05, 0.95, 40, 0);
   const during = (await (await page.request.get('/__wants')).json()) as unknown[];
   expect(during, 'voicing asked for while dragging').toEqual([]);
-  // resting at the end: its words (and the next comment's) are fetched once the finger has been still 150 ms
+  // resting at the end: its words (and the next comment's) are fetched once the finger has been still 150 ms; the
+  // forty comments it passed, never
   await page.waitForTimeout(400);
-  await page.mouse.up();
+  expect(ofTable() - before, 'sidecars fetched for a 40-step drag').toBeLessThanOrEqual(2);
+  await d.up();
   await step(page, 30);
-  // the comment it rested on and the next one (and nothing for the forty it passed)
-  expect(ofTable() - before, 'sidecars fetched for a 40-step drag').toBeLessThanOrEqual(4);
   const wants = (await (await page.request.get('/__wants')).json()) as { table: number; from: number }[];
   for (const w of wants) expect(w.from, 'asks start where the conversation now is').toBeGreaterThan(0);
 });
