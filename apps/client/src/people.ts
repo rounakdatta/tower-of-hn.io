@@ -352,6 +352,8 @@ export class Crowd {
     if (i < 0 && this.people.length < MAX_PEOPLE) return this.add(name, { ...pose, pos: pose.pos.clone() });
     if (i < 0) return -1;
     this.recast(i, name);
+    // (recast brings them in where the slot's last owner was: hidden again, so the call below places them at `pose`)
+    this.people[i].hidden = true;
     return this.show(name, pose);
   }
   /** Person i leaves the room for their place in the audience (drawn as nothing; their slot is kept). */

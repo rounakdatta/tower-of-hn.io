@@ -85,8 +85,9 @@ export class Stage {
     for (const [name, f] of order) { this.ix.set(name, names.length); names.push(name); this.homes.push(f.table); }
     // (?hall=crowd: the standing-crowd direction, prototyped for comparison: rows fill the floor, no galleries)
     const proto = typeof location !== 'undefined' && new URLSearchParams(location.search).get('hall') === 'crowd';
-    const hall = this.hall = new Hall(R, this.tables, keep, names.length - atTable.size, proto ? { rows: 14, tiers: false } : {});
-    const places = names.map((n, i) => (atTable.has(n) ? null : hall.add(this.homes[i])));
+    // (everyone has a place, those at a table now too: it's where they go when they step back)
+    const hall = this.hall = new Hall(R, this.tables, keep, names.length, proto ? { rows: 14, tiers: false } : {});
+    const places = names.map((_, i) => hall.add(this.homes[i]));
     this.audience.set(names, places);
     for (let i = 0; i < names.length; i++) if (atTable.has(names[i])) this.audience.away(i, true, 0, false);
     this.audience.group.position.y = roomY;
@@ -111,18 +112,22 @@ export class Stage {
    */
   private door(a: number, spot: TableSpot | undefined) {
     const home = this.audience.places[a];
+    // never among a table's chairs or the people standing at its front (whichever table: they're packed close)
+    const clear = (x: number, z: number) => this.tables.every((t) => Math.hypot(x - t.x, z - t.z) > t.r + HALL.FRONT + 0.4) && Math.hypot(x, z) < R - 0.65;
     if (home.level === 0 || !spot) {
       const r = Math.hypot(home.x, home.z) || 1, inner = R - HALL.GLASS - (HALL.BAND_ROWS - 1) * HALL.ROW - 0.5;
-      // (never among a table's chairs: from just inside the rows, back toward their place until clear of every table)
-      for (let k = Math.min(1, inner / r); k < 1; k += 0.1 / r) {
-        const x = home.x * k, z = home.z * k;
-        if (this.tables.every((t) => Math.hypot(x - t.x, z - t.z) > t.r + 0.85)) return new THREE.Vector3(x, 0, z);
-      }
+      // from just inside the standing rows, back toward their place until clear
+      for (let k = Math.min(1, inner / r); k < 1; k += 0.1 / r) if (clear(home.x * k, home.z * k)) return new THREE.Vector3(home.x * k, 0, home.z * k);
       return new THREE.Vector3(home.x, 0, home.z);
     }
-    const t = spot.pos, dx = home.x - t.x, dz = home.z - t.z, d = Math.hypot(dx, dz) || 1;
-    const edge = spot.radius + HALL.FRONT + HALL.LANE - 0.15;
-    const out = new THREE.Vector3(t.x + (dx / d) * edge, 0, t.z + (dz / d) * edge), r = Math.hypot(out.x, out.z);
+    // from a gallery: the edge of the lane round the table they're going to, on their side (or the nearest clear point
+    // round it, turning either way)
+    const t = spot.pos, base = Math.atan2(home.z - t.z, home.x - t.x), edge = spot.radius + HALL.FRONT + HALL.LANE - 0.15;
+    for (let s = 0; s <= 12; s++) {
+      const a = base + (s % 2 ? 1 : -1) * Math.ceil(s / 2) * 0.26, x = t.x + Math.cos(a) * edge, z = t.z + Math.sin(a) * edge;
+      if (clear(x, z)) return new THREE.Vector3(x, 0, z);
+    }
+    const out = new THREE.Vector3(t.x + Math.cos(base) * edge, 0, t.z + Math.sin(base) * edge), r = Math.hypot(out.x, out.z);
     if (r > R - 0.7) out.multiplyScalar((R - 0.7) / r);
     return out;
   }

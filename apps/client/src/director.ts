@@ -519,7 +519,7 @@ export class Director {
    *  heated line, nods when someone agrees, leaning in at a question, a laugh at the end of a joke). */
   private crowdHears(s: Scheduled, plan: ReturnType<Performer['plan']>, first: boolean, now: number) {
     const a = this.audience!, sp = this.spot!;
-    if (s.who >= 0) a.focus(this.crowd.headPos(s.who, this.tmp), now);
+    if (s.who >= 0) a.focus(this.crowd.headPos(s.who, this.tmp), now, s.who);
     else a.focus(this.tmp.set(sp.pos.x, this.roomY + 1.1, sp.pos.z), now);
     if (!first) return;
     const at = this.audio.now(), x = sp.pos.x, z = sp.pos.z;
