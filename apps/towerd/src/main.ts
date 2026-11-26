@@ -8,8 +8,9 @@
 // usage: node src/main.ts
 // env: PORT, VAR, STATIC (the client's dist), RETENTION_DAYS (audio, default 14), OPTOUT (comma-separated HN
 //      users never voiced; also var/optout.txt, one per line, re-read every minute),
-//      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_VERSION, VOICE_PORT (default 8788),
-//      VOICE_TOKEN (runners must send it, if set), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
+//      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_AHEAD (audience, the default, or all: voice
+//      everything on the tower ahead of listeners), VOICE_VERSION, VOICE_PORT (default 8788),
+//      VOICE_TOKEN (runners must send it, if set), HN_API (a stand-in for HN's API, for staging), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
 //      deletes it after RETENTION_DAYS; tower keeps only what a floor can still play, AUDIO_GRACE_HOURS (24) after,
 //      at most AUDIO_MAX_MB (1024), and voices nothing new below DISK_FREE_MIN_PCT (15) free; tower-dry only says
 //      what tower would do), PRUNE_EVERY_S (housekeeping, 600), SPONSOR_URL (the maker's GitHub Sponsors page: a
@@ -29,7 +30,8 @@ import { tagPrompt, parseTags, type Tag } from './tags.ts';
 import { versionOf, sweep, liveLines, type Version } from './store.ts';
 import { readSupport, supportSite, missingMarks } from './support.ts';
 
-const HN = 'https://hacker-news.firebaseio.com/v0';
+// HN_API: a stand-in for HN's Firebase API (staging and load tests run against a mock, never against HN)
+const HN = (process.env.HN_API || 'https://hacker-news.firebaseio.com/v0').replace(/\/$/, '');   // (empty: unset)
 const UA = { 'User-Agent': 'towerofhn-towerd/0.1' };
 const PORT = Number(process.env.PORT ?? 8787);
 const VAR = resolve(process.env.VAR ?? join(import.meta.dirname, '../../../var'));
@@ -37,6 +39,11 @@ const LIVE = join(VAR, 'live'), JOBS = join(VAR, 'jobs'), VOICED = join(VAR, 'vo
 const FLOORS = 30;
 const PRE = { floors: Number(process.env.PREWARM_FLOORS ?? 6), tables: Number(process.env.PREWARM_TABLES ?? 4), turns: Number(process.env.PREWARM_TURNS ?? 14), bar: Number(process.env.PREWARM_BAR ?? 6) };
 const MAX_QUEUED = 48;                               // the most urgent of what's wanted, for runners to claim
+/** How far ahead of listeners voicing goes. audience (the default): the first words of every table always, whole turns
+ *  of the best tables only while someone has the page open. all: everything on the tower, always, as it arrives (every
+ *  table's first turn before any table's second, top floors first), so a listener finds it voiced: voicing then scales
+ *  with new comments, not with listeners. The runners' spare cores pay for it; the standby beside the data never does. */
+const VOICE_AHEAD = (process.env.VOICE_AHEAD ?? '').trim().toLowerCase() === 'all' ? 'all' : 'audience';
 /** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
 // v3: comments are said the way people read them aloud (packages/core spoken.ts); older audio plays until re-voiced
 const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v3';
@@ -115,9 +122,15 @@ const crowdPrio = (d: { prio: number; who: Map<string, number> }) => {
 };
 /** listener-driven voicing still waiting (head.load): clients stop waiting on unvoiced lines when it runs long */
 let backlog = 0;
+/** how much of the tower a listener would find voiced (/status), measured each time the queue is planned: whole turns
+ *  in the current voice, openings (first clips only), stale (an older VOICE_VERSION's, playing until re-voiced) */
+const cover = { turns: 0, voiced: 0, openings: 0, stale: 0 };
 type Job = NonNullable<ReturnType<typeof jobFor>>;
 /** what runners may claim (in memory: towerd plans it every couple of seconds; runners hold leases) */
 const vq = new VoiceQueue<Job>();
+if (VOICE_AHEAD === 'all') vq.standbyBelow = 2000;   // the standby: listeners and first words only, never the whole tower
+console.log(JSON.stringify({ voicing: { ahead: VOICE_AHEAD, asked: process.env.VOICE_AHEAD ?? null, hn: process.env.HN_API ? 'stand-in' : 'hacker-news' } }));
+if (VOICE_AHEAD === 'all' && AUDIO_POLICY === 'age') console.warn(JSON.stringify({ voicing: { warn: 'VOICE_AHEAD=all keeps the whole tower voiced: with AUDIO_POLICY=age that is ~0.3 GB a day kept RETENTION_DAYS; tower keeps ~0.5 GB in all' } }));
 const stale = new Set<number>();                     // voiced with an older VOICE_VERSION: re-voice in the background
 const partial = new Set<number>();                   // playable, but the worker is still voicing the rest of it
 /** clips voiced so far of a partial comment (a whole one counts as all of them): openings are measured in clips */
@@ -196,12 +209,22 @@ function wanted(): [number, number, number][] {
     add(d.id, crowdPrio(d), d.upto);
   }
   const convo = (f: FloorSnapshot) => f.tables.filter((t) => t.turns.length >= 2);
+  cover.turns = cover.voiced = cover.openings = cover.stale = 0;
   live.tower.forEach((sid, rank) => {
     const f = floors.get(sid);
     if (!f) return;
+    for (const t of f.tables) for (const u of t.turns) {
+      cover.turns++;
+      if (live.voiced.has(u.id)) { if (stale.has(u.id)) cover.stale++; else if (partial.has(u.id)) cover.openings++; else cover.voiced++; }
+    }
     // first words of every table on every floor, so whoever sits down anywhere hears someone at once: two clips
     // (about twenty seconds) at the best tables of the top floors, which covers voicing the rest on three cores
     convo(f).slice(0, 6).forEach((t, ti) => add(t.turns[0].id, 1000 + rank * 20 + ti, rank < 10 && ti < 4 ? 2 : 1));
+    if (VOICE_AHEAD === 'all') {
+      // everything else, breadth first: every table's first turn (top floors first) before any table's second, and
+      // so on down; the tiers below come first where they overlap (add keeps an id's most urgent ask)
+      f.tables.forEach((t, ti) => t.turns.forEach((u, k) => add(u.id, 7000 + Math.min(k, 60) * 400 + rank * 12 + Math.min(ti, 11), 0)));
+    }
     if (!audience()) return;                         // nobody around: that's all (a core saved, steal spared)
     if (rank < 10) convo(f).slice(0, 4).forEach((t, ti) => t.turns.slice(0, 2).forEach((u, k) => add(u.id, 3000 + rank * 50 + ti * 10 + k, 0)));
     if (rank < PRE.floors) {
@@ -433,7 +456,7 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     const ears = new Set<string>();
     for (const d of demand.values()) for (const c of d.who.keys()) ears.add(c);
     held();
-    res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: vq.entries.size, demand: demand.size, backlog, listeners: ears.size, tower: live.tower.length, audience: audience(), voicing: voicingSummary(),
+    res.end(JSON.stringify({ items: live.items.size, voiced: live.voiced.size, queued: vq.entries.size, demand: demand.size, backlog, listeners: ears.size, tower: live.tower.length, audience: audience(), cover, voicing: voicingSummary(),
       audio: { policy: AUDIO_POLICY, held: heldFor || null, free_pct: Math.round(freePct * 10) / 10, ...audio.last, dropped: audio.dropped, gets: clipGets },
       ...support.status() }));
     return;
@@ -960,7 +983,7 @@ function voicingSummary() {
     if (now - r.seen > 60_000) continue;
     lanes++; nodes.add(r.node); audio += r.audio; work += r.work;
   }
-  return { lanes, nodes: nodes.size, rtf: work ? Math.round((audio / work) * 100) / 100 : null, ...vq.stats() };
+  return { lanes, nodes: nodes.size, rtf: work ? Math.round((audio / work) * 100) / 100 : null, ahead: VOICE_AHEAD, ...vq.stats() };
 }
 
 function readBody(req: import('node:http').IncomingMessage, limit: number): Promise<Buffer> {
