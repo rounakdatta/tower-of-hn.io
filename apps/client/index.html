@@ -268,7 +268,7 @@
     button, .pill, #focus { touch-action:manipulation; -webkit-tap-highlight-color:transparent }
   }
   /* (TIMELINE on a phone) the line runs just above the pills (scrubber.css): the subtitles keep their 22 px above it */
-  @media (hover: none) { body.timeline[data-mode="table"] #subs { bottom:calc(8.5vh / 2 + 58px + env(safe-area-inset-bottom) / 2) } }
+  @media (hover: none) { body.timeline[data-mode="table"] #subs { bottom:calc(8.5vh / 2 + 62px + env(safe-area-inset-bottom) / 2) } }
   /* the timeline's card and the caption share the bottom of the picture: while the card shows, the caption steps up over
      it; while a drag holds the conversation, the caption (the words from before the drag) goes */
   body:has(#timeline:is([data-state="open"], [data-state="drag"]):not([data-card="off"])) #subs { translate:0 -86px }
