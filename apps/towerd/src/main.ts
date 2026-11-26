@@ -9,7 +9,7 @@
 // env: PORT, VAR, STATIC (the client's dist), RETENTION_DAYS (audio, default 14), OPTOUT (comma-separated HN
 //      users never voiced; also var/optout.txt, one per line, re-read every minute),
 //      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_VERSION, VOICE_PORT (default 8788),
-//      VOICE_TOKEN (runners must send it, if set), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
+//      VOICE_TOKEN (runners must send it, if set), CLIENT_FLAGS (stream,cue,quick: how the room plays), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
 //      deletes it after RETENTION_DAYS; tower keeps only what a floor can still play, AUDIO_GRACE_HOURS (24) after,
 //      at most AUDIO_MAX_MB (1024), and voices nothing new below DISK_FREE_MIN_PCT (15) free; tower-dry only says
 //      what tower would do), PRUNE_EVERY_S (housekeeping, 600), SPONSOR_URL (the maker's GitHub Sponsors page: a
@@ -37,6 +37,11 @@ const LIVE = join(VAR, 'live'), JOBS = join(VAR, 'jobs'), VOICED = join(VAR, 'vo
 const FLOORS = 30;
 const PRE = { floors: Number(process.env.PREWARM_FLOORS ?? 6), tables: Number(process.env.PREWARM_TABLES ?? 4), turns: Number(process.env.PREWARM_TURNS ?? 14), bar: Number(process.env.PREWARM_BAR ?? 6) };
 const MAX_QUEUED = 48;                               // the most urgent of what's wanted, for runners to claim
+/** CLIENT_FLAGS: how the room plays, switched here and carried to every client in head.json (play); unset, the client
+ *  plays as it always has. stream: a turn starts on its first decoded clip, the rest join as they decode. cue: whoever
+ *  speaks next is called over while the turn before is said, and nobody is waited on for long. quick: a shorter pause
+ *  when you sit down. (A page can try them without the server: ?play=stream,cue,quick, or ?play= for none.) */
+const PLAY = [...new Set((process.env.CLIENT_FLAGS ?? '').split(',').map((s) => s.trim()))].filter((s) => ['stream', 'cue', 'quick'].includes(s));
 /** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
 // v3: comments are said the way people read them aloud (packages/core spoken.ts); older audio plays until re-voiced
 const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v3';
@@ -1086,7 +1091,7 @@ function publish() {
   for (const s of r.snapshots) { floors.set(s.story.id, s); write(`f/${s.story.id}/${s.rev}.json`, s); }
   if (r.delta) write(`e/${r.delta.epoch}.json`, r.delta);
   syncJobs();
-  const head = { ...r.head, load: backlog }, key = JSON.stringify({ ...head, at: 0 });
+  const head = { ...r.head, load: backlog, ...(PLAY.length ? { play: PLAY } : {}) }, key = JSON.stringify({ ...head, at: 0 });
   if (key !== headKey) { write('head.json', head); headKey = key; }
 }
 let publishTimer: ReturnType<typeof setTimeout> | null = null, publishedAt = 0;

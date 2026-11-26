@@ -7,6 +7,7 @@
 /** voiced: [sidecar path, seconds, emotion, intensity 0..1] (older servers: just the first two) */
 export interface Turn { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; v?: [string, number, string?, number?] }
 /** gist: the first words of the comment that started it (older servers: absent) */
+const PLAY = typeof location === 'undefined' ? null : new URLSearchParams(location.search).get('play')?.split(',').filter(Boolean) ?? null;
 export interface Table { root: number; turns: Turn[]; seated: string[]; standing: string[]; gist?: string }
 export interface Floor { story: { id: number; title: string; url?: string; by?: string; score: number; comments: number }; rev: number; epoch: number; tables: Table[] }
 export interface Head {
@@ -18,6 +19,8 @@ export interface Head {
   load?: number;
   /** how heated each floor is, 0..1 (older servers: absent) */
   heat?: Record<number, number>;
+  /** how the room plays, switched on the server (towerd CLIENT_FLAGS; absent: as it always has): stream, cue, quick */
+  play?: string[];
 }
 export interface Delta {
   epoch: number; tower?: number[]; turns?: { story: number; table: number; at: number; turn: Turn }[]; voiced?: { id: number; v: [string, number, string?, number?] }[]; gone?: number[];
@@ -139,6 +142,10 @@ export class LiveSync {
   }
 
   url(path: string) { return this.base + path; }
+
+  /** A playing behaviour the server switched on (head.play), or ?play=a,b on the page (?play= alone: none), which wins:
+   *  the same server can be heard both ways, side by side. */
+  play(flag: string) { return (PLAY ?? this.head?.play ?? []).includes(flag); }
 
   /** Ask for a table's voicing from a turn on. False when refused (starting up, too many asks) or unreachable. */
   want(story: number, table: number, from = 0): Promise<boolean> {
