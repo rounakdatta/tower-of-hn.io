@@ -101,11 +101,20 @@ def sit_metrics(rec, t_sit, root, t_stop):
         by_turn.setdefault(i, []).append(e)
     order = sorted(by_turn, key=lambda i: by_turn[i][0]['at'])
     gaps, skips = [], 0
+    def decoded_at(i, k=0):
+        """when clip k of comment i was first decoded (None: never seen)"""
+        ts = [e['t1'] for e in log if e['k'] == 'decode' and e.get('url') and CLIP.search(e['url'])
+              and int(CLIP.search(e['url']).group(1)) == i and int(CLIP.search(e['url']).group(3)) == k]
+        return min(ts) if ts else None
     for a, b in zip(order, order[1:]):
         end_a = max(x['at'] + 1000 * x['dur'] for x in by_turn[a])
         gap = by_turn[b][0]['at'] - end_a
         design = turns[pos[b]][2] if pos[b] < len(turns) else 0
-        gaps.append({'gap': gap, 'design': design, 'excess': gap - design})
+        # was the next turn's first clip decoded before the silence began? then any excess is the table's choreography
+        # (someone walking over, a speaker busy at another table, a pause), not voicing or the network
+        dec = decoded_at(b)
+        cause = 'choreography' if dec is not None and dec <= end_a + 100 else 'audio-late'
+        gaps.append({'gap': gap, 'design': design, 'excess': gap - design, 'cause': cause, 'ready_ms': None if dec is None else dec - end_a})
         skips += max(0, pos[b] - pos[a] - 1)
     out['gaps'] = gaps
     out['skips'] = skips
@@ -174,6 +183,10 @@ def main():
             print('  ' + line('gap between turns (ms)', [g['gap'] for g in gaps]))
             print('  ' + line('excess over designed pause (ms)', [g['excess'] for g in gaps]))
             print(f"  underruns (excess > 1.5 s): {sum(1 for g in gaps if g['excess'] > 1500)} of {len(gaps)} gaps; skipped turns: {sum(x.get('skips', 0) for x in rs)}")
+            for cause in ('audio-late', 'choreography'):
+                sub = [g for g in gaps if g.get('cause') == cause]
+                if sub:
+                    print('    ' + line(f'excess when {cause}', [g['excess'] for g in sub]) + f"  (> 1.5 s: {sum(1 for g in sub if g['excess'] > 1500)})")
     errs = [x for x in rows if x.get('error')]
     if errs:
         print('\nerrors/skips:', len(errs), [x['error'][:60] for x in errs[:5]])
