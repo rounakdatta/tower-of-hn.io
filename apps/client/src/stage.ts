@@ -85,9 +85,10 @@ export class Stage {
     for (const [name, f] of order) { this.ix.set(name, names.length); names.push(name); this.homes.push(f.table); }
     // (?hall=crowd: the standing-crowd direction, prototyped for comparison: rows fill the floor, no galleries)
     const proto = typeof location !== 'undefined' && new URLSearchParams(location.search).get('hall') === 'crowd';
-    // (everyone has a place, those at a table now too: it's where they go when they step back)
-    const hall = this.hall = new Hall(R, this.tables, keep, names.length, proto ? { rows: 14, tiers: false } : {});
-    const places = names.map((_, i) => hall.add(this.homes[i]));
+    // (those at a table get their place the first time they step back, nearest their table then: laid out now, they'd
+    // take room the audience needs, and a floor of fifty would grow a gallery it doesn't need)
+    const hall = this.hall = new Hall(R, this.tables, keep, names.length - atTable.size, proto ? { rows: 14, tiers: false } : {});
+    const places = names.map((n, i) => (atTable.has(n) ? null : hall.add(this.homes[i])));
     this.audience.set(names, places);
     for (let i = 0; i < names.length; i++) if (atTable.has(names[i])) this.audience.away(i, true, 0, false);
     this.audience.group.position.y = roomY;
@@ -218,7 +219,7 @@ export class Stage {
       f.who = -1;
       this.homing.delete(i);
       this.crowd.hide(i);
-      if (a !== undefined) this.audience.away(a, false, this.clock(), false);
+      if (a !== undefined && this.ensurePlace(a)) this.audience.away(a, false, this.clock(), false);
     }
   }
 
@@ -240,12 +241,24 @@ export class Stage {
     return a;
   }
 
+  /** Someone who has been at a table since the room was laid out has no place yet: theirs now, nearest that table (a
+   *  gallery more if the hall is full). False only past MAX_TIERS. Whoever goes into the audience goes through here. */
+  ensurePlace(a: number) {
+    if (this.audience.placed(a)) return true;
+    const place = this.hall?.add(this.homes[a] ?? -1);
+    if (!place) return false;
+    this.audience.place(a, place);
+    if (this.hall!.used > this.interior.galleryCount) this.interior.galleries(this.hall!.used);
+    return true;
+  }
+
   /** Crowd person i walks back toward their place in the audience, and takes it again (they fade back in there). */
   sendHome(i: number, now: number) {
     const p = this.crowd.people[i];
     if (!p) return;
     const a = this.ix.get(p.name) ?? this.join(p.name, p.pose.pos);
     if (a === undefined) return;
+    if (!this.ensurePlace(a)) return;                    // (past MAX_TIERS: they stay where they are)
     const pos = p.pose.pos.clone();
     this.room.leave(i);
     this.free(i);
