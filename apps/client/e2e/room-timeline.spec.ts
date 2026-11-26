@@ -54,10 +54,11 @@ async function drag(page: Page, from: number, to: number, steps = 12, frames = 3
 test('scrubbing back empties the room of everyone who hadn\'t joined yet; forward, they\'re back', async ({ page }) => {
   await seat(page, 'onepassword');
   const d = await drag(page, 0.5, 0.02);
-  await step(page, 60);
+  // (the scrubber reports a move on the next animation frame, in real time; the room then eases toward it)
+  await page.waitForTimeout(120); await step(page, 60);
   const early = await call<Hall>(page, 'hall');
   await d.to(0.98);
-  await step(page, 60);
+  await page.waitForTimeout(120); await step(page, 60);
   const late = await call<Hall>(page, 'hall');
   await d.up();
   // the 1Password table's 179 people: most of them only ever spoke there
@@ -69,7 +70,9 @@ test('letting go plays from that comment at once, with its caption', async ({ pa
   await seat(page, 'onepassword');
   const d = await drag(page, 0.1, 0.6);
   await d.up();
-  await step(page, 6);                                                       // 0.2 s
+  // its words come from the server (the drag never rested, so nothing was fetched ahead): one round trip, then 0.2 s
+  await page.waitForTimeout(250);
+  await step(page, 6);
   const pos = await call<Pos>(page, 'position'), sp = await call<{ name: string } | null>(page, 'speaking');
   const turns = await page.evaluate(() => (window as unknown as W).__tohn.turns() as { by: string }[]);
   expect(pos.k).toBeGreaterThan(turns.length * 0.4);
