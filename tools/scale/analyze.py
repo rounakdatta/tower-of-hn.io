@@ -84,11 +84,13 @@ def sit_metrics(rec, t_sit, root, t_stop):
     knew = knew if knew is not None else first_side
     if srv and knew:
         out['learn_ms'] = max(0, knew - max(srv, t_sit))
-    ends = [e['te'] for e in side_fetch + clip_fetch if e.get('te') and e['t0'] >= (knew or 0) - 5]
+    # what the first voice waited for: the fetches of this comment that finished before it started (later ones are
+    # the rest of a long comment, or newer snapshots, fetched while it was already playing)
+    ends = [e['te'] for e in side_fetch + clip_fetch if e.get('te') and e['t0'] >= (knew or 0) - 5 and e['te'] <= e0['at']]
     fetched = max(ends) if ends else None
     if knew and fetched:
         out['fetch_ms'] = max(0, fetched - max(knew, t_sit))
-    decoded = max((e['t1'] for e in dec), default=None)
+    decoded = max((e['t1'] for e in dec if e['t1'] <= e0['at']), default=None)
     if fetched and decoded:
         out['decode_ms'] = max(0, decoded - max(fetched, t_sit))
     if decoded:
