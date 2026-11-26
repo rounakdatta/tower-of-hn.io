@@ -126,8 +126,10 @@ export class Stage {
     const home = this.audience.places[a], t = spot.pos, y = this.crowd.group.position.y;
     const from = this.door(a, spot);
     const quiet = !this.seen(new THREE.Vector3(home.x, y + home.y + 1.5, home.z)) && !this.seen(new THREE.Vector3(from.x, y + 1.4, from.z));
+    const had = this.crowd.hasSlot(name);
     const i = this.crowd.show(name, { pos: from, facing: Math.atan2(t.x - from.x, t.z - from.z), seated: false });
     if (i < 0) return null;
+    if (!had) this.room.forget(i);                            // (a slot someone else had: nothing of theirs carries over)
     this.audience.away(a, true, this.clock(), !quiet);
     this.homing.delete(i);
     void now;

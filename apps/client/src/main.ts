@@ -1126,6 +1126,17 @@ if (recording) {
     people: () => crowd.people.map((p, i) => { const e = crowd.extent(i)!; return { i, name: p.name, x: p.pose.pos.x + e.shoveX, z: p.pose.pos.z + e.shoveZ, walking: crowd.isWalking(i), body: e.body, head: e.head, hidden: !!p.hidden }; }).filter((p) => !p.hidden),
     /** for timing the crowd's own work (record mode only) */
     crowd,
+    /** every head in the room now (world): at the tables (not hidden) and the audience on the ground and in the
+     *  galleries (present), with who they are; and who is speaking at the table you're at */
+    heads: () => {
+      const out: { name: string; x: number; y: number; z: number; table: boolean }[] = [], v = new THREE.Vector3();
+      crowd.people.forEach((p, i) => { if (!p.hidden) { crowd.headPos(i, v); out.push({ name: p.name, x: v.x, y: v.y, z: v.z, table: true }); } });
+      if (room.stage) for (let i = 0; i < audience.n; i++) if (audience.present(i)) { audience.headAt(i, v); out.push({ name: audience.names[i], x: v.x, y: v.y + roomY, z: v.z, table: false }); }
+      return out;
+    },
+    speaking: () => { const l = director.line; return l && l.who >= 0 ? { name: crowd.people[l.who]?.name ?? '', i: l.who } : null; },
+    /** (CROWD_V2) what the audience's shaders are told: where heads turn, the last reaction (x, z, start, kind) */
+    audienceState: () => ({ focus: audience.u.focusB.value.toArray(), focusAt: audience.u.focusT.value, react: audience.u.react.value.toArray(), at: audience.u.at.value }),
     /** debug: the lens anywhere (room space: y from the floor), looking at a point, with a field of view */
     lens: (x: number, y: number, z: number, tx: number, ty: number, tz: number, fov = 50) => { rig.cut(new THREE.Vector3(x, roomY + y, z), new THREE.Vector3(tx, roomY + ty, tz), 0); rig.fovTarget = fov; },
     /** a plan of the room from above (for checks): tables, the people at them, the audience on the ground, the lens */
@@ -1174,6 +1185,21 @@ if (recording) {
   // Pacing: never more than 60 frames a second (a 120 Hz phone would draw everything twice), and 30 at a table on
   // a phone (lips follow a 30 Hz track; the rest moves slowly), which halves the GPU's work for a long listen.
   // If frames still come late, the resolution steps down a quarter at a time; with room to spare, back up.
+  // ?fps: what a real device manages, in a corner (median frames a second over the last two, and what's drawn): the
+  // number to read on a phone when checking a big room by hand
+  const fpsTag = params.has('fps') ? Object.assign(document.body.appendChild(document.createElement('div')), { id: 'fps' }) : null;
+  if (fpsTag) fpsTag.style.cssText = 'position:fixed;left:8px;top:calc(env(safe-area-inset-top) + 56px);z-index:9;font:600 11px/1.3 ui-monospace,monospace;color:#cfe;background:rgba(0,0,0,.55);padding:3px 6px;border-radius:6px;pointer-events:none;font-variant-numeric:tabular-nums';
+  const gaps: number[] = [];
+  let fpsAt = 0;
+  const fpsTick = (ms: number) => {
+    gaps.push(ms); if (gaps.length > 120) gaps.shift();
+    const t = performance.now();
+    if (t - fpsAt < 500 || !fpsTag) return;
+    fpsAt = t;
+    const s = gaps.slice().sort((a, b) => a - b), med = s[s.length >> 1] || 16.7;
+    const people = room.stage ? audience.drawn().reduce((a, b) => a + b, 0) + crowd.people.filter((p) => !p.hidden).length : crowd.people.length;
+    fpsTag.textContent = `${Math.floor(1000 / med)} fps · ${people.toLocaleString('en-US')} drawn · ${Math.floor((audience.triangles() + crowd.triangles()) / 1000)}k tris`;
+  };
   let last = performance.now(), lastDraw = 0, slow = 0, quick = 0, settle = 3, ceil = Infinity;
   // a pixel ratio that was too slow once isn't tried again (no flicking back and forth, no reallocating targets)
   const to = (r: number) => { if (r < dpr) ceil = Math.min(ceil, dpr); dpr = r; renderer.setPixelRatio(dpr); slow = quick = 0; settle = 1.5; };
@@ -1186,6 +1212,7 @@ if (recording) {
     lastDraw = now;
     const dt = Math.min(0.05, (now - last) / 1000); last = now;
     frame(dt);
+    if (fpsTag) fpsTick(interval);
     settle -= dt;
     if (settle > 0 || interval > 250) return;          // start-up, shader compiles, a backgrounded tab
     if (interval > gap * 1.45) { slow += dt; quick = 0; } else if (interval < gap * 1.15) { quick += dt; slow = 0; }

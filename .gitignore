@@ -57,3 +57,5 @@ var/
 apps/client/dist/
 apps/client/e2e/.harness/
 apps/client/e2e/.results/
+apps/client/e2e/room/.dist/
+apps/client/e2e/room/.fx/

@@ -6,7 +6,8 @@
     "dev": "vite --host 127.0.0.1 --port 5288 --strictPort",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5288 --strictPort",
-    "e2e": "vite build -c e2e/vite.config.ts && playwright test -c e2e/playwright.config.ts"
+    "e2e": "vite build -c e2e/vite.config.ts && playwright test -c e2e/playwright.config.ts",
+    "e2e:room": "vite build --outDir e2e/room/.dist --emptyOutDir --logLevel warn && playwright test -c e2e/room.config.ts"
   },
   "dependencies": {
     "opus-decoder": "0.7.12",

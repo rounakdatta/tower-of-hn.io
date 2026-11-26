@@ -14,6 +14,8 @@ import { uTime, R } from './world.ts';
 import { faceColor } from './face.ts';
 
 export const MAX_PEOPLE = 220;
+/** past this many slots, someone stepping in takes the slot of someone who stepped back out (CROWD_V2) */
+const SLOTS_SOFT = 72;
 const HAIR_STYLES = 6;             // 0 bald (no mesh) .. 5
 
 export interface Look {
@@ -343,8 +345,11 @@ export class Crowd {
       this.writeExpr(i); this.place(i); this.exprTex.needsUpdate = true; this.flush();
       return i;
     }
-    if (this.people.length < MAX_PEOPLE) return this.add(name, { ...pose, pos: pose.pos.clone() });
-    i = this.people.findIndex((p) => p.hidden);
+    // a slot someone left (back in the audience) is reused before the crowd grows: every slot is drawn, hidden or
+    // not (a hidden one as nothing, but its vertices still run), so the crowd stays the size of who is here, not
+    // of everyone who has ever spoken (an hour at a big table had grown it to 135 slots for 55 people)
+    i = this.people.length >= SLOTS_SOFT || this.people.length >= MAX_PEOPLE ? this.people.findIndex((p) => p.hidden) : -1;
+    if (i < 0 && this.people.length < MAX_PEOPLE) return this.add(name, { ...pose, pos: pose.pos.clone() });
     if (i < 0) return -1;
     this.recast(i, name);
     return this.show(name, pose);
@@ -358,6 +363,8 @@ export class Crowd {
     this.place(i); this.flush();
   }
   isHidden(i: number) { return !!this.people[i]?.hidden; }
+  /** does `name` have a slot (here, or hidden: back in the audience)? */
+  hasSlot(name: string) { return this.byName.has(name); }
   /** triangles the crowd sends the GPU this frame (for checks) */
   triangles() {
     const tris = (m: THREE.InstancedMesh) => ((m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3) * m.count;

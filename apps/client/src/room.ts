@@ -30,6 +30,9 @@ export class Room {
 
   constructor(private crowd: Crowd) {}
 
+  /** Slot i is someone else now (CROWD_V2 reuses the slots of people back in the audience): nothing of theirs carries over. */
+  forget(i: number) { this.busyUntil.delete(i); this.going.delete(i); this.dest.delete(i); }
+
   /** When person i last finished speaking (audio time), or null while they have somewhere to be (walking over, or
    *  due to speak): whoever has been quiet longest gives up their place at a full table's front. */
   quietSince(i: number): number | null {
