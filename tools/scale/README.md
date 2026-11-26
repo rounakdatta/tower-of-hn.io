@@ -12,3 +12,14 @@ Read-only against production; one listener at a time.
   learning (polling), fetch, decode and the director's own pacing; gaps between turns, underruns and skips.
 - `runner_jobs.py`: per-job voicing stats from the runners' logs (by priority band and node).
 - `heavy.sh`: run one heavy local step carefully (refuses when the box is busy; nice, ionice, time limit, memory cap).
+
+Staging and load (never production, never the real HN; see the staging workflow in the homelab repo's throwaway
+branch):
+- `capture.mjs`: one gentle snapshot of the front page from HN's public API (about one towerd start-up's reads).
+- `mockhn.mjs`: serves that snapshot as HN's API (towerd's `HN_API`), live: the newest comments are held back and
+  released at a set rate, as new comments arrive on HN.
+- `seed.mjs`: a staging towerd's `/data` as if everything were voiced (`VOICE_AHEAD=all`, caught up): sidecars, clips
+  and voiced.jsonl with real shapes and sizes, synthetic bytes, towerd's own comment versions.
+- `load.mjs`: simulated listeners doing what the client does at its own pace (head.json every 2 s with ETags, deltas,
+  floors, a table's sidecars and clips a few turns ahead in real time, /want renewals, the room's murmur, moving on),
+  each with its own connections, address and cache. Prints per-kind p50/p95/p99 every 10 s.
