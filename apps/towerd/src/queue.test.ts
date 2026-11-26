@@ -137,3 +137,20 @@ test('a seat its listener left becomes background work: it no longer outranks an
   q.plan([[2, 250, 0]], make);
   assert.equal(q.beat(l.lease!.token)!.yield, true, 'a floor in focus now goes first');
 });
+
+test('a standby limited to listeners\' bands never takes background work, even with nobody else around', async () => {
+  const c = clockAt(), q = new VoiceQueue<J>(c.now);
+  q.standbyBand = 2;
+  q.plan([[1, 7000, 0], [2, 9000, 0]], make);
+  const slow = q.claim('slow', 15, 5_000);
+  let got: unknown = 'pending';
+  slow.promise.then((e) => { got = e ? e.id : null; });
+  c.t.now += 16_000; q.sweep();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(got, 'pending', 'background only: the standby waits');
+  q.plan([[1, 7000, 0], [2, 9000, 0], [3, 4, 0]], make);   // someone sits down
+  await new Promise((r) => setImmediate(r));
+  assert.equal(got, 3, 'a seat is the standby\'s to take');
+  const fast = (await q.claim('fast').promise)!;
+  assert.equal(fast.id, 1, 'a fast runner still takes background work');
+});
