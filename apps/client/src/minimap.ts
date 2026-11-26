@@ -71,7 +71,7 @@ export class Minimap {
     else if (Math.hypot(x, z) < R - 0.6) this.onWalk(x, z);
   }
 
-  draw(now: number, spots: TableSpot[], you: P, yaw: number, o: { focus?: TableSpot | null; talking?: (s: TableSpot) => boolean; people?: { pose: { pos: P } }[]; door?: P; lift?: number } = {}) {
+  draw(now: number, spots: TableSpot[], you: P, yaw: number, o: { focus?: TableSpot | null; talking?: (s: TableSpot) => boolean; people?: { pose: { pos: P }; hidden?: boolean }[]; door?: P; lift?: number } = {}) {
     if (now - this.last < 0.08 && this.last >= 0) return;
     this.last = now;
     this.view.yaw = yaw; this.view.spots = spots;
@@ -102,7 +102,7 @@ export class Minimap {
     // everyone, faintly: how full each part of the room is
     if (o.people) {
       g.fillStyle = 'rgba(255,244,230,0.32)';
-      for (const p of o.people) { this.toMap(p.pose.pos.x, p.pose.pos.z, q); g.fillRect(q.x - 0.8, q.z - 0.8, 1.6, 1.6); }
+      for (const p of o.people) { if (p.hidden) continue; this.toMap(p.pose.pos.x, p.pose.pos.z, q); g.fillRect(q.x - 0.8, q.z - 0.8, 1.6, 1.6); }
     }
     // the tables, in their moods
     const pulse = 0.5 + 0.5 * Math.sin(now * 5);

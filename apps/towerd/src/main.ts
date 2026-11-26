@@ -11,7 +11,7 @@
 //      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_AHEAD (audience, the default, or all: voice
 //      everything on the tower ahead of listeners), VOICE_VERSION, VOICE_PORT (default 8788),
 //      VOICE_TOKEN (runners must send it, if set), HN_API (a stand-in for HN's API, for staging), CLIENT_FLAGS
-//      (stream,cue,quick: how the room plays), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
+//      (stream,cue,quick,crowd: how the room plays), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
 //      deletes it after RETENTION_DAYS; tower keeps only what a floor can still play, AUDIO_GRACE_HOURS (24) after,
 //      at most AUDIO_MAX_MB (1024), and voices nothing new below DISK_FREE_MIN_PCT (15) free; tower-dry only says
 //      what tower would do), PRUNE_EVERY_S (housekeeping, 600), SPONSOR_URL (the maker's GitHub Sponsors page: a
@@ -30,6 +30,7 @@ import { VoiceQueue, band, type Entry } from './queue.ts';
 import { tagPrompt, parseTags, type Tag } from './tags.ts';
 import { versionOf, sweep, liveLines, type Version } from './store.ts';
 import { readSupport, supportSite, missingMarks } from './support.ts';
+import { playFlags } from './play.ts';
 
 // HN_API: a stand-in for HN's Firebase API (staging and load tests run against a mock, never against HN)
 const HN = (process.env.HN_API || 'https://hacker-news.firebaseio.com/v0').replace(/\/$/, '');   // (empty: unset)
@@ -48,10 +49,10 @@ const VOICE_AHEAD = (process.env.VOICE_AHEAD ?? '').trim().toLowerCase() === 'al
 /** CLIENT_FLAGS: how the room plays, switched here and carried to every client in head.json (play); unset, the client
  *  plays as it always has. stream: a turn starts on its first decoded clip, the rest join as they decode. cue: whoever
  *  speaks next is called over while the turn before is said, and nobody is waited on for long. quick: a shorter pause
- *  when you sit down. (A page can try them without the server: ?play=stream,cue,quick, or ?play= for none.) */
-const PLAY_ASKED = [...new Set((process.env.CLIENT_FLAGS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))];
-const PLAY = PLAY_ASKED.filter((s) => ['stream', 'cue', 'quick'].includes(s));
-console.log(JSON.stringify({ play: { on: PLAY, ...(PLAY.length < PLAY_ASKED.length ? { unknown: PLAY_ASKED.filter((s) => !PLAY.includes(s)) } : {}) } }));
+ *  when you sit down. crowd: a room that fits any crowd (an audience in a hall, galleries when a floor needs them).
+ *  (A page can try them without the server: ?play=stream,cue,quick, or ?play= for none.) */
+const { on: PLAY, unknown: PLAY_UNKNOWN } = playFlags(process.env.CLIENT_FLAGS);
+console.log(JSON.stringify({ play: { on: PLAY, ...(PLAY_UNKNOWN.length ? { unknown: PLAY_UNKNOWN } : {}) } }));
 /** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
 // v3: comments are said the way people read them aloud (packages/core spoken.ts); older audio plays until re-voiced
 const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v3';

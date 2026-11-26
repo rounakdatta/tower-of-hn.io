@@ -6,6 +6,7 @@ import * as THREE from 'three/webgpu';
 import type { Crowd } from './people.ts';
 import type { TableSpot } from './interior.ts';
 import { R } from './world.ts';
+import type { Stage } from './stage.ts';
 
 const RING = 0.95;                                       // where people stand round a table, past its edge
 const BODY = 0.24;                                       // half a person's width (shoulders or head, the wider)
@@ -24,8 +25,20 @@ export class Room {
   onArrive: (i: number, spot: TableSpot) => void = () => {};
   /** a new person is needed in the room (they came by lift): returns their index in the crowd */
   spawn: (name: string, at: THREE.Vector3, facing: number) => number = () => -1;
+  /** CROWD_V2: the audience and each table's front (stage.ts); null: the room as it always was */
+  stage: Stage | null = null;
 
   constructor(private crowd: Crowd) {}
+
+  /** Slot i is someone else now (CROWD_V2 reuses the slots of people back in the audience): nothing of theirs carries over. */
+  forget(i: number) { this.busyUntil.delete(i); this.going.delete(i); this.dest.delete(i); }
+
+  /** When person i last finished speaking (audio time), or null while they have somewhere to be (walking over, or
+   *  due to speak): whoever has been quiet longest gives up their place at a full table's front. */
+  quietSince(i: number): number | null {
+    if (this.going.has(i) || this.crowd.isWalking(i)) return null;
+    return this.busyUntil.get(i) ?? 0;
+  }
 
   reset(spots: TableSpot[], door: THREE.Vector3) {
     this.spots = spots; this.door.copy(door);
@@ -58,7 +71,10 @@ export class Room {
     if (i >= 0 && this.tableOf(i) === spot) return 'here';
     if (i >= 0 && (this.busyUntil.get(i) ?? 0) > now) return 'busy';
     let from: THREE.Vector3;
-    if (i < 0) {                                         // not in the room yet: out of the lift
+    const stepping = i < 0 ? this.stage?.bring(name, spot, now) : null;
+    if (stepping) {                                      // out of the audience, at the edge of this table's lane
+      i = stepping.i; from = stepping.from.clone();
+    } else if (i < 0) {                                  // not in the room yet: out of the lift
       i = this.spawn(name, this.door.clone(), Math.atan2(-this.door.x, -this.door.z));
       if (i < 0) return 'absent';
       from = this.door.clone();
@@ -66,7 +82,16 @@ export class Room {
       from = this.crowd.people[i].pose.pos.clone();
       this.leave(i);
     }
-    const place = this.freePlace(spot, from);
+    const place = this.stage ? this.stage.place(spot, from, i, now) ?? from.clone() : this.freePlace(spot, from);
+    // (CROWD_V2) nobody was looking (or the camera is cutting to them): they're simply there already, and say it now
+    if (stepping?.quiet) {
+      const p = this.crowd.people[i];
+      p.pose.pos.copy(place); p.pose.facing = Math.atan2(spot.pos.x - place.x, spot.pos.z - place.z);
+      this.crowd.active.add(i);
+      spot.seats.push({ name, pos: p.pose.pos, facing: p.pose.facing, seated: false });
+      this.onArrive(i, spot);
+      return 'here';
+    }
     const path = this.route(from, place, spot);
     const face = Math.atan2(spot.pos.x - place.x, spot.pos.z - place.z);
     this.going.set(i, spot); this.dest.set(i, place);
@@ -82,7 +107,8 @@ export class Room {
   }
 
   /** Person i leaves whatever table they're at (their place there is free again). */
-  private leave(i: number) {
+  leave(i: number) {
+    this.stage?.free(i);
     const p = this.crowd.people[i];
     if (!p) return;
     for (const s of this.spots) {

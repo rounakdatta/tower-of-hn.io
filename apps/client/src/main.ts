@@ -16,6 +16,8 @@ import { MOOD, moodOf, tableMood, rowOf } from './mood.ts';
 import { you, Replies } from './you.ts';
 import type { Reply, ReplyTarget, Landed } from './reply.ts';
 import { Crowd, setTimeValue } from './people.ts';
+import { Audience } from './audience.ts';
+import { Stage } from './stage.ts';
 import { Director } from './director.ts';
 import { esc, hash32 } from './util.ts';
 import { Rig } from './rig.ts';
@@ -108,6 +110,22 @@ const room = new Room(crowd);
 const mixer = new Mixer(sync, audio, crowd, room);
 mixer.pushChair = (c, k) => interior.pushChair(c, k);
 director.room = room; director.ambient = true;
+// CROWD_V2 (head.play "crowd", or ?play=crowd): a room that fits any crowd: tables keep a few people at their front,
+// everyone else stands in the audience (galleries above, if the floor needs them) and steps forward to speak
+const audience = new Audience();
+const stage = new Stage(crowd, audience, interior, room);
+scene.add(audience.group);
+audience.group.visible = false;                           // (drawn, and its shaders built, only once a room uses it)
+if (matchMedia('(prefers-reduced-motion: reduce)').matches) audience.u.motion.value = 0;
+stage.clock = () => clock;
+director.galleries = () => interior.galleryCount;
+const crowdV2 = () => sync.play('crowd');
+const frustum = new THREE.Frustum(), projView = new THREE.Matrix4();
+stage.seen = (p) => {
+  projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  frustum.setFromProjectionMatrix(projView);
+  return frustum.containsPoint(p) && p.distanceTo(camera.position) < 16;
+};
 room.spawn = (name, at, facing) => {
   // out of the lift, a step apart and a step in (the doorway is at the glass): several arriving together don't stand in
   // one spot, and nobody starts outside the room (`facing` points into it)
@@ -127,7 +145,8 @@ walk.obstacles = () => {
   let n = 0;
   const put = (x: number, z: number, r: number) => { const o = (obstacleList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = x; o.z = z; o.r = r; };
   for (const s of spots) if (!s.bar) put(s.pos.x, s.pos.z, s.radius + 0.42);
-  for (const p of crowd.people) put(p.pose.pos.x + (p.shove?.x ?? 0), p.pose.pos.z + (p.shove?.z ?? 0), 0.34);   // where they stand
+  for (const p of crowd.people) if (!p.hidden) put(p.pose.pos.x + (p.shove?.x ?? 0), p.pose.pos.z + (p.shove?.z ?? 0), 0.34);   // where they stand
+  if (room.stage) for (const i of audience.ground) { if (audience.present(i)) { const pl = audience.places[i]; put(pl.x, pl.z, 0.34); } }
   obstacleList.length = n;
   return obstacleList;
 };
@@ -142,6 +161,11 @@ crowd.keepClear = () => {                              // asked every frame anyo
     const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = s.pos.x; o.z = s.pos.z; o.r = s.radius + 0.05;
   }
   if (mode !== 'tower') { const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = camera.position.x; o.z = camera.position.z; o.r = 0.3; }
+  // (CROWD_V2) the audience on the ground: walkers keep to the lanes, never through anyone standing in their place
+  if (room.stage) for (const i of audience.ground) {
+    if (!audience.present(i)) continue;
+    const pl = audience.places[i], o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = pl.x; o.z = pl.z; o.r = 0.27;
+  }
   if (clearList.length !== n) clearList.length = n;
   return clearList;
 };
@@ -294,6 +318,12 @@ sync.onHead = (h: Head, prev) => {
     break;
   }
   if (prev && mode !== 'tower' && activeStory >= 0 && !h.tower.includes(activeStory)) ui.hint('This story just left the front page.');
+  // (CROWD_V2) the story's points went up while we're in its room: the hall nods along, out from the table we're with
+  const up = room.stage && prev && activeStory >= 0 ? (h.stories[activeStory]?.[1] ?? 0) - (prev.stories[activeStory]?.[1] ?? 0) : 0;
+  if (up > 0) {
+    const at = mode === 'table' ? director.spot : mixer.focus;
+    if (at && !at.bar) audience.react('nod', at.pos.x, at.pos.z, clock + 0.2, Math.min(1, 0.35 + up * 0.08));
+  }
 };
 sync.onDelta = (d) => {
   if (d.turns?.length) {
@@ -456,7 +486,10 @@ async function enterFloor(sid: number, push = false, listen = false) {
   interior.group.visible = true; interior.presence(0);
   const lay = interior.layout(floor, roomYaw, deepTable);
   spots = lay.spots;
-  crowd.set(lay.people);
+  const v2 = crowdV2();
+  room.stage = v2 ? stage : null; director.audience = v2 ? audience : null; audience.group.visible = v2;
+  crowd.set(v2 ? stage.trim(spots, lay.people) : lay.people);
+  if (!v2) { audience.set([], []); interior.galleries(0); }
   room.reset(spots, interior.door);
   mixer.exclude = null;
   mixer.start(floor, spots);
@@ -465,7 +498,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
   const at = (r: number, h: number) => new THREE.Vector3(out.x * r, roomY + h, out.y * r);
   const centre = new THREE.Vector3(0, roomY + 1.05, 0);
   // where you'll stand: just in from the glass, clear of anyone (a head right in front of the lens is no welcome)
-  const free = (q: THREE.Vector3) => crowd.people.every((pp) => Math.hypot(pp.pose.pos.x - q.x, pp.pose.pos.z - q.z) > 0.75)
+  const free = (q: THREE.Vector3) => crowd.people.every((pp) => pp.hidden || Math.hypot(pp.pose.pos.x - q.x, pp.pose.pos.z - q.z) > 0.75)
     && spots.every((sp) => sp.bar || Math.hypot(sp.pos.x - q.x, sp.pos.z - q.z) > sp.radius + 1.5);
   // (search near where we come in: a little either side along the glass, a little further in)
   let stand = at(R - 1.7, EYE);
@@ -473,6 +506,8 @@ async function enterFloor(sid: number, push = false, listen = false) {
     const a = roomYaw + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 0.12, r = R - 1.5 - (k % 3) * 0.45;
     stand = new THREE.Vector3(Math.sin(a) * r, roomY + EYE, Math.cos(a) * r);
   }
+  // (CROWD_V2) everyone else on the floor takes their place in the hall, clear of where you land and of the bar and lift
+  if (v2) stage.fill(floor, [...interior.keepClear(), { x: stand.x, z: stand.z, r: 1.35 }, { x: out.x * (R - 0.6), z: out.y * (R - 0.6), r: 1.2 }], roomY);
   rig.pos.copy(camera.position); rig.target.copy(cam.look);
   rig.matchLens(); rig.fovTarget = 56;                     // the flight starts with the lens as it is: no pop
   const far = camera.position.distanceTo(at(R + 14, 3.2));
@@ -483,7 +518,9 @@ async function enterFloor(sid: number, push = false, listen = false) {
     Math.max(2.6, Math.min(4.0, 2.0 + far / 26)), clock, () => {
       if (activeStory !== sid || mode !== 'floor') return;
       walk.begin(stand, Math.atan2(-stand.x, -stand.z));     // facing into the room
-      ui.card(`Floor ${rank + 1} · ${floor.story.comments} comments`, floor.story.title);
+      // (CROWD_V2) the honest count: everyone who commented, the people the hall holds
+      ui.card(v2 ? `Floor ${rank + 1} · ${floor.story.comments.toLocaleString('en-US')} comments${stage.people > 1 ? ` · ${stage.people.toLocaleString('en-US')} people` : ''}`
+        : `Floor ${rank + 1} · ${floor.story.comments} comments`, floor.story.title);
       ui.tableLabels(spots, roomY, walkToTable, bestSpot(false));
       ui.showLabels(true); map.show(true);
       chose = ui.chosen = false;
@@ -520,6 +557,8 @@ async function enterFloor(sid: number, push = false, listen = false) {
         for (const u of f.tables[k].turns) {
           if (known.has(u.id)) continue;
           mixer.breaking(sp, u);
+          // (CROWD_V2) a reply just landed on HN: the hall leans in toward that table
+          if (room.stage) audience.react('lean', sp.pos.x, sp.pos.z, clock + 0.3, 0.7);
           const me = you.me, parent = u.replyTo !== undefined ? f.tables[k].turns.find((x) => x.id === u.replyTo) : undefined;
           if (me && u.by === me) { mixer.spotlight(sp, u.id); ui.toast(`<b>That’s you</b>, walking in to say it`, () => walkToTable(sp)); continue; }
           if (me && parent?.by === me && !heard.has(u.id)) {
@@ -709,7 +748,7 @@ addEventListener('keydown', (e) => {
   else if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey && !reply?.open && !(e.target as HTMLElement)?.closest?.('input, textarea')) {
     e.preventDefault();
     if (mode === 'table') replyHere();
-    else if (mode === 'floor' && walk.locked) { const a = aimAt(innerWidth / 2, innerHeight / 2); if (a.kind === 'person') replyTo(crowd.people[a.i].name); }
+    else if (mode === 'floor' && walk.locked) { const a = aimAt(innerWidth / 2, innerHeight / 2); const who = nameAt(a); if (who) replyTo(who); }
   }
   else if (mode === 'tower' && cam.enabled && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Enter') && document.activeElement?.id !== 'elevator') {
     e.preventDefault();
@@ -732,9 +771,9 @@ renderer.domElement.addEventListener('pointermove', (e) => {
     // a click takes the mouse (first person)
     const a = aimAt(e.clientX, e.clientY);
     renderer.domElement.style.cursor = a.kind ? 'pointer' : 'crosshair';
-    ui.aim(a.kind === 'person' ? crowd.people[a.i].name : '');
+    ui.aim(nameAt(a) ?? '');
     const tag = document.getElementById('aim')!;
-    if (a.kind === 'person') { tag.style.left = `${e.clientX}px`; tag.style.top = `${e.clientY + 18}px`; }
+    if (nameAt(a)) { tag.style.left = `${e.clientX}px`; tag.style.top = `${e.clientY + 18}px`; }
     return;
   }
   if (mode !== 'tower' || !cam.enabled) return;
@@ -757,20 +796,26 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   ray.setFromCamera(ptr, camera);
   const i = crowd.pick(ray);
   if (i >= 0) showProfile(crowd.people[i].name);
+  else if (room.stage) { const a = audience.pick(ray.ray); if (a >= 0) showProfile(audience.names[a]); }
 });
 const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hitPoint = new THREE.Vector3();
 /** What's at a point on the screen: someone, a table, or the floor (and where). */
-function aimAt(x: number, y: number): { kind: 'person'; i: number } | { kind: 'table'; spot: TableSpot } | { kind: 'floor' | null; at?: THREE.Vector3 } {
+function aimAt(x: number, y: number): { kind: 'person'; i: number } | { kind: 'audience'; name: string } | { kind: 'table'; spot: TableSpot } | { kind: 'floor' | null; at?: THREE.Vector3 } {
   ptr.set((x / innerWidth) * 2 - 1, -(y / innerHeight) * 2 + 1);
   ray.setFromCamera(ptr, camera);
   const i = crowd.pick(ray);
   if (i >= 0) return { kind: 'person', i };
+  if (room.stage) { const a = audience.pick(ray.ray); if (a >= 0) return { kind: 'audience', name: audience.names[a] }; }
   const hit = ray.intersectObject(interior.tableMesh)[0];
   const sp = hit?.instanceId !== undefined ? spots.filter((x) => !x.bar)[hit.instanceId] : undefined;
   if (sp && (!hit || hit.distance < 14)) return { kind: 'table', spot: sp };
   floorPlane.constant = -roomY;
   return { kind: null, at: ray.ray.intersectPlane(floorPlane, hitPoint) ? hitPoint.clone() : undefined };
 }
+/** has `name` said something at one of this room's tables (so R can answer it here)? */
+function canReply(name: string) { return spots.some((s) => !s.bar && s.table.turns.some((t) => t.by === name)); }
+/** whoever is at a point on the screen (at a table, or in the audience), by name */
+function nameAt(a: ReturnType<typeof aimAt>) { return a.kind === 'person' ? crowd.people[a.i].name : a.kind === 'audience' ? a.name : null; }
 /** the table you're standing beside (close enough to sit), if any */
 function nearTable() {
   let best: TableSpot | null = null, bd = 1.45;
@@ -781,6 +826,7 @@ walk.onTap = (x, y) => {
   const a = aimAt(x, y);
   if (a.kind !== 'person') { chose = ui.chosen = true; if (tapHint) { tapHint = false; ui.hint(''); } }
   if (a.kind === 'person') { walk.release(); showProfile(crowd.people[a.i].name); return; }
+  if (a.kind === 'audience') { walk.release(); showProfile(a.name); return; }
   if (a.kind === 'table') {
     if (nearTable() === a.spot) sit(a.spot, true);                              // already beside it: sit down
     else walkToTable(a.spot);
@@ -823,7 +869,12 @@ async function warmShaders() {
   interior.group.position.y = crowd.group.position.y = -400; interior.group.visible = true;
   crowd.set([{ name: 'warm-up', pose: { pos: new THREE.Vector3(0, 0, 0), facing: 0, seated: true } }]);
   tower.setDoor(0, 0.5); tower.update(clock, 0);
+  // (CROWD_V2: the audience and the galleries too; three skips what isn't visible)
+  const v2 = crowdV2(), aud = audience.group.visible, gal = v2 ? interior.warmGalleries() : null;
+  if (v2) { audience.group.visible = true; audience.group.position.y = -400; }
   try { await renderer.compileAsync(scene, camera); } catch { /* then they compile on first use */ }
+  gal?.removeFromParent();
+  if (v2 && !room.stage) { audience.group.visible = aud; }
   if (mode === 'tower' && doorSlot < 0) {
     crowd.set([]); interior.group.visible = vis;
     tower.setDoor(-1); tower.update(clock, 0);
@@ -877,7 +928,7 @@ function neonTick(now: number) {
 }
 
 // ---------------------------------------------------------------- the loop
-const fwd = new THREE.Vector3();
+const fwd = new THREE.Vector3(), focusAt = new THREE.Vector3();
 let aimTick = 0, lampTick = 0, rowToastAt = 0;
 let lastNear: TableSpot | null = null;
 /** On foot, the table you're with is subtitled (as the one you sit at is): you can follow it, and see how it's said. */
@@ -962,15 +1013,22 @@ function frame(dt: number, draw = true) {
   // out again, behind closed glass, the room goes
   if (doorSlot >= 0) {
     const p = camera.position, rad = Math.hypot(p.x, p.z) - R;
-    if (rad < -0.1 && Math.abs(p.y - (roomY + 1.2)) < FLOOR_H * 0.8) { tower.hidden = doorSlot; interior.presence(1); }
+    // inside: within the glass, and between this floor and the top of its hall (a floor with galleries rises through
+    // the floors above it)
+    const top = interior.galleryCount ? interior.hallTop() : FLOOR_H * 0.8 + 1.2;
+    const inside = rad < -0.1 && p.y > roomY + 1.2 - FLOOR_H * 0.8 && p.y < roomY + top;
+    if (audience.u.levels.value !== (inside ? 99 : 0)) { audience.u.levels.value = inside ? 99 : 0; audience.resort(); }
+    interior.hallShown(inside);
+    if (inside) { tower.hidden = doorSlot; tower.inside = interior.galleryCount > 0; interior.presence(1); }
     else {
-      tower.hidden = -1;
+      tower.hidden = -1; tower.inside = false;
       const k = Math.max(0, Math.min(1, (9 - rad) / 7.5));
       tower.setDoor(doorSlot, k * k * (3 - 2 * k));
       interior.presence(Math.max(0, Math.min(1, (12 - rad) / 9)));
       if (mode === 'tower' && rad > 11) {
         tower.setDoor(-1); doorSlot = -1;
         interior.group.visible = false; crowd.set([]); mixer.stop(); spots = [];
+        audience.set([], []); interior.galleries(0); room.stage = null; director.audience = null;
       }
     }
   }
@@ -987,13 +1045,19 @@ function frame(dt: number, draw = true) {
     // first person at a desk: what the dot in the middle is on, and what a click would do
     if (walk.locked && ++aimTick % 6 === 0) {
       const a = aimAt(innerWidth / 2, innerHeight / 2);
-      ui.aim(a.kind === 'person' ? `${crowd.people[a.i].name} · click to meet them · R to reply` : a.kind === 'table' ? (nearTable() === a.spot ? 'Click or E to sit down' : 'Click to walk over') : '');
+      ui.aim(nameAt(a) ? `${nameAt(a)} · click to meet them${canReply(nameAt(a)!) ? ' · R to reply' : ''}` : a.kind === 'table' ? (nearTable() === a.spot ? 'Click or E to sit down' : 'Click to walk over') : '');
     }
   } else if (mode === 'floor') ui.sitDown(null);
   neonTick(clock);
   if ((mode === 'floor' || mode === 'table') && ++lampTick % 4 === 0) lampMoods(dt * 4);
   director.update(clock, dt);
   crowd.update(dt);
+  if (room.stage && interior.group.visible) {
+    stage.tidy(audio.now());
+    // on foot, heads turn to whoever is speaking at the table you're with (seated, the director says who)
+    if (mode === 'floor' && mixer.focus) { const l = mixer.speaking(mixer.focus); if (l && l.who >= 0) audience.focus(crowd.headPos(l.who, focusAt), clock, l.who); }
+    audience.update(camera, clock, dt);
+  }
   ui.update();
   if (dofOn) { uFocus.value = camera.position.distanceTo(rig.target); uBokeh.value = 2.4; }
   rim.intensity += ((mode === 'table' ? 1.1 : 0) - rim.intensity) * Math.min(1, dt * 3);
@@ -1073,9 +1137,32 @@ if (recording) {
     standUp: () => standUp(),
     sit: () => sit(bestSpot()),
     profile: (name: string) => showProfile(name),
-    people: () => crowd.people.map((p, i) => { const e = crowd.extent(i)!; return { i, name: p.name, x: p.pose.pos.x + e.shoveX, z: p.pose.pos.z + e.shoveZ, walking: crowd.isWalking(i), body: e.body, head: e.head }; }),
+    people: () => crowd.people.map((p, i) => { const e = crowd.extent(i)!; return { i, name: p.name, x: p.pose.pos.x + e.shoveX, z: p.pose.pos.z + e.shoveZ, walking: crowd.isWalking(i), body: e.body, head: e.head, hidden: !!p.hidden }; }).filter((p) => !p.hidden),
     /** for timing the crowd's own work (record mode only) */
     crowd,
+    /** every head in the room now (world): at the tables (not hidden) and the audience on the ground and in the
+     *  galleries (present), with who they are; and who is speaking at the table you're at */
+    heads: () => {
+      const out: { name: string; x: number; y: number; z: number; table: boolean }[] = [], v = new THREE.Vector3();
+      crowd.people.forEach((p, i) => { if (!p.hidden) { crowd.headPos(i, v); out.push({ name: p.name, x: v.x, y: v.y, z: v.z, table: true }); } });
+      if (room.stage) for (let i = 0; i < audience.n; i++) if (audience.present(i)) { audience.headAt(i, v); out.push({ name: audience.names[i], x: v.x, y: v.y + roomY, z: v.z, table: false }); }
+      return out;
+    },
+    speaking: () => { const l = director.line; return l && l.who >= 0 ? { name: crowd.people[l.who]?.name ?? '', i: l.who } : null; },
+    /** (CROWD_V2) what the audience's shaders are told: where heads turn, the last reaction (x, z, start, kind) */
+    audienceState: () => ({ focus: audience.u.focusB.value.toArray(), focusAt: audience.u.focusT.value, react: audience.u.react.value.toArray(), at: audience.u.at.value }),
+    /** debug: the lens anywhere (room space: y from the floor), looking at a point, with a field of view */
+    lens: (x: number, y: number, z: number, tx: number, ty: number, tz: number, fov = 50) => { rig.cut(new THREE.Vector3(x, roomY + y, z), new THREE.Vector3(tx, roomY + ty, tz), 0); rig.fovTarget = fov; },
+    /** a plan of the room from above (for checks): tables, the people at them, the audience on the ground, the lens */
+    plan: () => ({ R, tables: spots.filter((s) => !s.bar).map((s) => [+s.pos.x.toFixed(2), +s.pos.z.toFixed(2), +s.radius.toFixed(2)]),
+      crowd: crowd.people.map((p, i) => [+(p.pose.pos.x + (p.shove?.x ?? 0)).toFixed(2), +(p.pose.pos.z + (p.shove?.z ?? 0)).toFixed(2), p.pose.seated ? 1 : 0, crowd.isWalking(i) ? 1 : 0, p.hidden ? 1 : 0, +(crowd.extent(i)?.body ?? 0.2).toFixed(2)]),
+      audience: audience.places.map((p, i) => [+p.x.toFixed(2), +p.z.toFixed(2), p.level, audience.present(i) ? 1 : 0]),
+      cam: [+camera.position.x.toFixed(2), +(camera.position.y - roomY).toFixed(2), +camera.position.z.toFixed(2)], target: [+rig.target.x.toFixed(2), +rig.target.z.toFixed(2)], galleries: interior.galleryCount }),
+    /** (CROWD_V2) the hall: galleries, everyone on the floor, the audience, how many are drawn at each level of detail */
+    hall: () => ({ on: !!room.stage, tiers: interior.galleryCount, people: stage.people, audience: audience.n, drawn: audience.drawn(),
+      present: Array.from({ length: audience.n }, (_, i) => audience.present(i)).filter(Boolean).length,
+      crowd: crowd.people.filter((p) => !p.hidden).length, slots: crowd.people.length,
+      triangles: { audience: audience.triangles(), crowd: crowd.triangles() } }),
     fov: () => camera.fov,
     /** who is acting right now (anyone the crowd is animating), and how far: stand, arms, lean, mouth */
     acting: () => [...crowd.active].map((i) => { const p = crowd.people[i], e = p?.expr; return e ? { name: p.name, stand: +e.stand.toFixed(2), armR: +e.armR.toFixed(2), armL: +e.armL.toFixed(2), lean: +e.lean.toFixed(2), open: +e.open.toFixed(2), smile: +e.smile.toFixed(2), flush: +e.flush.toFixed(2) } : null; }).filter(Boolean),
@@ -1112,6 +1199,22 @@ if (recording) {
   // Pacing: never more than 60 frames a second (a 120 Hz phone would draw everything twice), and 30 at a table on
   // a phone (lips follow a 30 Hz track; the rest moves slowly), which halves the GPU's work for a long listen.
   // If frames still come late, the resolution steps down a quarter at a time; with room to spare, back up.
+  // ?fps: what a real device manages, in a corner (median frames a second over the last two, and what's drawn): the
+  // number to read on a phone when checking a big room by hand
+  const fpsTag = params.has('fps') ? Object.assign(document.body.appendChild(document.createElement('div')), { id: 'fps' }) : null;
+  fpsTag?.setAttribute('aria-hidden', 'true');             // (a reading for whoever is checking, not part of the page)
+  if (fpsTag) fpsTag.style.cssText = 'position:fixed;left:8px;top:calc(env(safe-area-inset-top) + 56px);z-index:9;font:600 11px/1.3 ui-monospace,monospace;color:#cfe;background:rgba(0,0,0,.55);padding:3px 6px;border-radius:6px;pointer-events:none;font-variant-numeric:tabular-nums';
+  const gaps: number[] = [];
+  let fpsAt = 0;
+  const fpsTick = (ms: number) => {
+    gaps.push(ms); if (gaps.length > 120) gaps.shift();
+    const t = performance.now();
+    if (t - fpsAt < 500 || !fpsTag) return;
+    fpsAt = t;
+    const s = gaps.slice().sort((a, b) => a - b), med = s[s.length >> 1] || 16.7;
+    const people = room.stage ? audience.drawn().reduce((a, b) => a + b, 0) + crowd.people.filter((p) => !p.hidden).length : crowd.people.length;
+    fpsTag.textContent = `${Math.floor(1000 / med)} fps · ${people.toLocaleString('en-US')} drawn · ${Math.floor((audience.triangles() + crowd.triangles()) / 1000)}k tris`;
+  };
   let last = performance.now(), lastDraw = 0, slow = 0, quick = 0, settle = 3, ceil = Infinity;
   // a pixel ratio that was too slow once isn't tried again (no flicking back and forth, no reallocating targets)
   const to = (r: number) => { if (r < dpr) ceil = Math.min(ceil, dpr); dpr = r; renderer.setPixelRatio(dpr); slow = quick = 0; settle = 1.5; };
@@ -1124,6 +1227,7 @@ if (recording) {
     lastDraw = now;
     const dt = Math.min(0.05, (now - last) / 1000); last = now;
     frame(dt);
+    if (fpsTag) fpsTick(interval);
     settle -= dt;
     if (settle > 0 || interval > 250) return;          // start-up, shader compiles, a backgrounded tab
     if (interval > gap * 1.45) { slow += dt; quick = 0; } else if (interval < gap * 1.15) { quick += dt; slow = 0; }

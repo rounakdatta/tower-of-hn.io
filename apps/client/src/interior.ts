@@ -1,11 +1,12 @@
 // A floor's interior: a warm room in the tower, tables for conversations,
 // a bar for one-off remarks, and the people placed at them.
 import * as THREE from 'three/webgpu';
-import { positionWorld, vec3, fract, smoothstep, abs, hash, floor as tfloor, mix, float, uv, sin, uniform, instancedBufferAttribute } from 'three/tsl';
+import { positionWorld, vec3, fract, smoothstep, abs, hash, floor as tfloor, mix, float, uv, sin, uniform, instancedBufferAttribute, step } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { R, FLOOR_H, uTime } from './world.ts';
 import type { Floor, Table } from './sync.ts';
 import type { Pose } from './people.ts';
+import { HALL, tierFloor } from './hall.ts';
 
 export interface TableSpot { index: number; table: Table; pos: THREE.Vector3; radius: number; seats: { name: string; pos: THREE.Vector3; facing: number; seated: boolean; chair?: number }[]; bar: boolean; /** bar only: comment -> its table */ tableOf?: Map<number, number> }
 
@@ -27,6 +28,12 @@ export class Interior {
   /** where the lift's doorway is, on the floor, in world space (after the room is turned to face us) */
   door = new THREE.Vector3();
   private chairAt: { pos: THREE.Vector3; facing: number }[] = [];      // where each chair stands (room space) when tucked in
+  private ceil: THREE.Mesh;
+  private posts: THREE.InstancedMesh;
+  /** a crowded floor's galleries (hall.ts): built when a floor needs them, gone with it */
+  private tiers: THREE.Group | null = null;
+  /** galleries this floor has (0: the room as it always was) */
+  galleryCount = 0;
   spots: TableSpot[] = [];
 
   constructor() {
@@ -47,10 +54,10 @@ export class Interior {
     rug.rotation.x = -Math.PI / 2; rug.position.y = 0.02; rug.position.z = 0.6;
     // ceiling (the floor above's slab is hidden from inside, so give the room a lid)
     const cmat = new THREE.MeshStandardNodeMaterial({ color: 0x14100d, roughness: 0.9, side: THREE.DoubleSide });
-    const ceil = new THREE.Mesh(new THREE.CircleGeometry(R, 72), cmat);
+    const ceil = this.ceil = new THREE.Mesh(new THREE.CircleGeometry(R, 72), cmat);
     ceil.rotation.x = Math.PI / 2; ceil.position.y = FLOOR_H * 0.93;
     // window mullions all the way round: you are inside a tower
-    const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.06, FLOOR_H * 0.93, 0.08), new THREE.MeshStandardNodeMaterial({ color: 0x1b1d24, metalness: 0.8, roughness: 0.3 }), 56);
+    const posts = this.posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.06, FLOOR_H * 0.93, 0.08), new THREE.MeshStandardNodeMaterial({ color: 0x1b1d24, metalness: 0.8, roughness: 0.3 }), 56);
     const m = new THREE.Matrix4(), q = new THREE.Quaternion();
     for (let i = 0; i < 56; i++) {
       const a = (i / 56) * Math.PI * 2;
@@ -138,6 +145,96 @@ export class Interior {
     const p = c.pos.clone().sub(new THREE.Vector3(Math.sin(c.facing), 0, Math.cos(c.facing)).multiplyScalar(0.46 * k));
     this.chairMesh.setMatrixAt(i, m.compose(p, q, new THREE.Vector3(1, 1, 1)));
     if (upload) this.chairMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /**
+   * Galleries above the room, `n` of them (0 takes them away): the ceiling opens over the middle of the room, and
+   * each gallery is a ring of raked steps behind a solid parapet (only heads and shoulders show over it, the way a
+   * theatre's balconies read from the stalls), with a warm line of light along its top. The window posts run up
+   * past them all; a dark lid closes the top. A few draws, whatever n is.
+   */
+  /** the galleries are drawn only from inside the glass (they rise through the floors above: from outside, a floor near
+   *  the top of the tower would have them showing over the roof) */
+  hallShown(on: boolean) { if (this.tiers) this.tiers.visible = on; }
+
+  /** the height of this floor's hall (its galleries' lid), room space */
+  hallTop() { return this.galleryCount ? tierFloor(this.galleryCount) + HALL.TIER_H - 0.1 : FLOOR_H * 0.93; }
+
+  galleries(n: number) {
+    if (this.tiers) { this.group.remove(this.tiers); this.tiers.traverse((o) => { if ((o as THREE.Mesh).geometry) (o as THREE.Mesh).geometry.dispose(); }); this.tiers = null; }
+    this.galleryCount = n;
+    this.ceil.visible = n === 0;
+    const top = n ? tierFloor(n) + HALL.TIER_H - 0.1 : FLOOR_H * 0.93;
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+    for (let i = 0; i < 56; i++) {
+      const a = (i / 56) * Math.PI * 2;
+      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), a);
+      this.posts.setMatrixAt(i, m.compose(new THREE.Vector3(Math.sin(a) * (R - 0.05), top / 2, Math.cos(a) * (R - 0.05)), q, new THREE.Vector3(1, top / (FLOOR_H * 0.93), 1)));
+    }
+    this.posts.instanceMatrix.needsUpdate = true;
+    if (!n) return;
+    const g = this.tiers = new THREE.Group();
+    // one gallery's section, turned round the room: soffit, parapet, then the steps its rows stand on, back to the glass
+    const sec: [number, number][] = [[R - 0.02, -0.16], [HALL.RAIL - 0.08, -0.16], [HALL.RAIL - 0.08, 1.02], [HALL.RAIL + 0.04, 1.02], [HALL.RAIL + 0.04, 0]];
+    for (let k = 0; k < HALL.TIER_ROWS; k++) {
+      const r1 = HALL.RAIL + 0.6 + k * HALL.SPACING, y = k * HALL.RAKE;
+      sec.push([Math.min(r1, R - 0.02), y]);
+      if (r1 < R - 0.02) sec.push([r1, y + HALL.RAKE]);
+    }
+    sec.push([R - 0.02, sec[sec.length - 1][1]], [R - 0.02, -0.16]);
+    const tierGeo = new THREE.LatheGeometry(sec.map(([r, y]) => new THREE.Vector2(r, y)), 96);
+    const { wood, glowMat, skyMat } = this.galleryMats();
+    const slabs = new THREE.InstancedMesh(tierGeo, wood, n);
+    const glow = new THREE.InstancedMesh(new THREE.TorusGeometry(HALL.RAIL - 0.02, 0.012, 4, 128).rotateX(Math.PI / 2), glowMat, n);
+    for (let t = 1; t <= n; t++) {
+      slabs.setMatrixAt(t - 1, m.compose(new THREE.Vector3(0, tierFloor(t), 0), q.identity(), new THREE.Vector3(1, 1, 1)));
+      glow.setMatrixAt(t - 1, m.compose(new THREE.Vector3(0, tierFloor(t) + 1.03, 0), q.identity(), new THREE.Vector3(1, 1, 1)));
+    }
+    const lid = new THREE.Mesh(new THREE.CircleGeometry(R, 96), skyMat);
+    lid.rotation.x = Math.PI / 2; lid.position.y = top;
+    for (const o of [slabs, glow]) o.frustumCulled = false;
+    g.add(slabs, glow, lid);
+    this.group.add(g);
+  }
+
+  private mats: { wood: THREE.MeshStandardNodeMaterial; glowMat: THREE.MeshBasicNodeMaterial; skyMat: THREE.MeshBasicNodeMaterial } | null = null;
+  /** the galleries' materials, made once */
+  private galleryMats() {
+    if (this.mats) return this.mats;
+    const wood = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide });
+    wood.colorNode = mix(vec3(0.16, 0.09, 0.06), vec3(0.24, 0.14, 0.08), smoothstep(HALL.RAIL + 0.1, HALL.RAIL - 0.05, positionWorld.x.mul(positionWorld.x).add(positionWorld.z.mul(positionWorld.z)).sqrt()));
+    // the warm line along each parapet: the galleries glow faintly, so a full hall reads from the floor
+    const glowMat = new THREE.MeshBasicNodeMaterial();
+    glowMat.colorNode = vec3(1.0, 0.7, 0.42).mul(float(1.7).add(sin(uTime.mul(0.6)).mul(0.05)));
+    // the lid: a skylight over the void (the night, a few stars, the sky a little lighter toward the middle), a dark
+    // ceiling over the galleries, and a ring of warm lights where they meet
+    const skyMat = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
+    const rr = uv().sub(0.5).length().mul(2);
+    const star = step(0.9965, hash(tfloor(uv().mul(260)).dot(vec3(1, 57, 0).xy)));
+    skyMat.colorNode = mix(vec3(0.085, 0.1, 0.17), vec3(0.03, 0.035, 0.06), smoothstep(0.1, 0.62, rr)).add(star.mul(0.75).mul(smoothstep(0.6, 0.3, rr)))
+      .mul(smoothstep(0.62, 0.6, rr)).add(vec3(0.05, 0.04, 0.035).mul(smoothstep(0.6, 0.62, rr)))
+      .add(vec3(1.0, 0.7, 0.42).mul(smoothstep(0.012, 0.0, abs(rr.sub(0.6))).mul(1.6)));
+    return (this.mats = { wood, glowMat, skyMat });
+  }
+
+  /** The galleries' shaders on scraps of geometry (shaped like theirs), for the renderer to build at start: a floor
+   *  whose standing room fills mid-conversation then opens a gallery without a stall. Take it away after. */
+  warmGalleries(): THREE.Object3D {
+    const { wood, glowMat, skyMat } = this.galleryMats(), g = new THREE.Group(), geo = new THREE.PlaneGeometry(0.1, 0.1);
+    g.add(new THREE.InstancedMesh(geo, wood, 1), new THREE.InstancedMesh(geo, glowMat, 1), new THREE.Mesh(geo, skyMat));
+    this.group.add(g);
+    return g;
+  }
+
+  /** Where the audience never stands (world space, once laid out): the bar and its counter, the lift's doorway. */
+  keepClear(): { x: number; z: number; r: number }[] {
+    const out: { x: number; z: number; r: number }[] = [], Y = new THREE.Vector3(0, 1, 0);
+    for (let a = BAR_ANGLE - BAR_SPAN / 2 - 0.06; a <= BAR_ANGLE + BAR_SPAN / 2 + 0.06; a += 0.11) {
+      const v = new THREE.Vector3(Math.cos(a) * (R - 1.15), 0, Math.sin(a) * (R - 1.15)).applyAxisAngle(Y, this.group.rotation.y);
+      out.push({ x: v.x, z: v.z, r: 1.05 });
+    }
+    out.push({ x: this.door.x, z: this.door.z, r: 1.15 });
+    return out;
   }
 
   /** Lay the room out for this floor and return where everyone stands or sits. */
