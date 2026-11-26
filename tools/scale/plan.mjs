@@ -16,7 +16,7 @@ for (const sid of head.tower.slice(0, Number(N))) {
     const v = t.turns[0].v;
     const label = `r${head.tower.indexOf(sid) + 1}t${pos}:${!v ? 'unvoiced' : /\.p\d+\.json$/.test(v[0]) ? 'opening' : 'voiced'}`;
     // arms alternate which goes first, table by table, so neither always meets the table second
-    const order = out.length % 2 ? [...arms].reverse() : arms;
+    const order = Math.floor(out.length / arms.length) % 2 ? [...arms].reverse() : arms;
     for (const a of order) out.push({ story: sid, table: t.root, from: 0, pos, turns: t.turns.length, label, ...(a ? { arm: a.arm, q: a.q } : {}) });
   }
 }
