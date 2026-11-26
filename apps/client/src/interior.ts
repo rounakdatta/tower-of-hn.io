@@ -183,17 +183,29 @@ export class Interior {
     }
     sec.push([R - 0.02, sec[sec.length - 1][1]], [R - 0.02, -0.16]);
     const tierGeo = new THREE.LatheGeometry(sec.map(([r, y]) => new THREE.Vector2(r, y)), 96);
-    const wood = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide });
-    wood.colorNode = mix(vec3(0.16, 0.09, 0.06), vec3(0.24, 0.14, 0.08), smoothstep(HALL.RAIL + 0.1, HALL.RAIL - 0.05, positionWorld.x.mul(positionWorld.x).add(positionWorld.z.mul(positionWorld.z)).sqrt()));
+    const { wood, glowMat, skyMat } = this.galleryMats();
     const slabs = new THREE.InstancedMesh(tierGeo, wood, n);
-    // the warm line along each parapet: the galleries glow faintly, so a full hall reads from the floor
-    const glowMat = new THREE.MeshBasicNodeMaterial();
-    glowMat.colorNode = vec3(1.0, 0.7, 0.42).mul(float(1.7).add(sin(uTime.mul(0.6)).mul(0.05)));
     const glow = new THREE.InstancedMesh(new THREE.TorusGeometry(HALL.RAIL - 0.02, 0.012, 4, 128).rotateX(Math.PI / 2), glowMat, n);
     for (let t = 1; t <= n; t++) {
       slabs.setMatrixAt(t - 1, m.compose(new THREE.Vector3(0, tierFloor(t), 0), q.identity(), new THREE.Vector3(1, 1, 1)));
       glow.setMatrixAt(t - 1, m.compose(new THREE.Vector3(0, tierFloor(t) + 1.03, 0), q.identity(), new THREE.Vector3(1, 1, 1)));
     }
+    const lid = new THREE.Mesh(new THREE.CircleGeometry(R, 96), skyMat);
+    lid.rotation.x = Math.PI / 2; lid.position.y = top;
+    for (const o of [slabs, glow]) o.frustumCulled = false;
+    g.add(slabs, glow, lid);
+    this.group.add(g);
+  }
+
+  private mats: { wood: THREE.MeshStandardNodeMaterial; glowMat: THREE.MeshBasicNodeMaterial; skyMat: THREE.MeshBasicNodeMaterial } | null = null;
+  /** the galleries' materials, made once */
+  private galleryMats() {
+    if (this.mats) return this.mats;
+    const wood = new THREE.MeshStandardNodeMaterial({ roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide });
+    wood.colorNode = mix(vec3(0.16, 0.09, 0.06), vec3(0.24, 0.14, 0.08), smoothstep(HALL.RAIL + 0.1, HALL.RAIL - 0.05, positionWorld.x.mul(positionWorld.x).add(positionWorld.z.mul(positionWorld.z)).sqrt()));
+    // the warm line along each parapet: the galleries glow faintly, so a full hall reads from the floor
+    const glowMat = new THREE.MeshBasicNodeMaterial();
+    glowMat.colorNode = vec3(1.0, 0.7, 0.42).mul(float(1.7).add(sin(uTime.mul(0.6)).mul(0.05)));
     // the lid: a skylight over the void (the night, a few stars, the sky a little lighter toward the middle), a dark
     // ceiling over the galleries, and a ring of warm lights where they meet
     const skyMat = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
@@ -202,11 +214,16 @@ export class Interior {
     skyMat.colorNode = mix(vec3(0.085, 0.1, 0.17), vec3(0.03, 0.035, 0.06), smoothstep(0.1, 0.62, rr)).add(star.mul(0.75).mul(smoothstep(0.6, 0.3, rr)))
       .mul(smoothstep(0.62, 0.6, rr)).add(vec3(0.05, 0.04, 0.035).mul(smoothstep(0.6, 0.62, rr)))
       .add(vec3(1.0, 0.7, 0.42).mul(smoothstep(0.012, 0.0, abs(rr.sub(0.6))).mul(1.6)));
-    const lid = new THREE.Mesh(new THREE.CircleGeometry(R, 96), skyMat);
-    lid.rotation.x = Math.PI / 2; lid.position.y = top;
-    for (const o of [slabs, glow]) o.frustumCulled = false;
-    g.add(slabs, glow, lid);
+    return (this.mats = { wood, glowMat, skyMat });
+  }
+
+  /** The galleries' shaders on scraps of geometry (shaped like theirs), for the renderer to build at start: a floor
+   *  whose standing room fills mid-conversation then opens a gallery without a stall. Take it away after. */
+  warmGalleries(): THREE.Object3D {
+    const { wood, glowMat, skyMat } = this.galleryMats(), g = new THREE.Group(), geo = new THREE.PlaneGeometry(0.1, 0.1);
+    g.add(new THREE.InstancedMesh(geo, wood, 1), new THREE.InstancedMesh(geo, glowMat, 1), new THREE.Mesh(geo, skyMat));
     this.group.add(g);
+    return g;
   }
 
   /** Where the audience never stands (world space, once laid out): the bar and its counter, the lift's doorway. */

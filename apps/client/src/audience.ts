@@ -49,6 +49,9 @@ function bodyGeo(seg: number, detail: number) {
 }
 function headGeo(w: number, h: number) { const g = new THREE.SphereGeometry(0.2, w, h); g.deleteAttribute('uv'); return g; }
 
+/** where someone without a place yet is (they're away: never drawn, never on the ground) */
+const NOWHERE: Place = { x: 0, z: 0, y: -100, level: -1, facing: 0 };
+
 export class Audience {
   group = new THREE.Group();
   /** how many people the textures hold */
@@ -261,10 +264,20 @@ export class Audience {
   }
 
   /** Everyone in the hall, in the order they were placed. Their looks come from their names (as at the tables). */
+  /** A new floor: everyone on it, with their places (null: none yet, see place()). Nobody joined later, nobody
+   *  looking anywhere yet. */
   set(names: string[], places: (Place | null)[]) {
+    this.layout(names, places.map((p) => p ?? NOWHERE));
+    this.atTarget = 1e9; this.u.at.value = 1e9;
+    this.focusWho = -1; this.u.focusA.value.set(0, 0, 0); this.u.focusB.value.set(0, 0, 0); this.u.focusT.value = -100;
+    this.lastSort = -1;
+  }
+
+  /** the textures and index lists for these people (a new floor, or the old one grown by a row) */
+  private layout(names: string[], places: Place[]) {
     const n = names.length;
     this.n = n; this.names = names.slice();
-    this.places = places.map((p) => p ?? { x: 0, z: 0, y: -100, level: 0, facing: 0 });
+    this.places = places;
     const rows = Math.max(1, Math.ceil(n / ROW));
     this.data = new Float32Array(ROW * TEXELS * rows * 4);
     this.live = new Float32Array(ROW * rows * 4);
@@ -274,7 +287,7 @@ export class Audience {
       this.data.set([pl.x, pl.y, pl.z, pl.facing, lk.skin.r, lk.skin.g, lk.skin.b, lk.phase, lk.outfit.r, lk.outfit.g, lk.outfit.b, lk.height,
         lk.hair.r, lk.hair.g, lk.hair.b, lk.width, lk.eye, lk.gap, lk.brow, lk.mouth, lk.style, lk.glasses ? 1 : 0, lk.beard ? 1 : 0, pl.level], o);
       this.live.set([-1, 0, -100, 0], i * 4);
-      if (pl.level === 0 && places[i]) { const k = cellKey(pl.x, pl.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); this.ground.push(i); }
+      if (pl.level === 0) { const k = cellKey(pl.x, pl.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); this.ground.push(i); }
     }
     this.tex.dispose(); this.liveTex.dispose();
     this.tex = new THREE.DataTexture(this.data, ROW * TEXELS, rows, THREE.RGBAFormat, THREE.FloatType);
@@ -289,7 +302,6 @@ export class Audience {
       m.hpid = m.head.geometry.getAttribute('pid') as THREE.InstancedBufferAttribute;
       (m.body.geometry as THREE.InstancedBufferGeometry).instanceCount = (m.head.geometry as THREE.InstancedBufferGeometry).instanceCount = 0;
     }
-    this.atTarget = 1e9; this.u.at.value = 1e9;
     this.lastSort = -1;
   }
 
@@ -299,7 +311,7 @@ export class Audience {
     const i = this.n, rows = Math.ceil((i + 1) / ROW);
     if (rows * ROW * TEXELS * 4 > this.data.length) {
       const names = this.names.concat(name), places = this.places.concat(place), live = this.live.slice(0, i * 4);
-      this.set(names, places);
+      this.layout(names, places);
       this.live.set(live); this.liveTex.needsUpdate = true;
       return i;
     }
@@ -322,7 +334,7 @@ export class Audience {
 
   /** has person i a place of their own yet? (someone at a table since the room was laid out gets theirs when they first
    *  step back) */
-  placed(i: number) { return i >= 0 && i < this.n && this.places[i].y > -50; }
+  placed(i: number) { return i >= 0 && i < this.n && this.places[i].level >= 0; }
   /** Person i's place, given now: written into their texels (where they stand, which gallery), and into the ground's lists. */
   place(i: number, pl: Place) {
     const d = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;

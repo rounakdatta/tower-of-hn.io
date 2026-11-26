@@ -90,7 +90,8 @@ export class Stage {
     const hall = this.hall = new Hall(R, this.tables, keep, names.length - atTable.size, proto ? { rows: 14, tiers: false } : {});
     const places = names.map((n, i) => (atTable.has(n) ? null : hall.add(this.homes[i])));
     this.audience.set(names, places);
-    for (let i = 0; i < names.length; i++) if (atTable.has(names[i])) this.audience.away(i, true, 0, false);
+    for (let i = 0; i < names.length; i++) if (atTable.has(names[i]) || !places[i]) this.audience.away(i, true, 0, false);
+    for (let i = 0; i < names.length; i++) if (!atTable.has(names[i]) && !places[i]) this.ix.delete(names[i]);
     this.audience.group.position.y = roomY;
     this.interior.galleries(hall.used);
     // the places at each table's front: a ring at its edge, and a second one inside the lane for a busy moment
@@ -164,7 +165,7 @@ export class Stage {
     let f = standing < FRONT_MAX ? nearestFree(fr, from.x, from.z, 0) : null;
     if (!f) {
       const worst = this.quietest(fr, now);
-      if (worst) { this.sendHome(worst.who, now); f = worst; }
+      if (worst) { this.sendHome(worst.who, now); if (worst.who === -1) f = worst; }
     }
     f ??= nearestFree(fr, from.x, from.z, 0) ?? nearestFree(fr, from.x, from.z, 1);
     if (!f) return null;

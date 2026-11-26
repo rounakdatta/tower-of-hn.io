@@ -11,7 +11,7 @@
 //      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_AHEAD (audience, the default, or all: voice
 //      everything on the tower ahead of listeners), VOICE_VERSION, VOICE_PORT (default 8788),
 //      VOICE_TOKEN (runners must send it, if set), HN_API (a stand-in for HN's API, for staging), CLIENT_FLAGS
-//      (stream,cue,quick,crowd,timeline: how the room plays), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
+//      (stream,cue,quick,crowd: how the room plays), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
 //      deletes it after RETENTION_DAYS; tower keeps only what a floor can still play, AUDIO_GRACE_HOURS (24) after,
 //      at most AUDIO_MAX_MB (1024), and voices nothing new below DISK_FREE_MIN_PCT (15) free; tower-dry only says
 //      what tower would do), PRUNE_EVERY_S (housekeeping, 600), SPONSOR_URL (the maker's GitHub Sponsors page: a
@@ -50,7 +50,6 @@ const VOICE_AHEAD = (process.env.VOICE_AHEAD ?? '').trim().toLowerCase() === 'al
  *  plays as it always has. stream: a turn starts on its first decoded clip, the rest join as they decode. cue: whoever
  *  speaks next is called over while the turn before is said, and nobody is waited on for long. quick: a shorter pause
  *  when you sit down. crowd: a room that fits any crowd (an audience in a hall, galleries when a floor needs them).
- *  timeline: at a table, a line to scrub through the conversation and listen from any point (it needs crowd).
  *  (A page can try them without the server: ?play=stream,cue,quick, or ?play= for none.) */
 const { on: PLAY, unknown: PLAY_UNKNOWN } = playFlags(process.env.CLIENT_FLAGS);
 console.log(JSON.stringify({ play: { on: PLAY, ...(PLAY_UNKNOWN.length ? { unknown: PLAY_UNKNOWN } : {}) } }));
