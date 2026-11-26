@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Tower of HN — timeline (test harness)</title>
+<!-- app style -->
+<style>
+  /* the room, reduced to a picture to scrub over: dark above, a lit tabletop where the raised timeline stands, so a bar or a
+     card that can't be read against the brightest part of the picture shows up here */
+  #picture { position:fixed; inset:0; background:
+    linear-gradient(to bottom, rgba(0,0,0,0) 62%, #8c6b49 76%, #6e4e2f 100%),
+    radial-gradient(70% 60% at 50% 30%, #4a3526, #12151f 70%) }
+</style>
+</head>
+<body data-mode="table">
+<div id="picture"></div>
+<!-- the app's own markup for the table view: the letterbox bars, the subtitles, the hint, the pills (index.html) -->
+<div class="lb" id="lbt"></div><div class="lb" id="lbb"></div>
+<div id="subs" class="show"><span class="who" style="color:#8fd3ff">tptacek</span><span class="said">It is not the borrow checker that makes it compile; it is the discipline it forces on you before the compiler ever sees the code, and that is worth the whole trade.</span></div>
+<div id="hint">Esc stand up · Space pause · N next · R reply</div>
+<div id="controls"><button class="pill" id="answer" title="Answer whoever is speaking (R)">Reply</button><button class="pill" id="pause">Pause</button><button class="pill" id="next">Next table</button><button class="pill" id="leave">Stand up</button></div>
+<script type="module" src="./timeline-main.ts"></script>
+</body>
+</html>
