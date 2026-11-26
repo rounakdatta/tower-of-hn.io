@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync, brotliCompressSync, constants as zlibc } from 'node:zlib';
 import { homedir } from 'node:os';
 import Anthropic from '@anthropic-ai/sdk';
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, statfsSync, openSync, readSync, closeSync, rmdirSync, appendFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, readdirSync, unlinkSync, statSync, statfsSync, openSync, readSync, closeSync, rmdirSync, appendFileSync, promises as fsp } from 'node:fs';
 import { dirname, join, extname, resolve } from 'node:path';
 import { Live, type Item, type FloorSnapshot } from '../../../packages/core/src/live.ts';
 import { speakable } from '../../../packages/core/src/speakable.ts';
@@ -306,7 +306,9 @@ function soon() { soonTimer ??= setTimeout(() => { soonTimer = null; try { syncJ
  */
 const hot = new Map<string, { body: Buffer; mtime: number; size: number }>();
 let hotBytes = 0;
-const HOT_BYTES = 48e6;
+const HOT_BYTES = Math.max(8, Number(process.env.HOT_MB) || 48) * 1e6;   // HOT_MB: the hot set's size (48 MB)
+/** LIVE_READS: async (the default) reads a file that isn't in memory without blocking the server; sync is the old way */
+const LIVE_READS = process.env.LIVE_READS === 'sync' ? 'sync' : 'async';
 function hotPut(p: string, body: Buffer, mtime: number) {
   const had = hot.get(p);
   if (had) { hotBytes -= had.body.length; hot.delete(p); }
@@ -505,6 +507,17 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
   const isHead = url.pathname === '/live/head.json', clip = p.endsWith('.ogg');
   if (isHead) lastViewerAt = Date.now();
   let h = hot.get(p);
+  if (!h && LIVE_READS === 'async') {
+    // not in memory: read without holding up anyone else (on a busy node a slow disk read stalled every request behind
+    // it), and once, however many ask for the same file at the same moment
+    readLive(p).then((f) => {
+      if (res.writableEnded || res.destroyed) return;
+      if (!f) { if (url.pathname.startsWith('/live/c/')) clipGets.missing++; res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
+      if (clip) clipGets.disk++;
+      sendLive(req, res, p, isHead, clip, f);
+    }, () => { if (!res.headersSent) { res.writeHead(503, { 'cache-control': 'no-store', 'retry-after': '2' }); res.end(); } });
+    return;
+  }
   if (!h) {
     const st = statOr(p);
     if (!st || st.isDirectory()) { if (url.pathname.startsWith('/live/c/')) clipGets.missing++; res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
@@ -514,6 +527,33 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     h = { body: f.body, mtime: f.mtime, size: f.body.length };
     if (clip) clipGets.disk++;
   } else { hot.delete(p); hot.set(p, h); if (clip) clipGets.memory++; }   // recently used
+  sendLive(req, res, p, isHead, clip, h);
+}
+
+/** A file under /live/ from disk, into the hot set: one read per file however many ask for it at once (null: not there). */
+const reading = new Map<string, Promise<{ body: Buffer; mtime: number; size: number } | null>>();
+function readLive(p: string) {
+  let r = reading.get(p);
+  if (!r) {
+    r = (async () => {
+      const st = await fsp.stat(p).catch(() => null);
+      if (!st || st.isDirectory()) return null;
+      const body = await fsp.readFile(p);
+      const cur = hot.get(p);                         // written (and kept) meanwhile: that copy is the newest
+      if (cur) return cur;
+      // taken down or pruned while we read (deletes drop the hot copy and unlink together, in one step): never put it
+      // back. This check and the hotPut below run in one step too, so no delete can fall between them.
+      if (!existsSync(p)) return null;
+      hotPut(p, body, st.mtimeMs);
+      return hot.get(p) ?? { body, mtime: st.mtimeMs, size: body.length };
+    })().finally(() => reading.delete(p));
+    reading.set(p, r);
+  }
+  return r;
+}
+
+/** The answer for a file under /live/ in hand: its age noted, a 304 for a client that has it, else the bytes. */
+function sendLive(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, p: string, isHead: boolean, clip: boolean, h: { body: Buffer; mtime: number; size: number }) {
   if (clip) { const a = Date.now() - h.mtime; clipGets.age[a < 3_600_000 ? 'h1' : a < 6 * 3_600_000 ? 'h6' : a < 86_400_000 ? 'd1' : a < 2 * 86_400_000 ? 'd2' : 'older']++; }
   const cache = isHead ? 'public, max-age=1, stale-while-revalidate=10' : 'public, max-age=31536000, immutable';
   // a poll that finds nothing new costs a header, not a body
