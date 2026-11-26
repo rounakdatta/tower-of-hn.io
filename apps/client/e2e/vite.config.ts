@@ -7,9 +7,10 @@ import { fileURLToPath } from 'node:url';
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 export default defineConfig({
   root: here('./harness'),
-  // esnext, as the app builds (vite.config.ts): the CSS minifier's browser targets come from it, and what it does to a rule
-  // (it drops one of a pair of prefixed and unprefixed declarations) is part of what ships, so it has to be part of what is tested
-  build: { target: 'esnext', outDir: here('./.harness'), emptyOutDir: true, rollupOptions: { input: { index: here('./harness/index.html'), timeline: here('./harness/timeline.html') } } },
+  // (Vite's default target, as the reply harness has always been built; the app builds esnext, which the CSS minifier reads
+  // differently: with either, a prefixed and an unprefixed declaration in one rule lose one of the two, so scrubber.css keeps
+  // them apart)
+  build: { outDir: here('./.harness'), emptyOutDir: true, rollupOptions: { input: { index: here('./harness/index.html'), timeline: here('./harness/timeline.html') } } },
   logLevel: 'warn',
   plugins: [{
     name: 'app-style',
