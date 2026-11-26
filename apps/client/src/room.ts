@@ -83,8 +83,15 @@ export class Room {
       this.leave(i);
     }
     const place = this.stage ? this.stage.place(spot, from, i, now) ?? from.clone() : this.freePlace(spot, from);
-    // (CROWD_V2) nobody was looking: they're simply there already
-    if (stepping?.quiet) { this.crowd.people[i].pose.pos.copy(place); from = place.clone(); }
+    // (CROWD_V2) nobody was looking (or the camera is cutting to them): they're simply there already, and say it now
+    if (stepping?.quiet) {
+      const p = this.crowd.people[i];
+      p.pose.pos.copy(place); p.pose.facing = Math.atan2(spot.pos.x - place.x, spot.pos.z - place.z);
+      this.crowd.active.add(i);
+      spot.seats.push({ name, pos: p.pose.pos, facing: p.pose.facing, seated: false });
+      this.onArrive(i, spot);
+      return 'here';
+    }
     const path = this.route(from, place, spot);
     const face = Math.atan2(spot.pos.x - place.x, spot.pos.z - place.z);
     this.going.set(i, spot); this.dest.set(i, place);
