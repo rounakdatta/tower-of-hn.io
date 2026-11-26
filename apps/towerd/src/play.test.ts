@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { playFlags } from './play.ts';
 
-test('the crowd and the timeline reach head.play beside the ones already on (they were dropped once: a whitelist that predated them)', () => {
-  assert.deepEqual(playFlags('stream,cue,quick,crowd,timeline').on, ['stream', 'cue', 'quick', 'crowd', 'timeline']);
+test('the crowd reaches head.play beside the ones already on (it was dropped once: a whitelist that predated it)', () => {
+  assert.deepEqual(playFlags('stream,cue,quick,crowd').on, ['stream', 'cue', 'quick', 'crowd']);
 });
 test('unset or empty: nothing on, as the room always was', () => {
   assert.deepEqual(playFlags(undefined), { on: [], unknown: [] });

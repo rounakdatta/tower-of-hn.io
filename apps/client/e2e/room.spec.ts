@@ -186,10 +186,12 @@ test('an hour at a big table: the heap and the room\'s people stay flat', async 
     slots.push((await call<Hall>(page, 'hall')).slots);
   }
   test.info().annotations.push({ type: 'heap', description: heap.map((x) => x.toFixed(1)).join(' ') });
+  test.info().annotations.push({ type: 'slots', description: slots.join(' ') });
   // after the first ten minutes (caches filling), no climb: the last sample within 20% of the third
   expect(heap[11]).toBeLessThan(heap[2] * 1.2 + 2);
-  // the crowd stays the size of who is here (slots someone left are reused past 72), not of everyone who ever spoke
-  expect(Math.max(...slots)).toBeLessThanOrEqual(100);
+  // the crowd stays the size of who is here (slots someone left are reused past 72), not of everyone who ever spoke:
+  // after five minutes it has what it needs, and an hour adds next to nothing (the table's 179 voices would add ~150)
+  expect(Math.max(...slots)).toBeLessThanOrEqual(slots[0] + 25);
 });
 
 for (const fx of ['n5', 'n200', 'n3000', 'onepassword']) {

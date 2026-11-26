@@ -931,7 +931,7 @@ function aimAt(x: number, y: number): { kind: 'person'; i: number } | { kind: 'a
   return { kind: null, at: ray.ray.intersectPlane(floorPlane, hitPoint) ? hitPoint.clone() : undefined };
 }
 /** has `name` said something at one of this room's tables (so R can answer it here)? */
-function canReply(name: string) { return spots.some((s) => s.table.turns.some((t) => t.by === name)); }
+function canReply(name: string) { return spots.some((s) => !s.bar && s.table.turns.some((t) => t.by === name)); }
 /** whoever is at a point on the screen (at a table, or in the audience), by name */
 function nameAt(a: ReturnType<typeof aimAt>) { return a.kind === 'person' ? crowd.people[a.i].name : a.kind === 'audience' ? a.name : null; }
 /** the table you're standing beside (close enough to sit), if any */
@@ -987,7 +987,12 @@ async function warmShaders() {
   interior.group.position.y = crowd.group.position.y = -400; interior.group.visible = true;
   crowd.set([{ name: 'warm-up', pose: { pos: new THREE.Vector3(0, 0, 0), facing: 0, seated: true } }]);
   tower.setDoor(0, 0.5); tower.update(clock, 0);
+  // (CROWD_V2: the audience and the galleries too; three skips what isn't visible)
+  const v2 = crowdV2(), aud = audience.group.visible, gal = v2 ? interior.warmGalleries() : null;
+  if (v2) { audience.group.visible = true; audience.group.position.y = -400; }
   try { await renderer.compileAsync(scene, camera); } catch { /* then they compile on first use */ }
+  gal?.removeFromParent();
+  if (v2 && !room.stage) { audience.group.visible = aud; }
   if (mode === 'tower' && doorSlot < 0) {
     crowd.set([]); interior.group.visible = vis;
     tower.setDoor(-1); tower.update(clock, 0);
