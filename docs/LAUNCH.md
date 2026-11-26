@@ -142,6 +142,8 @@ reviewed by a separate read-only reviewer before merging. Every behaviour is beh
 | The site's CPU share | towerd `requests.cpu: 300m` | Weight ~12 instead of 1 against agentfest's ~39 on kanmani. | remove the line |
 | Non-blocking reads | `LIVE_READS` (async by default, 0.5.14) | A file not in towerd's memory is read without holding up other requests; `HOT_MB` sizes the memory cache. | `LIVE_READS: "sync"` |
 | Runner placement | runner `replicas: 1`, not on `city=rishra`, `MAX_LANES: "2"` | Voicing on vizerizz only (§3.2). | `replicas: 2`, drop the expression |
+| A room that fits any crowd | `CLIENT_FLAGS` has `crowd` (0.5.15, #19) | Tables keep a few people at their front; everyone else on the floor stands in the audience (along the glass, then galleries above as a floor needs them), animated by the GPU; whoever speaks steps forward; the camera never sits in the crowd. | drop `crowd` (and `timeline`) |
+| Listen from any point | `CLIENT_FLAGS` has `timeline` (0.5.15, #20; needs `crowd`) | At a table, a line along the bottom: scrub the conversation (the room shows that moment), let go to listen from that comment; arrows step, `?t=` links a moment. | drop `timeline` |
 
 Also new: `cover` in `/status` (how much of the tower is voiced), the switches logged at boot, `HN_API` (staging),
 `?play=` for side-by-side tests, and `tools/scale/`.
