@@ -707,12 +707,12 @@ export class Director {
     if (this.galleries() > 0) {
       // a hall: from behind the table (the side away from the middle of the room), low, looking past it and up across
       // the void, so the table sits in the bottom of the frame and the far galleries rise behind it, all those faces
-      const up = new THREE.Vector3(c.x * 0.35, this.roomY + 3.4, c.z * 0.35);
+      const up = new THREE.Vector3(c.x * 0.35, this.roomY + 2.9, c.z * 0.35);
       const back = c.clone().sub(up).setY(0);
       if (back.lengthSq() < 0.04) back.set(0, 0, 1);
       back.normalize();
       const from = c.clone().addScaledVector(back, this.spot.radius + 1.35);
-      this.frame(up, back, from.distanceTo(up.clone().setY(from.y)), 1.15 - (up.y - this.roomY), 66, [{ i: -1, head: target, w: 0.3 }], new Set(), { glide: glide ? 2.2 : 0, now, name: 'wide hall' });
+      this.frame(up, back, from.distanceTo(up.clone().setY(from.y)), 1.15 - (up.y - this.roomY), 62, [{ i: -1, head: target, w: 0.3 }], new Set(), { glide: glide ? 2.2 : 0, now, name: 'wide hall' });
       return;
     }
     this.frame(target, inward, this.spot.radius * 2 + 1.9, 0.85, 52, [{ i: -1, head: target, w: 0.3 }], new Set(), { glide: glide ? 2.2 : 0, now, name: 'wide' });

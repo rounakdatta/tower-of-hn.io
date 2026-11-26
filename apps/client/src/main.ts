@@ -317,6 +317,12 @@ sync.onHead = (h: Head, prev) => {
     break;
   }
   if (prev && mode !== 'tower' && activeStory >= 0 && !h.tower.includes(activeStory)) ui.hint('This story just left the front page.');
+  // (CROWD_V2) the story's points went up while we're in its room: the hall nods along, out from the table we're with
+  const up = room.stage && prev && activeStory >= 0 ? (h.stories[activeStory]?.[1] ?? 0) - (prev.stories[activeStory]?.[1] ?? 0) : 0;
+  if (up > 0) {
+    const at = mode === 'table' ? director.spot : mixer.focus;
+    if (at && !at.bar) audience.react('nod', at.pos.x, at.pos.z, clock + 0.2, Math.min(1, 0.35 + up * 0.08));
+  }
 };
 sync.onDelta = (d) => {
   if (d.turns?.length) {
@@ -1130,7 +1136,8 @@ if (recording) {
     /** (CROWD_V2) the hall: galleries, everyone on the floor, the audience, how many are drawn at each level of detail */
     hall: () => ({ on: !!room.stage, tiers: interior.galleryCount, people: stage.people, audience: audience.n, drawn: audience.drawn(),
       present: Array.from({ length: audience.n }, (_, i) => audience.present(i)).filter(Boolean).length,
-      crowd: crowd.people.filter((p) => !p.hidden).length, slots: crowd.people.length }),
+      crowd: crowd.people.filter((p) => !p.hidden).length, slots: crowd.people.length,
+      triangles: { audience: audience.triangles(), crowd: crowd.triangles() } }),
     fov: () => camera.fov,
     /** who is acting right now (anyone the crowd is animating), and how far: stand, arms, lean, mouth */
     acting: () => [...crowd.active].map((i) => { const p = crowd.people[i], e = p?.expr; return e ? { name: p.name, stand: +e.stand.toFixed(2), armR: +e.armR.toFixed(2), armL: +e.armL.toFixed(2), lean: +e.lean.toFixed(2), open: +e.open.toFixed(2), smile: +e.smile.toFixed(2), flush: +e.flush.toFixed(2) } : null; }).filter(Boolean),

@@ -98,27 +98,40 @@ export class Stage {
   }
 
   /**
-   * Bring someone from the audience into the room's crowd, standing where they'll walk from: the edge of the lane round
-   * `spot` nearest their place (or the front place itself, when neither end is in view). Null: not in the hall.
+   * Where someone steps out of the audience (or back into it): for the standing room along the glass, just in front of
+   * its rows, straight in from their place (they come out between the people in front of them); for a gallery, the edge
+   * of the clear lane round the table, on their side (they came down).
    */
-  bring(name: string, spot: TableSpot, now: number): { i: number; from: THREE.Vector3 } | null {
+  private door(a: number, spot: TableSpot | undefined) {
+    const home = this.audience.places[a];
+    if (home.level === 0 || !spot) {
+      const r = Math.hypot(home.x, home.z) || 1, inner = R - HALL.GLASS - (HALL.BAND_ROWS - 1) * HALL.ROW - 0.5;
+      const k = Math.min(1, inner / r);
+      return new THREE.Vector3(home.x * k, 0, home.z * k);
+    }
+    const t = spot.pos, dx = home.x - t.x, dz = home.z - t.z, d = Math.hypot(dx, dz) || 1;
+    const edge = spot.radius + HALL.FRONT + HALL.LANE - 0.15;
+    const out = new THREE.Vector3(t.x + (dx / d) * edge, 0, t.z + (dz / d) * edge), r = Math.hypot(out.x, out.z);
+    if (r > R - 0.7) out.multiplyScalar((R - 0.7) / r);
+    return out;
+  }
+
+  /**
+   * Bring someone from the audience into the room's crowd, standing where they'll walk from (door()), or, when neither
+   * their place nor that door is in view, already at the front place they'll be given. Null: not in the hall.
+   */
+  bring(name: string, spot: TableSpot, now: number): { i: number; from: THREE.Vector3; quiet: boolean } | null {
     const a = this.ix.get(name);
     if (a === undefined || !this.hall) return null;
-    const home = this.audience.places[a], t = spot.pos;
-    const dx = home.x - t.x, dz = home.z - t.z, d = Math.hypot(dx, dz) || 1;
-    const edge = spot.radius + HALL.FRONT + HALL.LANE - 0.15;
-    const from = new THREE.Vector3(t.x + (dx / d) * edge, 0, t.z + (dz / d) * edge);
-    const r = Math.hypot(from.x, from.z);
-    if (r > R - 0.7) from.multiplyScalar((R - 0.7) / r);
-    const y = this.crowd.group.position.y;
-    const homeW = new THREE.Vector3(home.x, y + home.y + 1.5, home.z);
-    const quiet = !this.seen(homeW) && !this.seen(new THREE.Vector3(from.x, y + 1.4, from.z));
+    const home = this.audience.places[a], t = spot.pos, y = this.crowd.group.position.y;
+    const from = this.door(a, spot);
+    const quiet = !this.seen(new THREE.Vector3(home.x, y + home.y + 1.5, home.z)) && !this.seen(new THREE.Vector3(from.x, y + 1.4, from.z));
     const i = this.crowd.show(name, { pos: from, facing: Math.atan2(t.x - from.x, t.z - from.z), seated: false });
     if (i < 0) return null;
     this.audience.away(a, true, this.clock(), !quiet);
-    void now;
     this.homing.delete(i);
-    return { i, from };
+    void now;
+    return { i, from, quiet };
   }
 
   /** A place at the front of `spot` for crowd person i, nearest `from`: a free one, or one made free (whoever there has
@@ -169,19 +182,35 @@ export class Stage {
   /** Person i (crowd) leaves wherever they stand at a front (they're going somewhere else). */
   free(i: number) { for (const fr of this.fronts.values()) for (const f of fr) if (f.who === i) f.who = -1; }
 
+  /** Someone new on the floor (they came by the lift: their first comment here just landed) gets a place in the hall,
+   *  near the table they spoke at, for when they step back. Their audience index. */
+  private join(name: string, near: THREE.Vector3) {
+    if (!this.hall) return undefined;
+    let home = -1, bd = Infinity;
+    this.tables.forEach((t, k) => { const d = Math.hypot(t.x - near.x, t.z - near.z); if (d < bd) { bd = d; home = k; } });
+    const place = this.hall.add(home);
+    if (!place) return undefined;
+    const a = this.audience.append(name, place);
+    this.ix.set(name, a); this.people++;
+    if (this.hall.used > this.interior.galleryCount) this.interior.galleries(this.hall.used);
+    this.audience.away(a, true, 0, false);                 // (they're at a table now: their place waits for them)
+    return a;
+  }
+
   /** Crowd person i walks back toward their place in the audience, and takes it again (they fade back in there). */
   sendHome(i: number, now: number) {
-    const p = this.crowd.people[i], a = p ? this.ix.get(p.name) : undefined;
-    if (!p || a === undefined) return;
+    const p = this.crowd.people[i];
+    if (!p) return;
+    const a = this.ix.get(p.name) ?? this.join(p.name, p.pose.pos);
+    if (a === undefined) return;
+    const pos = p.pose.pos.clone();
     this.room.leave(i);
     this.free(i);
-    const home = this.audience.places[a], pos = p.pose.pos;
+    const home = this.audience.places[a];
     const sp = this.spots.find((s) => !s.bar && Math.hypot(s.pos.x - pos.x, s.pos.z - pos.z) < s.radius + HALL.FRONT + HALL.LANE);
-    const t = sp?.pos ?? pos, dx = home.x - t.x, dz = home.z - t.z, d = Math.hypot(dx, dz) || 1;
-    const edge = (sp?.radius ?? 0) + HALL.FRONT + HALL.LANE - 0.15;
-    const to = new THREE.Vector3(t.x + (dx / d) * edge, 0, t.z + (dz / d) * edge);
+    const to = this.door(a, sp);
     this.homing.set(i, a);
-    this.crowd.walkTo(i, [to], Math.atan2(dx, dz), () => {
+    this.crowd.walkTo(i, this.room.route(pos, to), Math.atan2(home.x - to.x, home.z - to.z), () => {
       if (this.homing.get(i) !== a) return;
       this.homing.delete(i);
       this.crowd.hide(i);

@@ -358,6 +358,11 @@ export class Crowd {
     this.place(i); this.flush();
   }
   isHidden(i: number) { return !!this.people[i]?.hidden; }
+  /** triangles the crowd sends the GPU this frame (for checks) */
+  triangles() {
+    const tris = (m: THREE.InstancedMesh) => ((m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3) * m.count;
+    return [this.bodies, this.heads, this.arms, this.glasses, this.beards, this.hands, this.hoods, ...this.hair].reduce((n, m) => n + tris(m), 0);
+  }
   /**
    * Someone new takes person i's place (a newcomer to a long conversation): every look is rebuilt (hair, glasses
    * and hoods are shared instanced meshes), everyone else keeps their pose and expression.

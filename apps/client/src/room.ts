@@ -80,6 +80,8 @@ export class Room {
       this.leave(i);
     }
     const place = this.stage ? this.stage.place(spot, from, i, now) ?? from.clone() : this.freePlace(spot, from);
+    // (CROWD_V2) nobody was looking: they're simply there already
+    if (stepping?.quiet) { this.crowd.people[i].pose.pos.copy(place); from = place.clone(); }
     const path = this.route(from, place, spot);
     const face = Math.atan2(spot.pos.x - place.x, spot.pos.z - place.z);
     this.going.set(i, spot); this.dest.set(i, place);

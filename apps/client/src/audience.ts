@@ -24,6 +24,8 @@ const MID = 6.5, FAR = 15;
 const SORT_EVERY = 0.2;
 
 export const REACT = { none: 0, nod: 1, laugh: 2, gasp: 3, lean: 4 } as const;
+/** which ripple wins when two meet (by REACT index): a gasp over a laugh over leaning in over nods */
+const RANK = [0, 1, 3, 4, 2];
 export type Reaction = keyof typeof REACT;
 
 function torso(seg: number, rings = 1) {
@@ -279,6 +281,33 @@ export class Audience {
     this.lastSort = -1;
   }
 
+  /** One more person (someone new on the floor, out of the lift earlier): at the end of the list; the textures grow by a
+   *  row when they're full (64 people), so this is cheap. Their index. */
+  append(name: string, place: Place): number {
+    const i = this.n, rows = Math.ceil((i + 1) / ROW);
+    if (rows * ROW * TEXELS * 4 > this.data.length) {
+      const names = this.names.concat(name), places = this.places.concat(place), live = this.live.slice(0, i * 4);
+      this.set(names, places);
+      this.live.set(live); this.liveTex.needsUpdate = true;
+      return i;
+    }
+    const lk: Look = lookOf(name), o = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;
+    this.data.set([place.x, place.y, place.z, place.facing, lk.skin.r, lk.skin.g, lk.skin.b, lk.phase, lk.outfit.r, lk.outfit.g, lk.outfit.b, lk.height,
+      lk.hair.r, lk.hair.g, lk.hair.b, lk.width, lk.eye, lk.gap, lk.brow, lk.mouth, lk.style, lk.glasses ? 1 : 0, lk.beard ? 1 : 0, place.level], o);
+    this.live.set([-1, 0, -100, 0], i * 4);
+    this.names.push(name); this.places.push(place); this.n++;
+    if (place.level === 0) { const k = cellKey(place.x, place.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); }
+    for (const m of this.meshes) for (const at of [m.pid, m.hpid]) if (at.array.length < this.n) {
+      // (the index lists hold everyone at most: grow them with the room)
+      const g = at === m.pid ? m.body.geometry : m.head.geometry, next = new THREE.InstancedBufferAttribute(new Float32Array(this.n + 64), 1);
+      next.setUsage(THREE.DynamicDrawUsage); g.setAttribute('pid', next);
+      if (at === m.pid) m.pid = next; else m.hpid = next;
+    }
+    this.tex.needsUpdate = this.liveTex.needsUpdate = true;
+    this.lastSort = -1;
+    return i;
+  }
+
   /** Person i (an index into set()'s names) steps out to a table (true), or back to their place (false). `fade`: seconds. */
   away(i: number, away: boolean, now: number, fade = true) {
     if (i < 0 || i >= this.n) return;
@@ -311,7 +340,10 @@ export class Audience {
   }
   /** A reaction ripples out from (x, z) through everyone here: a laugh, a gasp, nods, leaning in. */
   react(kind: Reaction, x: number, z: number, now: number, amp = 1) {
-    this.u.react.value.set(x, z, now, REACT[kind]); this.u.reactAmp.value = amp;
+    // one ripple at a time: a smaller one (nods for points) never cuts off a bigger one still going through the room
+    const r = this.u.react.value, k = REACT[kind];
+    if (now - r.z < 2.6 && now >= r.z - 0.5 && RANK[k] < RANK[r.w | 0]) return;
+    r.set(x, z, now, k); this.u.reactAmp.value = amp;
   }
 
   /** Once a frame: ease the playhead; every SORT_EVERY seconds (or when the camera jumps) sort who is drawn how. */
@@ -358,6 +390,11 @@ export class Audience {
 
   /** how many are drawn at each level of detail (for checks) */
   drawn() { return this.meshes.map((m) => (m.body.geometry as THREE.InstancedBufferGeometry).instanceCount); }
+  /** triangles the audience sends the GPU this frame (for checks: the budget is in triangles, not people) */
+  triangles() {
+    const tris = (g: THREE.BufferGeometry) => (g.index ? g.index.count : g.attributes.position.count) / 3;
+    return this.meshes.reduce((n, m) => n + (tris(m.body.geometry) + tris(m.head.geometry)) * (m.body.geometry as THREE.InstancedBufferGeometry).instanceCount, 0);
+  }
 
   /** The person whose head is under a ray (anyone here), or -1. */
   pick(ray: THREE.Ray) {
