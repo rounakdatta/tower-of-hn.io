@@ -4,10 +4,12 @@
 //   f/<id>/<rev>    -> a floor's tables, play order, seats, voices, voiced clips
 //   c/<id>.<rev>    -> a comment's sidecar: text, emotion, clips with loudness and mouth tracks
 
+/** ?play=a,b: playing behaviours for this page, over the server's (see LiveSync.play) */
+const PLAY = typeof location === 'undefined' ? null : new URLSearchParams(location.search).get('play')?.split(',').map((x) => x.trim()).filter(Boolean) ?? null;
+
 /** voiced: [sidecar path, seconds, emotion, intensity 0..1] (older servers: just the first two) */
 export interface Turn { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; v?: [string, number, string?, number?] }
 /** gist: the first words of the comment that started it (older servers: absent) */
-const PLAY = typeof location === 'undefined' ? null : new URLSearchParams(location.search).get('play')?.split(',').filter(Boolean) ?? null;
 export interface Table { root: number; turns: Turn[]; seated: string[]; standing: string[]; gist?: string }
 export interface Floor { story: { id: number; title: string; url?: string; by?: string; score: number; comments: number }; rev: number; epoch: number; tables: Table[] }
 export interface Head {

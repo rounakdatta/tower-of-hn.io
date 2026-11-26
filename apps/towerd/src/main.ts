@@ -41,7 +41,9 @@ const MAX_QUEUED = 48;                               // the most urgent of what'
  *  plays as it always has. stream: a turn starts on its first decoded clip, the rest join as they decode. cue: whoever
  *  speaks next is called over while the turn before is said, and nobody is waited on for long. quick: a shorter pause
  *  when you sit down. (A page can try them without the server: ?play=stream,cue,quick, or ?play= for none.) */
-const PLAY = [...new Set((process.env.CLIENT_FLAGS ?? '').split(',').map((s) => s.trim()))].filter((s) => ['stream', 'cue', 'quick'].includes(s));
+const PLAY_ASKED = [...new Set((process.env.CLIENT_FLAGS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))];
+const PLAY = PLAY_ASKED.filter((s) => ['stream', 'cue', 'quick'].includes(s));
+console.log(JSON.stringify({ play: { on: PLAY, ...(PLAY.length < PLAY_ASKED.length ? { unknown: PLAY_ASKED.filter((s) => !PLAY.includes(s)) } : {}) } }));
 /** bump to re-voice everything (new pace, new model): old audio keeps playing until its replacement lands */
 // v3: comments are said the way people read them aloud (packages/core spoken.ts); older audio plays until re-voiced
 const VOICE_VERSION = process.env.VOICE_VERSION ?? 'v3';

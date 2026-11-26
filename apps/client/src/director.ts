@@ -185,7 +185,12 @@ export class Director {
           const bufs: AudioBuffer[] = [];
           let r = { side, bufs };
           for (let k = 0; k < loads.length; k++) {
-            bufs.push(await loads[k]);
+            try { bufs.push(await loads[k]); } catch (e) {
+              // a clip that won't come: the comment ends on what was said (as when its last clip failed to voice),
+              // rather than the table waiting 30 s in silence for the rest; a later retry can still bring it whole
+              if (k) keep({ side: { ...side, clips: side.clips.slice(0, k), partial: false }, bufs: bufs.slice() });
+              throw e;
+            }
             r = keep({ side: k < loads.length - 1 ? { ...side, clips: side.clips.slice(0, k + 1), partial: true } : side, bufs: bufs.slice() });
           }
           return r;
@@ -283,7 +288,7 @@ export class Director {
       const fresh = this.clipsDone === 0;
       if (fresh) {
         // audio voiced while HN still showed a placeholder ([delayed]): the real text is being re-voiced; skip it meanwhile
-        if (r.side.clips.length === 1 && /^\s*\[(delayed|flagged|dead|deleted|removed)\]\s*$/i.test(r.side.clips[0].t)) {
+        if (r.side.clips.length === 1 && !r.side.partial && /^\s*\[(delayed|flagged|dead|deleted|removed)\]\s*$/i.test(r.side.clips[0].t)) {
           if (this.floor && !this.spot.tableOf) this.sync.want(this.floor.story.id, this.spot.index, this.turnIdx);
           this.turnIdx++;
           continue;
@@ -316,7 +321,16 @@ export class Director {
       if (this.room) { const sp = this.ix(turn.by); if (sp >= 0) this.room.speaking(sp, t); }   // nobody calls them away mid-sentence
       // cue: whoever speaks next comes over now, while this is said, not when their turn has come
       if (fresh && this.room && !this.spot.bar && this.sync.play('cue')) {
-        for (const u of turns.slice(this.turnIdx + 1, this.turnIdx + 3)) if (u.by !== turn.by && !this.skipIds.has(u.id)) this.room.callOver(u.by, this.spot, at);
+        let until = t;
+        for (const u of turns.slice(this.turnIdx + 1, this.turnIdx + 3)) {
+          until += (u.v?.[1] ?? 10) + 1;
+          if (u.by === turn.by || this.skipIds.has(u.id)) continue;
+          const coming = this.room.callOver(u.by, this.spot, at);
+          // theirs is the next word here: once here or on their way, no other table calls them away meanwhile (they'd
+          // walk off, and back); someone still busy elsewhere is left free to come when they're done
+          const i = this.room.who(u.by);
+          if (i >= 0 && (coming === 'here' || coming === 'coming')) this.room.speaking(i, until);
+        }
       }
       if (r.side.partial) { this.clipsDone = r.side.clips.length; this.partialId = turn.id; continue; }   // the rest is on its way
       this.clipsDone = 0;
@@ -453,7 +467,7 @@ export class Director {
     // a link said where it stood rides on its sentence's clip (shown as written, with the link's text in it); one standing
     // alone has a clip of its own, shown as its URL
     const link = s.side.links.find((l) => l.url === s.clip.t || (!!l.text && s.clip.t.includes(l.text)));
-    this.ui.placard(link ? { url: link.url, domain: link.domain, at: this.crowd.headPos(s.who) } : null);
+    this.ui.placard(link ? { url: link.url, domain: link.domain, at: s.who >= 0 ? this.crowd.headPos(s.who) : new THREE.Vector3(this.spot!.pos.x, this.roomY + 1.1, this.spot!.pos.z) } : null);
     this.ui.code(s.side.code.find((c) => c.startsWith(s.clip.t.slice(0, 40))) ?? null);
     // pick a shot
     const first = s.side.clips[0] === s.clip;

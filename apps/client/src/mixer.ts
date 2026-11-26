@@ -263,7 +263,8 @@ export class Mixer {
     // nobody speaks from across the room: the speaker comes to the table first (or, if the room is full, speaks
     // from the table without a body)
     const here = this.room.callOver(turn.by, p.spot, now);
-    if (here === 'coming' || here === 'busy') {
+    // (cue, mid-comment: they're already saying it, from the table: no waiting again before each clip)
+    if ((here === 'coming' || here === 'busy') && !(this.sync.play('cue') && p.done)) {
       const w = this.waited(p, `call:${turn.id}`, now);
       if (w > 30) { this.next(p, turn); return; }
       // cue: no table goes quiet for long while someone comes over: they speak as they come (from the table)
@@ -342,7 +343,10 @@ export class Mixer {
           // stream: the table can start on the first clip; the rest join in order as they decode
           const bufs: AudioBuffer[] = [];
           for (let k = 0; k < loads.length; k++) {
-            bufs.push(await loads[k]);
+            try { bufs.push(await loads[k]); } catch (e) {
+              if (k) keep({ side: { ...side, clips: side.clips.slice(0, k), partial: false }, bufs: bufs.slice() });   // ends on what was said
+              throw e;
+            }
             keep({ side: k < loads.length - 1 ? { ...side, clips: side.clips.slice(0, k + 1), partial: true } : side, bufs: bufs.slice() });
           }
         })
