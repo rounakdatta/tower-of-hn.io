@@ -450,11 +450,17 @@ def cpus_allowed():
 
 def node_lanes(node, spec):
     """NODE_LANES ("jomjom=1,other=2"): this node's lane cap, or None. A home box that runs hot gets fewer lanes than a
-    VPS beside it, from one Deployment."""
+    VPS beside it, from one Deployment. An entry for this node that isn't a positive whole number is said out loud and
+    read as one lane: the cap is there to protect a machine, so a typo must not lift it."""
     for part in (spec or "").split(","):
-        name, _, n = part.strip().partition("=")
-        if name and name == node and n.strip().isdigit() and int(n) > 0:
+        name, _, n = part.partition("=")
+        if name.strip() != node or not name.strip():
+            continue
+        n = n.strip()
+        if n.isascii() and n.isdigit() and int(n) > 0:
             return int(n)
+        print(json.dumps({"node_lanes": spec, "bad_entry": part.strip(), "lanes": 1}), file=sys.stderr, flush=True)
+        return 1
     return None
 
 
@@ -462,8 +468,10 @@ def config():
     cpus = cpus_allowed()
     threads = max(1, min(cpus, int(os.environ.get("THREADS", "2"))))
     node = os.environ.get("NODE_NAME", "") or socket.gethostname()
-    cap = node_lanes(node, os.environ.get("NODE_LANES")) or int(os.environ.get("MAX_LANES", "4"))
-    lanes = int(os.environ.get("LANES", "0")) or max(1, min(cap, cpus // threads))
+    lanes = int(os.environ.get("LANES", "0") or 0)
+    if not lanes:
+        cap = node_lanes(node, os.environ.get("NODE_LANES")) or int(os.environ.get("MAX_LANES", "4"))
+        lanes = max(1, min(cap, cpus // threads))
     return {"url": os.environ.get("VOICE_URL", "http://127.0.0.1:8788"), "token": os.environ.get("VOICE_TOKEN", ""),
             "cpus": cpus, "threads": threads, "lanes": lanes, "patience": float(os.environ.get("PATIENCE", "0")),
             "node": node, "nice": int(os.environ.get("NICE", "0")),
