@@ -18,6 +18,8 @@ import type { Reply, ReplyTarget, Landed } from './reply.ts';
 import { Crowd, setTimeValue } from './people.ts';
 import { Audience } from './audience.ts';
 import { Stage } from './stage.ts';
+import { lineOf, turnAt, stepFrom, parseT, formatT, type Line } from './timeline.ts';
+import { Scrubber } from './scrubber.ts';
 import { Director } from './director.ts';
 import { esc, hash32 } from './util.ts';
 import { Rig } from './rig.ts';
@@ -120,6 +122,100 @@ if (matchMedia('(prefers-reduced-motion: reduce)').matches) audience.u.motion.va
 stage.clock = () => clock;
 director.galleries = () => interior.galleryCount;
 const crowdV2 = () => sync.play('crowd');
+// TIMELINE (head.play "timeline", or ?play=timeline): at a table, a line along the bottom to scrub through the
+// conversation, see people join it, and listen from any point
+const timelineOn = () => sync.play('timeline') && !!room.stage;
+/** ?t= (12m30s, 750): a moment shared, at the table in ?table= */
+let deepT = parseT(params.get('t'));
+let line: Line | null = null, lineSpot: TableSpot | null = null, lineOthers = 0, lineAt = -1, lineTick = 0;
+let scrubTimer = 0, keySeek = 0, keyTo = -1, lineHeld = 0, lineLast = 0;
+const scrubber = new Scrubber({
+  onScrubbing(on) {
+    document.body.classList.toggle('scrubbing', on);
+    if (!director.spot) return;
+    if (on) { director.hold(true); director.establish(clock); return; }   // the wide shot: the room filling and emptying as you drag
+    // a drag that ended without a seek (cancelled): the conversation goes on from where it was, the room as it was
+    setTimeout(() => { if (director.spot && !scrubber.scrubbing) { director.hold(false); const p = director.position(); if (p) audience.playhead(p.k); } }, 0);
+  },
+  onScrub(_t, k) {
+    audience.playhead(k);                                 // people appear and disappear, as of then (a ripple)
+    clearTimeout(scrubTimer);
+    scrubTimer = window.setTimeout(() => director.prefetchAt(k), 150);   // where the finger rests: its words, ready
+  },
+  onSeek(_t, k) { clearTimeout(scrubTimer); seekTo(k); },
+  snippet: (k) => director.snippet(k) ?? (k === 0 ? lineSpot?.table.gist ?? null : null),
+});
+/**
+ * The conversation at `sp` on its own clock, and who is in the room when: everyone else on the floor is always here;
+ * someone whose only comments are in this conversation joins it with their first word (so the room fills as it goes,
+ * and empties as you scrub back). Their join times go to the audience's shader; the counts, to the line.
+ */
+function conversation(sp: TableSpot) {
+  const l = lineOf(sp.table.turns), elsewhere = new Set<string>();
+  for (const t of activeFloor?.tables ?? []) if (t.root !== sp.table.root) for (const u of t.turns) elsewhere.add(u.by);
+  const first = new Map<string, number>();
+  sp.table.turns.forEach((u, k) => { if (!elsewhere.has(u.by) && !first.has(u.by)) first.set(u.by, k); });
+  let joined = 0;
+  for (const mo of l.moments) { if (first.get(mo.by) === mo.k) joined++; mo.joined = joined; }
+  const keys = new Float32Array(audience.n).fill(-1);
+  audience.names.forEach((n, i) => { const k = first.get(n); if (k !== undefined) keys[i] = k; });
+  return { line: l, others: Math.max(0, stage.people - first.size), keys };
+}
+function showLine(sp: TableSpot) {
+  if (!timelineOn() || sp.bar) { hideLine(); return; }
+  const c = conversation(sp);
+  line = c.line; lineSpot = sp; lineOthers = c.others; lineAt = -1;
+  // sitting down rewinds the room to where this conversation has got to: whoever hadn't joined it yet steps out, the
+  // latest first (a ripple back through join order, not a pop)
+  lineLast = c.keys.reduce((a, b) => Math.max(a, b), 0) + 1;
+  audience.joins(c.keys);
+  const p = director.position(), k = p?.k ?? 0;
+  audience.playhead(lineLast, false); audience.playhead(k);
+  scrubber.show(line, lineOthers, (line.moments[k]?.start ?? 0) + (p?.into ?? 0));
+  document.body.classList.add('timeline');
+  // the first time ever: it rises by itself for a moment, once the letterbox is down, so there's no secret to find
+  if (!localStorage.getItem('tohn-timeline')) { localStorage.setItem('tohn-timeline', '1'); after(2.2, () => { if (line) scrubber.peek(); }); }
+}
+/** standing up: everyone is back (the room on foot is the whole floor), rippling in in the order they joined */
+function hideLine() { scrubber.hide(); document.body.classList.remove('timeline'); line = null; lineSpot = null; if (room.stage) audience.playhead(lineLast + 1); }
+/** Play from comment k: the room as of then (whoever says it and the next two at the table, nobody else standing
+ *  there), and its first words at once. */
+function seekTo(k: number) {
+  const sp = director.spot;
+  if (!sp || !line) return;
+  k = Math.max(0, Math.min(line.moments.length - 1, k));
+  const turns = sp.table.turns, keep = new Set<string>();
+  for (const u of turns.slice(k, k + 3)) keep.add(u.by);
+  const to = turns[k]?.replyTo !== undefined ? turns.find((u) => u.id === turns[k].replyTo)?.by : undefined;
+  if (to) keep.add(to);
+  stage.instantUntil = clock + 1.2;
+  stage.reset(sp, keep);
+  audience.playhead(k);
+  director.seek(k, clock);
+  lineAt = -1;
+  shareMoment(k);
+}
+/** the address bar names the moment you're at (a link to share starts there) */
+function shareMoment(k: number) {
+  if (!line || !activeFloor || !director.spot) return;
+  const q = new URLSearchParams(location.search);
+  q.set('story', String(activeFloor.story.id)); q.set('table', String(director.spot.table.root)); q.set('t', formatT(line.moments[k]?.start ?? 0));
+  for (const x of ['record', 'manual']) q.delete(x);
+  if (!recording) history.replaceState(history.state, '', `${location.pathname}?${q}`);
+}
+/** a few times a second while seated: the playhead follows the voice; people join as the conversation gets to them */
+function lineFrame(dt: number) {
+  if (!line || !director.spot || scrubber.scrubbing) return;
+  if ((lineTick += dt) < 0.2) return;
+  lineTick = 0;
+  const p = director.position();
+  if (!p || !line.moments[p.k]) return;
+  // paused, the playhead stays exactly where it stopped (a recording's virtual clock runs on while paused)
+  if (director.paused) { scrubber.setTime(lineHeld, false); return; }
+  lineHeld = line.moments[p.k].start + p.into;
+  scrubber.setTime(lineHeld, director.playing);
+  if (p.k !== lineAt) { lineAt = p.k; audience.playhead(p.k); shareMoment(p.k); }
+}
 const frustum = new THREE.Frustum(), projView = new THREE.Matrix4();
 stage.seen = (p) => {
   projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -573,7 +669,10 @@ async function enterFloor(sid: number, push = false, listen = false) {
       }
       sp.table = f.tables[k]; sp.index = k;
     }
-    if (mode === 'table' && !params.has('freeze')) director.refresh(f);     // ?freeze: a take that live HN can't rewrite mid-shot
+    if (mode === 'table' && !params.has('freeze')) {
+      director.refresh(f);     // ?freeze: a take that live HN can't rewrite mid-shot
+      if (line && lineSpot && lineSpot === director.spot) { const c = conversation(lineSpot); line = c.line; lineOthers = c.others; audience.joins(c.keys); scrubber.refresh(line, lineOthers); }
+    }
     else if (mode === 'floor') ui.tableLabels(spots, roomY, walkToTable, bestSpot(false));
     if (mode === 'floor') prewarm(sid, 2);              // still standing here a minute on: keep the first words coming
   });
@@ -653,6 +752,12 @@ function sit(s: TableSpot | undefined, push = false) {
   director.jumpTo = deepFrom; deepFrom = 0;
   director.skipIds = new Set((params.get('skip') ?? '').split(',').filter(Boolean).map(Number));
   director.start(activeFloor, s, roomY, clock, from);
+  if (deepT !== null && timelineOn() && !s.bar) {             // a moment shared: straight there
+    const k = turnAt(lineOf(s.table.turns), deepT);
+    deepT = null;
+    showLine(s);
+    if (k > 0) seekTo(k);
+  } else showLine(s);
 }
 
 function nextTable() {
@@ -677,6 +782,7 @@ director.onNewReply = (by) => ui.toast(you.me && by === you.me ? '<b>That’s yo
 /** Up from the table and on your feet beside it, facing it: the room plays on, this table where you left it. */
 function standUp() {
   leanBack = false;
+  hideLine();
   const sp = director.spot, said = director.said;
   director.stop(); setDof(false);
   if (sp && !sp.bar) mixer.handBack(sp, said);
@@ -698,6 +804,7 @@ function standUp() {
 /** Back out through the glass in front of you, still facing the room: the tower comes into view as you pull away,
  *  and the glass closes behind you before the room goes (frame() clears it once you're well out). */
 function leaveFloor() {
+  hideLine();
   const look0 = walk.enabled ? walk.look.clone() : rig.target.clone();
   director.stop(); setDof(false); mixer.exclude = null;
   nav(location.pathname, false);
@@ -743,6 +850,18 @@ addEventListener('keydown', (e) => {
   if (reply?.open) { if (e.key === 'Escape') reply.escape(); return; }      // typing a reply never drives the room
   if (e.key === 'Escape') { if (walk.locked || performance.now() - walk.unlockedAt < 500) return; if (mode === 'table') stepOut(1); else if (mode === 'floor') { leanBack = false; stepOut(1); } }
   else if (e.key === ' ' && mode === 'table') { e.preventDefault(); director.togglePause(); }
+  else if (line && mode === 'table' && /^(ArrowLeft|ArrowRight|Home|End)$/.test(e.key) && !(e.target as HTMLElement)?.closest?.('[role=slider], input, textarea')) {
+    // (seated, the arrows step through the conversation: one comment, ten with Shift; Home and End: its ends)
+    e.preventDefault();
+    // (from where the keys have got to, while a step is still settling: → then Shift+→ is eleven, not ten)
+    const p = director.position(), from = keyTo >= 0 ? keyTo : p?.k ?? 0, now = line.moments[from]?.start ?? 0;
+    const k = e.key === 'Home' ? 0 : e.key === 'End' ? line.moments.length - 1 : turnAt(line, stepFrom(line, now, (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 10 : 1)));
+    keyTo = k;
+    scrubber.setTime(line.moments[k].start, false);
+    audience.playhead(k);
+    clearTimeout(keySeek);
+    keySeek = window.setTimeout(() => { keyTo = -1; seekTo(k); }, 350);
+  }
   else if ((e.key === 'n' || e.key === 'N') && mode === 'table') nextTable();
   else if (e.key === 'm' || e.key === 'M') audio.setMuted(!audio.muted);
   else if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey && !reply?.open && !(e.target as HTMLElement)?.closest?.('input, textarea')) {
@@ -1051,6 +1170,7 @@ function frame(dt: number, draw = true) {
   neonTick(clock);
   if ((mode === 'floor' || mode === 'table') && ++lampTick % 4 === 0) lampMoods(dt * 4);
   director.update(clock, dt);
+  if (line) lineFrame(dt);
   crowd.update(dt);
   if (room.stage && interior.group.visible) {
     stage.tidy(audio.now());
@@ -1149,6 +1269,10 @@ if (recording) {
       return out;
     },
     speaking: () => { const l = director.line; return l && l.who >= 0 ? { name: crowd.people[l.who]?.name ?? '', i: l.who } : null; },
+    /** (TIMELINE) where the table has got to, its turns, and the comment at t seconds into the conversation */
+    position: () => director.position(),
+    turns: () => director.spot?.table.turns.map((u) => ({ id: u.id, by: u.by })) ?? [],
+    lineAt: (t: number) => (line ? turnAt(line, t) : -1),
     /** (CROWD_V2) what the audience's shaders are told: where heads turn, the last reaction (x, z, start, kind) */
     audienceState: () => ({ focus: audience.u.focusB.value.toArray(), focusAt: audience.u.focusT.value, react: audience.u.react.value.toArray(), at: audience.u.at.value }),
     /** debug: the lens anywhere (room space: y from the floor), looking at a point, with a field of view */

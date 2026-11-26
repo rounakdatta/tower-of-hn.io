@@ -45,8 +45,10 @@ export function synthetic(n) {
     let prev = -1;
     const walk = (k, depth) => {
       const nd = nodes[k], gapMs = turns.length === 0 ? 0 : depth > prev ? 220 : depth === prev ? 480 : 800;
+      // (one comment in eleven not voiced yet, as on a live floor: the table asks the server for it when it's near)
+      const dur = Math.round((6 + -Math.log(1 - r()) * 18) * 100) / 100, emo = EMO[Math.floor(r() * EMO.length)], amp = Math.round(r() * 10) / 10;
       turns.push({ id: nd.id, by: nd.by, depth, ...(nd.parent !== null ? { replyTo: nodes[nd.parent].id } : {}), gapMs, voice: Math.floor(r() * 110),
-        v: [`c/${nd.id}.f1.json`, Math.round((6 + -Math.log(1 - r()) * 18) * 100) / 100, EMO[Math.floor(r() * EMO.length)], Math.round(r() * 10) / 10] });
+        ...(turns.length % 11 === 7 ? {} : { v: [`c/${nd.id}.f1.json`, dur, emo, amp] }) });
       prev = depth;
       for (const c of nd.kids) walk(c, depth + 1);
     };

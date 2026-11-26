@@ -1,0 +1,168 @@
+// The timeline in the room (TIMELINE, with CROWD_V2): scrubbing shows the room as of then (people who hadn't joined
+// the conversation yet aren't there), letting go plays from that comment at once with its caption, a drag across the
+// whole conversation fetches only where the finger rested and asks the server for nothing until it's let go, the
+// playhead follows the voice, keys step a comment (or ten) at a time, and a shared ?t= starts there. Chromium, the
+// scene's clock stepped by hand; the scrubber is driven with the real mouse and touch input.
+import { test, expect, type Page } from '@playwright/test';
+// @ts-expect-error (a plain module, shared with the server)
+import { ensure } from './room/fixtures.mjs';
+
+type Fx = { name: string; sid: number; root: number; people: number };
+const FX: Record<string, Fx> = ensure();
+const PLAY = 'crowd,timeline,stream,cue,quick';
+type W = { __ready: boolean; __tohn: Record<string, (...a: unknown[]) => unknown> };
+const step = (page: Page, n: number) => page.evaluate((n) => { for (let k = 0; k < n; k++) (window as unknown as W).__tohn.frame(1 / 30, false); }, n);
+const call = <T>(page: Page, fn: string, ...a: unknown[]) => page.evaluate(([fn, a]) => (window as unknown as W).__tohn[fn as string](...(a as unknown[])), [fn, a] as const) as Promise<T>;
+interface Hall { present: number; people: number }
+interface Pos { k: number; into: number }
+
+async function seat(page: Page, fx: string, extra = '') {
+  await page.goto(`/?record&manual&webgl&data=/fx/${fx}/live/&play=${PLAY}&table=${FX[fx].root}${extra}`);
+  await page.waitForFunction(() => (window as unknown as W).__ready === true);
+  await page.evaluate(() => (window as unknown as W).__tohn.enter(0));
+  await page.waitForFunction(() => (window as unknown as W).__tohn.mode() === 'floor');
+  await step(page, 150);
+  await call(page, 'sit');
+  await step(page, 90);
+}
+const slider = (page: Page) => page.getByRole('slider', { name: 'Conversation timeline' });
+/** the scrubber's line: where x% of the conversation is on screen (just above the line itself: on a phone the strip
+ *  also reaches down over the letterbox, where the pills are, and a pill sits on top there) */
+async function at(page: Page, f: number) {
+  const track = (await page.locator('#timeline .tl-track').boundingBox())!;
+  return { x: track.x + track.width * f, y: track.y - 8 };
+}
+/** A drag along the line, as the device makes one: the mouse on a desktop; on a phone a finger, through the browser's
+ *  own touch input (CDP), which takes the path a real one does (touch-action, capture, the pointer events it makes). */
+async function drag(page: Page, from: number, to: number, steps = 12, frames = 3) {
+  const a = await at(page, from), b = await at(page, to), touch = !!test.info().project.use.hasTouch;
+  const pts = Array.from({ length: steps }, (_, s) => ({ x: a.x + ((b.x - a.x) * (s + 1)) / steps, y: a.y }));
+  if (!touch) {
+    await page.mouse.move(a.x, a.y - 30); await page.mouse.move(a.x, a.y);      // (hover reveals it)
+    await page.mouse.down();
+    for (const p of pts) { await page.mouse.move(p.x, p.y); if (frames) await step(page, frames); }
+    return { up: () => page.mouse.up(), to: async (f: number) => { const c = await at(page, f); await page.mouse.move(c.x, c.y); } };
+  }
+  const cdp = await page.context().newCDPSession(page);
+  const touchAt = (type: 'touchStart' | 'touchMove' | 'touchEnd', x: number, y: number) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y, id: 1 }] });
+  await touchAt('touchStart', a.x, a.y);
+  for (const p of pts) { await touchAt('touchMove', p.x, p.y); if (frames) await step(page, frames); }
+  let last = pts[pts.length - 1];
+  return { up: () => touchAt('touchEnd', last.x, last.y), to: async (f: number) => { const c = await at(page, f); last = c; await touchAt('touchMove', c.x, c.y); } };
+}
+
+test('scrubbing back empties the room of everyone who hadn\'t joined yet; forward, they\'re back', async ({ page }) => {
+  await seat(page, 'onepassword');
+  const d = await drag(page, 0.5, 0.02);
+  // (the scrubber reports a move on the next animation frame, in real time; the room then eases toward it)
+  await page.waitForTimeout(120); await step(page, 60);
+  const early = await call<Hall>(page, 'hall');
+  await d.to(0.98);
+  await page.waitForTimeout(120); await step(page, 60);
+  const late = await call<Hall>(page, 'hall');
+  await d.up();
+  // the 1Password table's 179 people: most of them only ever spoke there
+  expect(late.present - early.present, `present early ${early.present}, late ${late.present}`).toBeGreaterThan(100);
+  expect(late.present).toBeLessThanOrEqual(late.people);
+});
+
+test('letting go plays from that comment at once, with its caption', async ({ page }) => {
+  await seat(page, 'onepassword');
+  const d = await drag(page, 0.1, 0.6);
+  await d.up();
+  // its words come from the server (the drag never rested, so nothing was fetched ahead): one round trip, then 0.2 s
+  await page.waitForTimeout(250);
+  await step(page, 6);
+  const pos = await call<Pos>(page, 'position'), sp = await call<{ name: string } | null>(page, 'speaking');
+  const turns = await page.evaluate(() => (window as unknown as W).__tohn.turns() as { by: string }[]);
+  expect(pos.k).toBeGreaterThan(turns.length * 0.4);
+  expect(sp?.name, 'the voice is the commenter at the moment you let go').toBe(turns[pos.k].by);
+  await expect(page.locator('#subs')).toHaveClass(/show/);
+  // (the name leads the caption; "→ whoever they answer" may follow it)
+  await expect(page.locator('#subs .who')).toHaveText(new RegExp(`^${turns[pos.k].by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`));
+});
+
+test('a drag across the whole conversation fetches only where it rested, and asks the server for nothing until let go', async ({ page }) => {
+  await seat(page, 'n800');
+  await page.request.get('/__wants');                                        // (clear)
+  const sidecars: string[] = [];
+  page.on('request', (r) => { if (/\/c\/\d+\.f1\.json$/.test(r.url())) sidecars.push(r.url()); });
+  // their own table's sidecars only (the rest of the room's tables talk on, quietly, and fetch their own)
+  const own = new Set((await page.evaluate(() => (window as unknown as W).__tohn.turns() as { id: number }[])).map((u) => u.id));
+  const ofTable = () => sidecars.filter((u) => own.has(Number(/\/c\/(\d+)\./.exec(u)?.[1]))).length;
+  const before = ofTable();
+  // a fast drag, as a hand makes one: no rest anywhere until the end
+  const d = await drag(page, 0.05, 0.95, 40, 0);
+  const during = (await (await page.request.get('/__wants')).json()) as unknown[];
+  expect(during, 'voicing asked for while dragging').toEqual([]);
+  // resting at the end: its words (and the next comment's) are fetched once the finger has been still 150 ms; the
+  // forty comments it passed, never
+  await page.waitForTimeout(400);
+  expect(ofTable() - before, 'sidecars fetched for a 40-step drag').toBeLessThanOrEqual(2);
+  await d.up();
+  await step(page, 30);
+  const wants = (await (await page.request.get('/__wants')).json()) as { table: number; from: number }[];
+  for (const w of wants) expect(w.from, 'asks start where the conversation now is').toBeGreaterThan(0);
+});
+
+test('the card and the caption never sit on each other', async ({ page }) => {
+  await seat(page, 'onepassword');
+  const subs = page.locator('#subs'), touch = !!test.info().project.use.hasTouch;
+  const d = await drag(page, 0.3, 0.5);
+  // while a drag holds the conversation, the caption (its words from before the drag) goes: the card says where you are
+  await expect(subs).toHaveCSS('opacity', '0');
+  await d.up();
+  await page.waitForTimeout(400); await step(page, 6);
+  // let go: the voice and its caption, and the card out of their way
+  await expect(subs).toHaveClass(/show/);
+  await expect(subs).toHaveCSS('opacity', '1');
+  await expect(page.locator('#timeline')).toHaveAttribute('data-card', 'off');
+  if (touch) return;
+  // pointing along the line again: the card, and the caption stepped up clear of it
+  const c = await at(page, 0.7);
+  await page.mouse.move(c.x, c.y);
+  await expect(page.locator('#timeline')).not.toHaveAttribute('data-card', 'off');
+  await expect(page.locator('#timeline .tl-card')).toHaveCSS('visibility', 'visible');
+  await page.waitForTimeout(350);                                            // (the caption's step is a 0.2 s ease)
+  const card = (await page.locator('#timeline .tl-card').boundingBox())!, cap = (await subs.boundingBox())!;
+  expect(cap.y + cap.height, `the caption's foot (${(cap.y + cap.height).toFixed(0)}) above the card's top (${card.y.toFixed(0)})`).toBeLessThanOrEqual(card.y + 1);
+});
+
+test('the playhead follows the voice, and pausing stops it', async ({ page }) => {
+  await seat(page, 'onepassword');
+  const v = async () => Number(await slider(page).getAttribute('aria-valuenow'));
+  const a = await v();
+  await step(page, 600);
+  const b = await v();
+  expect(b).toBeGreaterThan(a + 10);
+  await page.locator('#pause').click();
+  await step(page, 300);
+  const c = await v();
+  await step(page, 300);
+  expect(await v()).toBe(c);
+});
+
+test('arrows step one comment, Shift ten; the conversation follows once the keys settle', async ({ page }) => {
+  await seat(page, 'onepassword');
+  const k0 = (await call<Pos>(page, 'position')).k;
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Shift+ArrowRight');
+  await page.waitForTimeout(500);                                            // (the keys settle in 350 ms)
+  await step(page, 6);
+  expect((await call<Pos>(page, 'position')).k).toBe(k0 + 11);
+  await page.keyboard.press('Home');
+  await page.waitForTimeout(500); await step(page, 6);
+  expect((await call<Pos>(page, 'position')).k).toBe(0);
+});
+
+test('a shared moment (?t=) starts there', async ({ page }) => {
+  await seat(page, 'onepassword', '&t=20m');
+  const want = await page.evaluate(() => (window as unknown as W).__tohn.lineAt(20 * 60) as number);
+  expect((await call<Pos>(page, 'position')).k).toBe(want);
+  expect(want).toBeGreaterThan(10);
+});
+
+test('the slider says where you are, in words', async ({ page }) => {
+  await seat(page, 'onepassword');
+  await expect(slider(page)).toHaveAttribute('aria-valuetext', /^\d+ (s|min) in, [\d,]+ people?, comment by \S+$|^\d+ h \d\d min in, [\d,]+ people?, comment by \S+$/);
+});
