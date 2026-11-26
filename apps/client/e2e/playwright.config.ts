@@ -6,6 +6,8 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: '.',
   testMatch: /.*\.spec\.ts$/,
+  // (the room's own tests need the built app and its fixtures: e2e/room.config.ts runs them)
+  testIgnore: /(^|\/)room[^/]*\.spec\.ts$/,
   timeout: 90_000,
   expect: { timeout: 15_000 },
   // one browser at a time here (the dev box shares a node with the cluster); CI's runners can take two

@@ -5,7 +5,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: '.',
-  testMatch: /room.*\.spec\.ts$/,
+  testMatch: /(^|\/)room[^/]*\.spec\.ts$/,
   timeout: 240_000,
   expect: { timeout: 30_000 },
   workers: 1,

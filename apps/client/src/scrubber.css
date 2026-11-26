@@ -1,0 +1,73 @@
+/* the conversation's timeline (scrubber.ts). At rest it is a hairline along the top edge of the bottom letterbox, the
+   played part brighter, and nothing on the picture. Raised (a pointer near it, a finger on it, the keyboard on its
+   knob) it rises into the picture: who joins when, where the talk branches, a knob, and a card for the moment under it.
+   --bar is the letterbox's height (index.html's .lb): the line has to stay on its edge; --rise is set by scrubber.ts
+   (the bars are drawn at that height). */
+.tl { --bar:8.5vh; --hair:2px; --reach:20px; --edge:max(14px, env(safe-area-inset-left)); --edge2:max(14px, env(safe-area-inset-right));
+      position:fixed; left:0; right:0; bottom:var(--bar); height:0; z-index:3; pointer-events:none;
+      -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; transition:opacity .2s }
+@media (max-aspect-ratio: 4/5) { .tl { --bar:6.5vh } }
+@media (min-resolution: 2dppx) { .tl { --hair:1.5px } }
+/* nothing to scrub (one comment), or a sheet is open over the room: out of sight, and out of Tab's reach */
+.tl[data-state="hidden"], body:is(.reply-open, .card-open) .tl { opacity:0; visibility:hidden; transition:opacity .2s, visibility 0s .2s }
+body:is(.reply-open, .card-open) .tl * { pointer-events:none }
+/* it comes in once the letterbox has come down (an animation, so a host fading it under a sheet isn't held back by the delay) */
+.tl:not([data-state="hidden"]) { animation:tl-in .4s .5s backwards }
+@keyframes tl-in { from { opacity:0 } }
+.tl:is([data-state="open"], [data-state="drag"]) { --reach:36px }
+
+.tl-rail { position:absolute; left:0; right:0; top:0; height:var(--hair); background:var(--line) }
+.tl-track { position:absolute; top:0; height:0; left:var(--edge); right:var(--edge2) }
+.tl-done { position:absolute; left:0; top:0; width:100%; height:var(--hair); background:var(--ink); opacity:.55; transform-origin:0 50%; transform:scaleX(0);
+           will-change:transform; transition:transform .22s cubic-bezier(.2,.8,.2,1) }
+
+/* the people who join: thin bars rising from the line, the played part warmer; where the talk branches: ticks hanging under it */
+.tl-bars { position:absolute; left:0; right:0; bottom:0; height:var(--rise); opacity:0; transform:scaleY(.15); transform-origin:50% 100%;
+           transition:transform .26s cubic-bezier(.2,.8,.2,1), opacity .18s }
+.tl-hist, .tl-tick { position:absolute; left:0; top:0; width:100%; height:100%; display:block; overflow:visible; shape-rendering:crispEdges }
+.tl-hist path { fill:var(--ink); fill-opacity:.3 }
+.tl-lit { position:absolute; inset:0; clip-path:inset(0 100% 0 0); will-change:clip-path; transition:clip-path .22s cubic-bezier(.2,.8,.2,1) }
+.tl-lit .tl-hist path { fill:#ffd2a8; fill-opacity:.7 }
+.tl-ticks { position:absolute; left:0; right:0; top:5px; height:6px; opacity:0; transition:opacity .2s }
+.tl-tick path { fill:var(--ink); fill-opacity:.42 }
+.tl-total { position:absolute; right:0; bottom:10px; padding:1px 7px; border-radius:7px; background:var(--glass); border:1px solid var(--line); color:var(--mute); font-size:11.5px; line-height:1.35;
+            font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; backdrop-filter:blur(8px); opacity:0; transition:opacity .2s }
+.tl:is([data-state="open"], [data-state="drag"]) :is(.tl-bars, .tl-ticks, .tl-total) { opacity:1 }
+.tl:is([data-state="open"], [data-state="drag"]) .tl-bars { transform:none }
+
+/* the knob: its wrapper moves (a percentage of the track, so nothing is measured); the knob appears, and is the one thing you tab to */
+.tl-pos { position:absolute; left:0; top:calc(var(--hair) / 2); width:100%; height:0; pointer-events:none; will-change:transform; transition:transform .22s cubic-bezier(.2,.8,.2,1) }
+.tl-knob { position:absolute; left:0; top:0; width:14px; height:14px; margin:-7px 0 0 -7px; border-radius:50%; background:var(--ink); pointer-events:none;
+           box-shadow:0 0 0 3px rgba(5,7,14,.5), 0 2px 10px rgba(0,0,0,.5); opacity:0; transform:scale(.4); transition:opacity .15s, transform .18s }
+.tl:is([data-state="open"], [data-state="drag"]) .tl-knob { opacity:1; transform:none }
+.tl[data-state="drag"] .tl-knob { transform:scale(1.18) }
+.tl-knob:focus { outline:none } .tl-knob:focus-visible { outline:2px solid #ffd2a8; outline-offset:4px }
+/* under a finger or a pressed button nothing eases (that would be lag); it eases to where you let go */
+.tl[data-held] :is(.tl-pos, .tl-done, .tl-lit) { transition:none }
+
+/* the card for the moment under the pointer (or the playhead): the app's glass, placed by scrubber.ts so it stays inside the
+   screen; a hairline ties it to the exact spot */
+.tl-guide { position:absolute; left:0; bottom:0; width:1px; height:calc(var(--rise) + 12px); margin-left:-.5px; background:var(--ink);
+            opacity:0; visibility:hidden; transition:opacity .15s, visibility 0s .15s }
+.tl-card { position:absolute; left:0; bottom:calc(var(--rise) + 12px); width:320px; padding:9px 12px 10px; border-radius:12px; background:var(--glass); border:1px solid var(--line);
+           backdrop-filter:blur(14px) saturate(1.2); box-shadow:0 12px 40px rgba(0,0,0,.35);
+           opacity:0; visibility:hidden; transition:opacity .15s, visibility 0s .15s }
+.tl:is([data-state="open"], [data-state="drag"]) :is(.tl-card, .tl-guide) { opacity:1; visibility:visible; transition:opacity .15s }
+.tl:is([data-state="open"], [data-state="drag"]) .tl-guide { opacity:.38 }
+.tl-when { font-size:12px; line-height:1.35; color:var(--mute); font-variant-numeric:tabular-nums; white-space:nowrap } .tl-when b { color:var(--ink); font-weight:650 }
+.tl-says { display:flex; gap:.55em; margin-top:3px; font-size:13.5px; line-height:1.4; white-space:nowrap }
+.tl-by { flex:none; max-width:55%; overflow:hidden; text-overflow:ellipsis; font-weight:700 }
+.tl-words { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; color:#d9cfc4; opacity:0; transition:opacity .25s } .tl-words.in { opacity:1 }
+
+/* what takes the finger or the pointer: a band round the line (taller once it is up, so moving up to look at a tall bar doesn't let go of it);
+   on a phone it reaches down over the whole letterbox, so a short pull up from the bar finds it. The pills (#controls) sit above it,
+   so it never takes a tap meant for them. At rest it stops short of the subtitles (22 px above the line), so a speaker's name stays a button */
+.tl-hit { position:absolute; left:0; right:0; top:calc(var(--reach) * -1); height:calc(var(--reach) * 2); pointer-events:auto; touch-action:none; cursor:pointer; -webkit-tap-highlight-color:transparent }
+@media (hover: none) { .tl-hit { height:calc(var(--reach) + var(--bar)) } }
+/* Safari before 18 knows only the prefixed name. It has its own block because the build's CSS minifier, given both names in one
+   rule, keeps just the last of them (index.html's inline styles are spared, being left alone): written together, a browser
+   would get one name or the other, and for want of the right one no blur at all */
+@supports (-webkit-backdrop-filter: none) { .tl-card { -webkit-backdrop-filter:blur(14px) saturate(1.2) } .tl-total { -webkit-backdrop-filter:blur(8px) } }
+/* reduced motion: the same information, all there at once */
+@media (prefers-reduced-motion: reduce) { .tl, .tl * { transition:none !important } .tl:not([data-state="hidden"]) { animation:none } }
+@media (forced-colors: active) { .tl-rail { background:GrayText } .tl-done, .tl-knob { background:CanvasText; forced-color-adjust:none; opacity:1 } }

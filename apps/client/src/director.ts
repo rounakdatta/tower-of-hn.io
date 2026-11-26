@@ -315,6 +315,7 @@ export class Director {
         }
       }
       let t = fresh ? Math.max(this.cursor + (this.sched.length ? this.gapFor(turn, r.side) : 0), at + 0.08) : Math.max(this.cursor + 0.06, at + 0.08);
+      if (fresh) this.turnStart.set(turn.id, t);
       r.side.clips.forEach((clip, k) => {
         if (k < this.clipsDone) return;
         const who = this.personFor(clip.who, turn.by);
@@ -820,11 +821,86 @@ export class Director {
   /** the whole timeline so far, for muxing recorded videos */
   timeline() { return this.audio.log; }
 
+  // ---------------------------------------------------------------- the timeline (TIMELINE): where we are, and seeking
+  /** when each turn's first words were scheduled (audio time) */
+  private turnStart = new Map<number, number>();
+  /** The turn being said (or the next, in the pause before it) and how far into it (s): the timeline's playhead. */
+  position(): { k: number; into: number } | null {
+    if (!this.spot) return null;
+    const at = this.audio.now(), turns = this.spot.table.turns;
+    const cur = this.sched.find((s) => at >= s.start && at < s.end) ?? this.sched.find((s) => s.start > at);
+    if (!cur) return { k: Math.min(this.turnIdx, turns.length - 1), into: 0 };
+    const k = turns.indexOf(cur.turn), t0 = this.turnStart.get(cur.turn.id) ?? cur.start;
+    return { k: k < 0 ? Math.min(this.turnIdx, turns.length - 1) : k, into: Math.max(0, at - t0) };
+  }
+
+  /** The establishing shot again (scrubbing: the room filling and emptying is the thing to watch). */
+  establish(now: number) { if (this.spot) { this.wide(now, true); this.shotUntil = 0; this.reactionAt = 0; } }
+
+  /** Scrubbing: hold the conversation (the sound too) until a seek lets it go on from wherever it was taken. */
+  hold(on: boolean) {
+    if (!this.spot || on === this.held) return;
+    this.held = on;
+    if (on) { this.resumeAfter = !this.paused; if (!this.paused) { this.paused = true; this.audio.ctx?.suspend(); } }
+    // let go without a seek (a second finger cancelled the drag): on from where it was, if it was playing
+    else if (this.paused && this.resumeAfter) { this.paused = false; this.waitSince = 0; this.audio.ctx?.resume().catch(() => {}); }
+  }
+  private held = false;
+  /** a scrub began while it was playing (it plays on after); paused before, it stays paused where you let go */
+  private resumeAfter = true;
+
+  /** While scrubbing, comment k is where the finger rests: its words and the next comment's, fetched and decoded now,
+   *  so a release there starts at once. (Asking the server to voice anything waits for the release: a drag across a
+   *  conversation must not queue up voicing for every comment it passes.) Older prefetches go at the next prune. */
+  prefetchAt(k: number) {
+    if (!this.spot) return;
+    for (const t of this.spot.table.turns.slice(Math.max(0, k), k + 2)) if (t.v && !this.skipIds.has(t.id)) this.load(t);
+  }
+  /** what we know of comment k's words right now (its sidecar, if fetched): for the timeline's preview */
+  snippet(k: number): string | null {
+    const t = this.spot?.table.turns[k];
+    const r = t ? this.ready.get(t.id) : undefined;
+    return r ? r.side.clips.map((c) => c.t).join(' ') : null;
+  }
+
+  /**
+   * Play from turn k, at once (the timeline was let go there, or a key moved it): whatever was scheduled stops, and
+   * k's first words start as soon as they're here (now, if they were prefetched while scrubbing). Whoever says k comes
+   * to the table with no walk (the cut to them hides it). The server is asked to voice from k on, once.
+   */
+  seek(k: number, now: number) {
+    if (!this.spot || !this.floor) return;
+    const turns = this.spot.table.turns;
+    if (!turns.length) return;
+    k = Math.max(0, Math.min(turns.length - 1, k));
+    for (const s of this.sched) { try { s.src.stop(); } catch { /* already done */ } }
+    this.sched = []; this.current = null; this.ui.subtitle(null); this.ui.placard(null); this.ui.code(null); this.ui.waiting(null);
+    this.glances = []; this.events = []; this.breaking = []; this.turnStart.clear();
+    this.perf?.reset();
+    this.turnIdx = k; this.clipsDone = 0; this.waitSince = 0; this.callingSince = 0; this.jumpTo = 0;
+    this.heroAt = 0; this.staged.clear(); this.reactionAt = 0; this.shotUntil = 0;
+    const play = this.held ? this.resumeAfter : !this.paused;
+    this.playing = true; this.held = false;
+    if (this.paused && play) { this.paused = false; this.audio.ctx?.resume().catch(() => {}); }
+    else if (!play) {
+      // paused, it stays paused, but on the comment you chose: its words are there to read, ready for Play
+      this.paused = true;
+      const r = this.ready.get(turns[k].id), c = r?.side.clips[0];
+      if (c) this.ui.subtitle({ name: c.who, text: c.t, color: '#e8dccb', emotion: r!.side.emotion, stance: r!.side.stance, intensity: r!.side.intensity, you: this.isMe(c.who), onWho: () => this.onWho(c.who) });
+    }
+    this.cursor = this.audio.now() + 0.03;
+    this.seeking = now;
+    this.prefetch();
+  }
+  /** (a seek just happened: the speaker comes straight to the table, without walking over) */
+  seeking = -1;
+
   togglePause() {
     const ctx = this.audio.ctx;
-    if (!ctx) return;
+    if (!ctx && !this.audio.virtual) return;        // (no sound yet: nothing to pause)
     this.paused = !this.paused;
     this.waitSince = 0;                              // a pause is not a wait: never skip a line because of one
-    if (this.paused) ctx.suspend(); else ctx.resume();
+    // (recordings and tests run on a virtual clock: the narration holds; there is no sound to suspend)
+    if (ctx) { if (this.paused) ctx.suspend(); else ctx.resume(); }
   }
 }

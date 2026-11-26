@@ -125,7 +125,8 @@ export class Stage {
     if (a === undefined || !this.hall) return null;
     const home = this.audience.places[a], t = spot.pos, y = this.crowd.group.position.y;
     const from = this.door(a, spot);
-    const quiet = !this.seen(new THREE.Vector3(home.x, y + home.y + 1.5, home.z)) && !this.seen(new THREE.Vector3(from.x, y + 1.4, from.z));
+    const quiet = this.clock() < this.instantUntil
+      || (!this.seen(new THREE.Vector3(home.x, y + home.y + 1.5, home.z)) && !this.seen(new THREE.Vector3(from.x, y + 1.4, from.z)));
     const had = this.crowd.hasSlot(name);
     const i = this.crowd.show(name, { pos: from, facing: Math.atan2(t.x - from.x, t.z - from.z), seated: false });
     if (i < 0) return null;
@@ -178,6 +179,30 @@ export class Stage {
       if (standing <= 2) continue;
       const w = this.quietest(fr, now);
       if (w && now - (this.room.quietSince(w.who) ?? now) > QUIET) this.sendHome(w.who, now);
+    }
+  }
+
+  /** until this moment (scene clock) whoever steps forward is simply there: a seek cuts to them (TIMELINE) */
+  instantUntil = -1;
+
+  /**
+   * A table's front as of a moment (TIMELINE: a seek): everyone standing there who isn't in `keep` (who says this
+   * comment, the next two, the one answered) goes straight back to their place, with no walk: the camera is cutting.
+   */
+  reset(spot: TableSpot, keep: Set<string>) {
+    const fr = this.fronts.get(spot);
+    if (!fr) return;
+    for (const f of fr) {
+      if (f.who < 0) continue;
+      const p = this.crowd.people[f.who];
+      if (!p || keep.has(p.name)) continue;
+      const a = this.ix.get(p.name);
+      const i = f.who;
+      this.room.leave(i);
+      f.who = -1;
+      this.homing.delete(i);
+      this.crowd.hide(i);
+      if (a !== undefined) this.audience.away(a, false, this.clock(), false);
     }
   }
 
