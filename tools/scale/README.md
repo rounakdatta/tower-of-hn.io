@@ -23,3 +23,11 @@ branch):
 - `load.mjs`: simulated listeners doing what the client does at its own pace (head.json every 2 s with ETags, deltas,
   floors, a table's sidecars and clips a few turns ahead in real time, /want renewals, the room's murmur, moving on),
   each with its own connections, address and cache. Prints per-kind p50/p95/p99 every 10 s.
+
+Afterwards:
+- `compare.py`: runs side by side (before, the server fix, server and client fixes): first voice p50/p95/max, the share
+  within 1 s and 2 s, the share whose first turn had to be voiced on demand, late silences between turns.
+- `verify_deploy.sh`: after a release, from inside the cluster: towerd's mode, coverage and lanes, the head's age and
+  flags, /livez, and the tailnet door.
+- `cover_watch.sh`: every 2 minutes, how much of the tower is voiced (one in-cluster GET), to a JSONL file.
+- `calm.sh`: waits until this node's 5-minute load has stayed under a bound for five minutes (before a deploy or a test).
