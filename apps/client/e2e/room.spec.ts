@@ -59,7 +59,7 @@ async function listen(page: Page, fx: string, seconds: number, every: number, ch
 
 for (const fx of ['onepassword', 'n800']) {
   test(`${fx}: while the conversation goes on, nobody stands in anybody and nobody is stuck`, async ({ page }) => {
-    let samples = 0, moved = 0;
+    let samples = 0, changes = 0;
     const last = new Map<string, { x: number; z: number; walking: boolean }>();
     await listen(page, fx, 150, 150, async () => {
       const p = await call<Plan>(page, 'plan');
@@ -76,17 +76,22 @@ for (const fx of ['onepassword', 'n800']) {
         expect(d, `someone at ${c[0]},${c[1]} inside the standing room`).toBeGreaterThan(c[5] + 0.24 - 0.06);
       }
       // someone still walking who hasn't got 10 cm further in 5 s (of the conversation) is stuck
-      for (const q of await call<{ name: string; x: number; z: number; walking: boolean }[]>(page, 'people')) {
+      const now = await call<{ name: string; x: number; z: number; walking: boolean }[]>(page, 'people'), here = new Set(now.map((q) => q.name));
+      for (const q of now) {
         const prev = last.get(q.name);
         if (prev?.walking && q.walking) expect(Math.hypot(prev.x - q.x, prev.z - q.z), `${q.name} is stuck`).toBeGreaterThan(0.1);
-        if (prev && Math.hypot(prev.x - q.x, prev.z - q.z) > 0.3) moved++;
-        last.set(q.name, { x: q.x, z: q.z, walking: q.walking });
+        // the room changing: someone who walked, or stepped up from the audience since the last look
+        if (samples && (!prev || Math.hypot(prev.x - q.x, prev.z - q.z) > 0.3)) changes++;
       }
+      for (const name of last.keys()) if (!here.has(name)) { changes++; last.delete(name); }   // (went back to their place)
+      for (const q of now) last.set(q.name, { x: q.x, z: q.z, walking: q.walking });
       samples++;
     });
     expect(samples).toBeGreaterThan(25);
-    // people did come and go (a room where nobody moves passes the overlap check trivially)
-    expect(moved, 'people stepped forward and back').toBeGreaterThan(5);
+    // people did come and go (a room where nobody moves passes the overlap check trivially); a step up or back unseen
+    // is instant, so arrivals and departures count, not only walks caught between two looks
+    test.info().annotations.push({ type: 'changes', description: String(changes) });
+    expect(changes, 'people stepped forward and back').toBeGreaterThan(5);
   });
 }
 
