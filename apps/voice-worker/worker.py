@@ -13,7 +13,8 @@ A runner is LANES processes, each with its own Kokoro session on THREADS cores (
 lanes as the cores it may use). It needs no volume, no keys and no internet: only towerd's voice port.
 
 usage: worker.py
-env:   VOICE_URL (default http://127.0.0.1:8788), VOICE_TOKEN, LANES (or MAX_LANES, default 4), THREADS, PATIENCE (a standby:
+env:   VOICE_URL (default http://127.0.0.1:8788), VOICE_TOKEN, LANES (or MAX_LANES, default 4; NODE_LANES=node=n,... caps one
+       node), THREADS, PATIENCE (a standby:
        it takes nothing while any other runner has been heard from in that many seconds), NODE_NAME (shown in
        /voice/status), NICE, PACE, KOKORO_DIR, KOKORO_MODEL, KOKORO_PROVIDER=cuda,
        TTS_ENGINE=kokoro (default) | openai (gpt-4o-mini-tts: OPENAI_API_KEY, OPENAI_BUDGET_MIN caps spend, default 300 min)
@@ -447,13 +448,25 @@ def cpus_allowed():
     return len(os.sched_getaffinity(0))
 
 
+def node_lanes(node, spec):
+    """NODE_LANES ("jomjom=1,other=2"): this node's lane cap, or None. A home box that runs hot gets fewer lanes than a
+    VPS beside it, from one Deployment."""
+    for part in (spec or "").split(","):
+        name, _, n = part.strip().partition("=")
+        if name and name == node and n.strip().isdigit() and int(n) > 0:
+            return int(n)
+    return None
+
+
 def config():
     cpus = cpus_allowed()
     threads = max(1, min(cpus, int(os.environ.get("THREADS", "2"))))
-    lanes = int(os.environ.get("LANES", "0")) or max(1, min(int(os.environ.get("MAX_LANES", "4")), cpus // threads))
+    node = os.environ.get("NODE_NAME", "") or socket.gethostname()
+    cap = node_lanes(node, os.environ.get("NODE_LANES")) or int(os.environ.get("MAX_LANES", "4"))
+    lanes = int(os.environ.get("LANES", "0")) or max(1, min(cap, cpus // threads))
     return {"url": os.environ.get("VOICE_URL", "http://127.0.0.1:8788"), "token": os.environ.get("VOICE_TOKEN", ""),
             "cpus": cpus, "threads": threads, "lanes": lanes, "patience": float(os.environ.get("PATIENCE", "0")),
-            "node": os.environ.get("NODE_NAME", "") or socket.gethostname(), "nice": int(os.environ.get("NICE", "0")),
+            "node": node, "nice": int(os.environ.get("NICE", "0")),
             "engine": os.environ.get("TTS_ENGINE", "kokoro")}
 
 

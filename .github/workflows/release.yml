@@ -27,8 +27,10 @@ jobs:
         run: |
           npm ci --no-audit --no-fund && npx vite build
           for m in head door table; do grep -q "<!--support:$m-->" dist/index.html || { echo "the build dropped <!--support:$m-->"; exit 1; }; done
-      - name: Worker parses
-        run: python3 -c "import ast; ast.parse(open('apps/voice-worker/worker.py').read())"
+      - name: Worker parses, and starts the right number of lanes
+        run: |
+          python3 -c "import ast; ast.parse(open('apps/voice-worker/worker.py').read())"
+          python3 apps/voice-worker/test_config.py
 
   # Replying, end to end: the reply sheet against a local mock of Hacker News (nothing reaches the real HN), in
   # Chromium, Firefox and WebKit, on desktops, an iPhone and a Pixel (apps/client/e2e)
