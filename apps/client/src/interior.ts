@@ -153,6 +153,10 @@ export class Interior {
    * theatre's balconies read from the stalls), with a warm line of light along its top. The window posts run up
    * past them all; a dark lid closes the top. A few draws, whatever n is.
    */
+  /** the galleries are drawn only from inside the glass (they rise through the floors above: from outside, a floor near
+   *  the top of the tower would have them showing over the roof) */
+  hallShown(on: boolean) { if (this.tiers) this.tiers.visible = on; }
+
   /** the height of this floor's hall (its galleries' lid), room space */
   hallTop() { return this.galleryCount ? tierFloor(this.galleryCount) + HALL.TIER_H - 0.1 : FLOOR_H * 0.93; }
 

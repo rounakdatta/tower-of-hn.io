@@ -69,6 +69,9 @@ export class Audience {
     react: uniform(new THREE.Vector4(0, 0, -100, 0)), reactAmp: uniform(0),
     /** the playhead (in narration turns, eased): who has joined by now */
     at: uniform(1e9),
+    /** the highest gallery drawn: 0 from outside the glass (the hall rises through the floors above; from outside, a
+     *  floor near the top of the tower would have it showing over the roof) */
+    levels: uniform(99),
   };
   private lastSort = -1;
   private camAt = new THREE.Vector3(1e9, 0, 0);
@@ -115,7 +118,8 @@ export class Audience {
     // here: joined by the playhead (a ripple in join order as it moves), and not standing at a table right now
     const joined = select(live.x.lessThan(0), float(1), smoothstep(live.x.sub(0.5), live.x.add(0.5), this.u.at));
     const awayK = clamp(uTime.sub(live.z).div(0.35), 0, 1);
-    const here = joined.mul(select(live.y.greaterThan(0.5), float(1).sub(awayK), awayK.max(step(live.z, float(-50)))));
+    const level = this.T(5).w;
+    const here = joined.mul(select(live.y.greaterThan(0.5), float(1).sub(awayK), awayK.max(step(live.z, float(-50))))).mul(step(level, this.u.levels));
     // a reaction travels out from where it happened, 4 m a second, each person a little in their own time
     const R = this.u.react, d = length(vec2(pos.x.sub(R.x), pos.z.sub(R.y)));
     const tl = uTime.sub(R.z).sub(d.div(4)).sub(phase.mul(0.3));
@@ -373,6 +377,7 @@ export class Audience {
       if (this.live[o + 1] > 0.5 && this.live[o + 2] < -50) continue;                 // away, no fade to show
       if (this.live[o] >= 0 && this.live[o] > Math.max(this.u.at.value, this.atTarget) + 0.6) continue;   // not joined yet
       const d = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;
+      if (this.data[d + 23] > this.u.levels.value) continue;          // a gallery, seen from outside the glass
       const x = this.data[d], y = this.data[d + 1] + y0 + 0.9, z = this.data[d + 2];
       this.sph.center.set(x, y, z); this.sph.radius = 1.1;
       if (!this.frustum.intersectsSphere(this.sph)) continue;
@@ -388,6 +393,9 @@ export class Audience {
       (m.body.geometry as THREE.InstancedBufferGeometry).instanceCount = (m.head.geometry as THREE.InstancedBufferGeometry).instanceCount = n;
     });
   }
+
+  /** sort again at the next update (what's drawn just changed: the galleries came into view) */
+  resort() { this.lastSort = -1; }
 
   /** how many are drawn at each level of detail (for checks) */
   drawn() { return this.meshes.map((m) => (m.body.geometry as THREE.InstancedBufferGeometry).instanceCount); }

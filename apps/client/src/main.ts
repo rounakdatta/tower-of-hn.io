@@ -1122,7 +1122,10 @@ function frame(dt: number, draw = true) {
     // inside: within the glass, and between this floor and the top of its hall (a floor with galleries rises through
     // the floors above it)
     const top = interior.galleryCount ? interior.hallTop() : FLOOR_H * 0.8 + 1.2;
-    if (rad < -0.1 && p.y > roomY + 1.2 - FLOOR_H * 0.8 && p.y < roomY + top) { tower.hidden = doorSlot; tower.inside = interior.galleryCount > 0; interior.presence(1); }
+    const inside = rad < -0.1 && p.y > roomY + 1.2 - FLOOR_H * 0.8 && p.y < roomY + top;
+    if (audience.u.levels.value !== (inside ? 99 : 0)) { audience.u.levels.value = inside ? 99 : 0; audience.resort(); }
+    interior.hallShown(inside);
+    if (inside) { tower.hidden = doorSlot; tower.inside = interior.galleryCount > 0; interior.presence(1); }
     else {
       tower.hidden = -1; tower.inside = false;
       const k = Math.max(0, Math.min(1, (9 - rad) / 7.5));
