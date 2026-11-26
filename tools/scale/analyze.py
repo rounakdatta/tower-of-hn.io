@@ -102,7 +102,12 @@ def sit_metrics(rec, t_sit, root, t_stop):
     for e, i in mine:
         by_turn.setdefault(i, []).append(e)
     order = sorted(by_turn, key=lambda i: by_turn[i][0]['at'])
-    gaps, skips = [], 0
+    # skips: turns that were at the table when we sat down, before the furthest one played, and never played. A reply
+    # that arrived live during the sit is said next by design ("breaking"), so it is not a jump over the ones between.
+    at_sit = {t[0] for t in table_turns(log, root, t_sit)}
+    played_then = [pos[i] for i in order if i in at_sit]
+    skips = sum(1 for i in at_sit if i in pos and played_then and pos[i] < max(played_then) and i not in by_turn)
+    gaps = []
     def decoded_at(i, k=0):
         """when clip k of comment i was first decoded (None: never seen)"""
         ts = [e['t1'] for e in log if e['k'] == 'decode' and e.get('url') and CLIP.search(e['url'])
@@ -117,7 +122,6 @@ def sit_metrics(rec, t_sit, root, t_stop):
         dec = decoded_at(b)
         cause = 'choreography' if dec is not None and dec <= end_a + 100 else 'audio-late'
         gaps.append({'gap': gap, 'design': design, 'excess': gap - design, 'cause': cause, 'ready_ms': None if dec is None else dec - end_a})
-        skips += max(0, pos[b] - pos[a] - 1)
     out['gaps'] = gaps
     out['skips'] = skips
     out['played_turns'] = len(order)
