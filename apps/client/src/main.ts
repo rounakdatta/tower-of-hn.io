@@ -126,7 +126,7 @@ const timelineOn = () => sync.play('timeline') && !!room.stage;
 /** ?t= (12m30s, 750): a moment shared, at the table in ?table= */
 let deepT = parseT(params.get('t'));
 let line: Line | null = null, lineSpot: TableSpot | null = null, lineOthers = 0, lineAt = -1, lineTick = 0;
-let scrubTimer = 0, keySeek = 0, keyTo = -1, lineHeld = 0;
+let scrubTimer = 0, keySeek = 0, keyTo = -1, lineHeld = 0, lineLast = 0;
 const scrubber = new Scrubber({
   onScrubbing(on) {
     if (!director.spot) return;
@@ -162,12 +162,16 @@ function showLine(sp: TableSpot) {
   if (!timelineOn() || sp.bar) { scrubber.hide(); line = null; lineSpot = null; return; }
   const c = conversation(sp);
   line = c.line; lineSpot = sp; lineOthers = c.others; lineAt = -1;
+  // sitting down rewinds the room to where this conversation has got to: whoever hadn't joined it yet steps out, the
+  // latest first (a ripple back through join order, not a pop)
+  lineLast = c.keys.reduce((a, b) => Math.max(a, b), 0) + 1;
   audience.joins(c.keys);
   const p = director.position(), k = p?.k ?? 0;
-  audience.playhead(k, false);
+  audience.playhead(lineLast, false); audience.playhead(k);
   scrubber.show(line, lineOthers, (line.moments[k]?.start ?? 0) + (p?.into ?? 0));
 }
-function hideLine() { scrubber.hide(); line = null; lineSpot = null; if (room.stage) audience.joins(null); }
+/** standing up: everyone is back (the room on foot is the whole floor), rippling in in the order they joined */
+function hideLine() { scrubber.hide(); line = null; lineSpot = null; if (room.stage) audience.playhead(lineLast + 1); }
 /** Play from comment k: the room as of then (whoever says it and the next two at the table, nobody else standing
  *  there), and its first words at once. */
 function seekTo(k: number) {
