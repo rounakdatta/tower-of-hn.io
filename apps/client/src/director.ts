@@ -12,6 +12,10 @@ import { R, FLOOR_H } from './world.ts';
 import type { UI } from './ui.ts';
 import type { Room } from './room.ts';
 import type { Audience } from './audience.ts';
+import { HALL } from './hall.ts';
+
+/** a table's clear lane ends this far from its edge: past it, the audience (hall.ts) */
+const HALL_LANE_EDGE = HALL.FRONT + HALL.LANE - 0.1;
 
 /** How a speaker's face sits for each delivery (the voice moves it from there, syllable by syllable). */
 
@@ -705,15 +709,19 @@ export class Director {
     if (inward.lengthSq() < 0.04) inward.set(0, 0, 1);
     inward.normalize();
     const target = c.clone().setY(this.roomY + 0.95);
-    if (this.galleries() > 0) {
-      // a hall: from behind the table (the side away from the middle of the room), low, looking past it and up across
-      // the void, so the table sits in the bottom of the frame and the far galleries rise behind it, all those faces
-      const up = new THREE.Vector3(c.x * 0.35, this.roomY + 2.9, c.z * 0.35);
+    const g = this.galleries();
+    if (g > 0) {
+      // a hall: from behind the table (the side away from the middle of the room), at the outer edge of its lane and
+      // a little above the heads at its front (so they sit low in the frame, not across it), looking past the table and
+      // up across the void at the far galleries: all those faces. Higher for a deeper hall; lower on a tall phone,
+      // whose lens is already wider upward (the rig widens it), or the frame is mostly skylight.
+      const tall = this.rig.camera.aspect < 0.8;
+      const up = new THREE.Vector3(c.x * 0.35, this.roomY + 2.1 + 0.3 * Math.min(g, 4) - (tall ? 0.55 : 0), c.z * 0.35);
       const back = c.clone().sub(up).setY(0);
       if (back.lengthSq() < 0.04) back.set(0, 0, 1);
       back.normalize();
-      const from = c.clone().addScaledVector(back, this.spot.radius + 1.35);
-      this.frame(up, back, from.distanceTo(up.clone().setY(from.y)), 1.15 - (up.y - this.roomY), 62, [{ i: -1, head: target, w: 0.3 }], new Set(), { glide: glide ? 2.2 : 0, now, name: 'wide hall' });
+      const from = c.clone().addScaledVector(back, this.spot.radius + HALL_LANE_EDGE);
+      this.frame(up, back, from.distanceTo(up.clone().setY(from.y)), 1.72 - (up.y - this.roomY), 62, [{ i: -1, head: target, w: 0.3 }], new Set(), { glide: glide ? 2.2 : 0, now, name: 'wide hall' });
       return;
     }
     this.frame(target, inward, this.spot.radius * 2 + 1.9, 0.85, 52, [{ i: -1, head: target, w: 0.3 }], new Set(), { glide: glide ? 2.2 : 0, now, name: 'wide' });
