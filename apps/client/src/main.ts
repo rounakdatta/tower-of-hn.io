@@ -359,9 +359,11 @@ function overview() {
   if (d.lengthSq() < 0.01) d.set(Math.sin(walk.yaw + Math.PI), Math.cos(walk.yaw + Math.PI));
   d.normalize();
   const h = Math.max(2.2, Math.min(hallView.height - 0.45, Math.max(4, R0 * 0.42)));
-  const pos = new THREE.Vector3(d.x * R0 * 0.5, roomY + h, d.y * R0 * 0.5), look = new THREE.Vector3(-d.x * R0 * 0.1, roomY, -d.y * R0 * 0.1);
+  // (a tall screen looks more steeply down: its lens is widened upward, and would be mostly ceiling and sky)
+  const tall = innerHeight > innerWidth, back = tall ? 0.38 : 0.5;
+  const pos = new THREE.Vector3(d.x * R0 * back, roomY + h, d.y * R0 * back), look = new THREE.Vector3(-d.x * R0 * (tall ? 0.02 : 0.1), roomY, -d.y * R0 * (tall ? 0.02 : 0.1));
   if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.disable(); }
-  rig.fovTarget = innerHeight > innerWidth ? 74 : 58;
+  rig.fovTarget = tall ? 70 : 58;
   rig.fly([camera.position.clone(), pos], [rig.target.clone(), look], Math.max(0.9, Math.min(1.8, camera.position.distanceTo(pos) / 9)), clock);
 }
 /** back down from over the hall, on foot at `at` (room space, the floor), facing `yaw` */
