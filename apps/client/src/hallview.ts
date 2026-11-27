@@ -39,7 +39,6 @@ export class HallView {
   private tables: THREE.InstancedMesh;
   private chairs: THREE.InstancedMesh;
   private lamps: THREE.InstancedMesh;
-  private cords: THREE.InstancedMesh;
   private pools: THREE.InstancedMesh;
   /** per table: [lit, glow (eased, for the light), focus, -] */
   private aTable: THREE.InstancedBufferAttribute;
@@ -81,7 +80,7 @@ export class HallView {
     this.posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.07, 1, 0.09), new THREE.MeshStandardNodeMaterial({ color: 0x1b1d24, metalness: 0.8, roughness: 0.3 }), 420);
     this.posts.count = 0;
 
-    // tables, chairs, lamps and their cords, and the pools of light under the tables: one instanced draw each
+    // tables, chairs, lamps, and the pools of light under the tables: one instanced draw each
     this.aTable = new THREE.InstancedBufferAttribute(new Float32Array(HALL_TABLES * 4), 4);
     this.aChair = new THREE.InstancedBufferAttribute(new Float32Array(HALL_CHAIRS), 1);
     const look = instancedBufferAttribute(this.aTable);
@@ -103,17 +102,13 @@ export class HallView {
     this.chairs = new THREE.InstancedMesh(mergeGeometries([seat, back, ...legs]), cm, HALL_CHAIRS);
     // the lamp: dark until the table opens; then warm, brighter with every comment, a touch brighter still with the floor
     const lmat = new THREE.MeshBasicNodeMaterial();
-    const warmth = lit.mul(float(0.55).add(min(glow, float(2.5)).mul(0.75))).add(focus.mul(0.6));
-    lmat.colorNode = mix(vec3(0.05, 0.045, 0.04), vec3(1.0, 0.78, 0.5).mul(warmth.mul(1.6).add(0.15).add(sin(uTime.mul(2.0)).mul(0.02))), smoothstep(0.0, 0.08, lit));
+    // (the tower's own lamps burn at about 2.2: a quiet open table a little under that, a busy one a little over)
+    const warmth = lit.mul(float(1.35).add(min(glow, float(2.0)).mul(0.45))).add(focus.mul(0.3));
+    lmat.colorNode = mix(vec3(0.05, 0.045, 0.04), vec3(1.0, 0.7, 0.4).mul(warmth.add(sin(uTime.mul(2.0)).mul(0.02))), smoothstep(0.0, 0.08, lit));
     lmat.maskNode = inside;
     const shade = new THREE.ConeGeometry(0.24, 0.2, 24, 1, true); shade.translate(0, LAMP_Y, 0);
     const bulb = new THREE.SphereGeometry(0.06, 12, 8); bulb.translate(0, LAMP_Y - 0.03, 0);
     this.lamps = new THREE.InstancedMesh(mergeGeometries([shade, bulb]), lmat, HALL_TABLES);
-    // cords up to the ceiling (scaled per hall): thin, dark
-    const cord = new THREE.CylinderGeometry(0.006, 0.006, 1, 4); cord.translate(0, 0.5, 0);
-    const kmat = new THREE.MeshBasicNodeMaterial({ color: 0x0c0a09 });
-    kmat.maskNode = inside;
-    this.cords = new THREE.InstancedMesh(cord, kmat, HALL_TABLES);
     // the pool of light on the boards under a table: what reads from the far side of the hall (and from above)
     const pmat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     const d = uv().sub(0.5).length().mul(2);
@@ -121,11 +116,12 @@ export class HallView {
     pmat.colorNode = vec3(1.0, 0.62, 0.3).mul(pool.mul(lit.mul(float(0.05).add(min(glow, float(2.5)).mul(0.11))).add(focus.mul(0.08))));
     pmat.maskNode = inside;
     this.pools = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), pmat, HALL_TABLES);
-    for (const im of [this.posts, this.tables, this.chairs, this.lamps, this.cords, this.pools]) { im.frustumCulled = false; im.count = 0; }
+    for (const im of [this.posts, this.tables, this.chairs, this.lamps, this.pools]) { im.frustumCulled = false; im.count = 0; }
     this.pools.renderOrder = 1;
     for (let i = 0; i < 3; i++) { const l = new THREE.PointLight(0xffc48a, 0, 9, 1.6); this.lights.push(l); this.group.add(l); }
     this.fill = new THREE.HemisphereLight(0xffd7b0, 0x2a1c14, 0.5);
-    this.group.add(this.floorMesh, this.edge, this.ceil, this.posts, this.tables, this.chairs, this.lamps, this.cords, this.pools, this.fill);
+    // (no cords: from above, the hall's worth of them crossed the whole picture; the lamps hang in the dark)
+    this.group.add(this.floorMesh, this.edge, this.ceil, this.posts, this.tables, this.chairs, this.lamps, this.pools, this.fill);
     this.group.visible = false;
   }
 
@@ -149,7 +145,6 @@ export class HallView {
       const t = plan.tables[k];
       this.tables.setMatrixAt(k, m.compose(p.set(t.x, 0, t.z), q.identity(), s.set(t.r, 1, t.r)));
       this.lamps.setMatrixAt(k, m.compose(p.set(t.x, 0, t.z), q.identity(), s.set(1, 1, 1)));
-      this.cords.setMatrixAt(k, m.compose(p.set(t.x, LAMP_Y + 0.1, t.z), q.identity(), s.set(1, Math.max(0.1, this.height - LAMP_Y - 0.1), 1)));
       const pr = t.r + 2.2;
       this.pools.setMatrixAt(k, m.compose(p.set(t.x, 0.025, t.z), q.identity(), s.set(pr * 2, 1, pr * 2)));
       for (const st of t.seats) {
@@ -162,7 +157,7 @@ export class HallView {
       }
       this.aTable.setXYZW(k, 0, 0, 0, 0);
     }
-    for (const im of [this.tables, this.lamps, this.cords, this.pools]) { im.count = n; im.instanceMatrix.needsUpdate = true; }
+    for (const im of [this.tables, this.lamps, this.pools]) { im.count = n; im.instanceMatrix.needsUpdate = true; }
     this.chairs.count = chair; this.chairs.instanceMatrix.needsUpdate = true;
     this.aTable.needsUpdate = true; this.aChair.needsUpdate = true;
     this.postsAt = -1;
@@ -230,7 +225,7 @@ export class HallView {
     this.ceil.scale.set(w, w, 1);
     this.edge.scale.set(this.uClip.value, this.uClip.value, 1);
     this.edge.visible = this.uEdge.value > 0.001;
-    const n = Math.min(420, Math.max(56, Math.round((Math.PI * 2 * w) / 0.8)));
+    const n = Math.min(420, Math.max(56, Math.round((Math.PI * 2 * w) / (w > 9 ? 1.6 : 0.8))));
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), Y = new THREE.Vector3(0, 1, 0), h = this.height;
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2;
@@ -244,7 +239,7 @@ export class HallView {
   /** the hall's materials on scraps, for the renderer to compile at start (so the first floor doesn't stall); take it away after */
   warm(): THREE.Object3D {
     const g = new THREE.Group(), geo = new THREE.PlaneGeometry(0.1, 0.1);
-    for (const im of [this.tables, this.chairs, this.lamps, this.cords, this.pools, this.posts]) g.add(new THREE.InstancedMesh(geo, im.material as THREE.Material, 1));
+    for (const im of [this.tables, this.chairs, this.lamps, this.pools, this.posts]) g.add(new THREE.InstancedMesh(geo, im.material as THREE.Material, 1));
     g.add(new THREE.Mesh(geo, this.floorMesh.material as THREE.Material), new THREE.Mesh(geo, this.ceil.material as THREE.Material), new THREE.Mesh(geo, this.edge.material as THREE.Material));
     return g;
   }
