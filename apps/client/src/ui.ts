@@ -273,8 +273,9 @@ export class UI {
     const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${so ? (people > 1 ? 'n' : '1') : people}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
     // (a building's counts tick as the floor's moment moves: just the words, no measuring: their figures are tabular)
     if (key === slot.key) {
-      // (written only when they change: a write is a change to the page even when the words are the same)
-      if (so && !said && slot.counts !== `${so.turns}|${people}`) {
+      // (written only when they change, and at most fifteen times a second: as fast as figures can be read, and a write is
+      // a change to the page)
+      if (so && !said && this.frameNo % 4 === 0 && slot.counts !== `${so.turns}|${people}`) {
         slot.counts = `${so.turns}|${people}`;
         const [c, p, plus] = slot.nodes ??= [slot.el.querySelector('.count'), slot.el.querySelector('.ppl'), slot.el.querySelector('.plus')];
         if (c) c.textContent = `${so.turns.toLocaleString('en-US')} comment${so.turns === 1 ? '' : 's'}`;
