@@ -16,3 +16,6 @@ test('a typo is left out and named, never passed on; case and spaces don\'t matt
 test('the floor timeline (FLOOR_TIMELINE) reaches head.play too: a flag the whitelist didn\'t know would never switch on', () => {
   assert.deepEqual(playFlags('stream,cue,quick,crowd,timeline,floor').on, ['stream', 'cue', 'quick', 'crowd', 'timeline', 'floor']);
 });
+test('fast (head.json every second in a room, behind a CDN) reaches head.play too', () => {
+  assert.deepEqual(playFlags('stream,cue,quick,crowd,timeline,floor,fast').on, ['stream', 'cue', 'quick', 'crowd', 'timeline', 'floor', 'fast']);
+});
