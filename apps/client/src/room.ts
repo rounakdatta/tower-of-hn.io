@@ -25,6 +25,8 @@ export class Room {
   onArrive: (i: number, spot: TableSpot) => void = () => {};
   /** a new person is needed in the room (they came by lift): returns their index in the crowd */
   spawn: (name: string, at: THREE.Vector3, facing: number) => number = () => -1;
+  /** (FLOOR_TIMELINE) who is in the room at the floor's moment (null: everyone on the floor, as always) */
+  present: ((name: string) => boolean) | null = null;
   /** CROWD_V2: the audience and each table's front (stage.ts); null: the room as it always was */
   stage: Stage | null = null;
 
@@ -65,6 +67,8 @@ export class Room {
    */
   callOver(name: string, spot: TableSpot, now: number): Presence {
     if (!name || !spot) return 'busy';
+    // (FLOOR_TIMELINE) a building's room is the floor's moment: someone who hasn't come in yet (or has gone) isn't called
+    if (this.present && !this.present(name)) return 'busy';
     let i = this.who(name);
     if (i >= 0 && this.going.get(i) === spot) return 'coming';
     if (i >= 0 && this.going.has(i)) return 'busy';         // on their way to another table: never yanked back and forth

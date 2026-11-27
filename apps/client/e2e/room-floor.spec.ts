@@ -51,8 +51,10 @@ async function drag(page: Page, from: number, to: number, steps = 12, frames = 3
 }
 /** the room settled on its moment: fades and lamps done easing */
 const settle = (page: Page) => step(page, 75);
-const same = async (page: Page, why: string) => {
-  const [live, fresh] = await page.evaluate(() => { const t = (window as unknown as W).__tohn; return [t.floorHash(false), t.floorHash(true)] as string[]; });
+/** the room as shown against the room the clock gives for the same moment, from scratch (settled: the lamps too, once
+ *  they've finished easing) */
+const same = async (page: Page, why: string, settled = true) => {
+  const [live, fresh] = await page.evaluate((s) => { const t = (window as unknown as W).__tohn; return [t.floorHash(false, s), t.floorHash(true, s)] as string[]; }, settled);
   expect(live, why).toBe(fresh);
   return live;
 };
@@ -82,7 +84,7 @@ test('dragging the line moves the whole floor: the room fills and empties as peo
     await d.to(0.01 + (0.98 * s) / 24);
     await page.waitForTimeout(40); await step(page, 3);
     seen.push(await floor(page));
-    await same(page, `step ${s}`);
+    await same(page, `step ${s}`, false);
   }
   await d.up();
   const here = seen.map((f) => f.here), opened = seen.map((f) => f.said);
@@ -103,7 +105,7 @@ test('any path through the line lands on the same room as going straight there (
       const m = r();
       x = m < 0.5 ? Math.max(0, Math.min(end, x + (r() - 0.5) * end * 0.03)) : m < 0.8 ? r() * end : m < 0.9 ? 0 : end * (0.9 + r() * 0.1);
       t.floorAt(x); t.frame(1 / 60, false);
-      if (t.floorHash(false) !== t.floorHash(true)) wrong++;
+      if (t.floorHash(false, false) !== t.floorHash(true, false)) wrong++;
     }
     return wrong;
   });
@@ -121,7 +123,7 @@ test('any path through the line lands on the same room as going straight there (
   const f = await floor(page), other = await browser.newPage({ viewport: page.viewportSize()! });
   await enter(other, 'onepassword', `&t=${Math.floor(f.t)}`);
   await call(other, 'floorAt', f.t); await settle(other);
-  expect(await call<string>(other, 'floorHash', false), 'a link to the moment opens on the same room').toBe(h);
+  expect(await call<string>(other, 'floorHash', false, true), 'a link to the moment opens on the same room').toBe(h);
   await other.close();
 });
 

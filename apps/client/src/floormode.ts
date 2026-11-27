@@ -94,8 +94,8 @@ export class FloorMode {
     return best;
   }
 
-  /** where the line starts a visit: the floor's first comment (a moment before it, so its writer is seen walking in) */
-  get start() { return this.clock?.comments.length ? Math.max(0, this.clock.comments[0].at - 0.5) : 0; }
+  /** where the line starts a visit: the floor's first comment (its writer at their table, the first table open) */
+  get start() { return this.clock?.comments.length ? this.clock.comments[0].at : 0; }
   get end() { return this.clock?.end ?? 0; }
 
   /**

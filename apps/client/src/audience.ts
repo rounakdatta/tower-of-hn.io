@@ -56,7 +56,7 @@ const NOWHERE: Place = { x: 0, z: 0, y: -100, level: -1, facing: 0 };
  *  is in the room is the floor's clock's (a flag per person, flipped as the moment moves), with a fade in the scene's
  *  own time so a jump of hours is a ripple, never a pop; and only inside the hall's clip (the walls drawing back) */
 // (the hall's clip radius, a uniform node from hallview.ts)
-export interface BuildingOpts { clip: ReturnType<typeof uniform> }
+export interface BuildingOpts { clip: ReturnType<typeof uniform<number>> }
 /** a person's fade in or out of the room (s) */
 const FADE = 0.45;
 
@@ -144,7 +144,7 @@ export class Audience {
     const awayK = clamp(uTime.sub(live.z).div(0.35), 0, 1);
     const level = this.T(5).w;
     let here = joined.mul(select(live.y.greaterThan(0.5), float(1).sub(awayK), awayK.max(step(live.z, float(-50))))).mul(step(level, this.u.levels));
-    if (this.building) here = here.mul(step(length(vec2(pos.x, pos.z)), this.building.clip));
+    if (this.building) here = here.mul(step(length(vec2(pos.x, pos.z)), float(this.building.clip)));
     const sit = this.building ? this.T(6).x : float(0);
     // a reaction travels out from where it happened, 4 m a second, each person a little in their own time
     const R = this.u.react, d = length(vec2(pos.x.sub(R.x), pos.z.sub(R.y)));
@@ -224,13 +224,16 @@ export class Audience {
       const w = smoothstep(this.u.focusT.add(lag), this.u.focusT.add(lag).add(0.9), uTime);
       const F = mix(this.u.focusA, this.u.focusB, w);
       const to = F.sub(headAt);
+      // (the building: a hall fifty metres across doesn't all turn to one voice; the nearer tables do, the far ones keep
+      // to their own)
+      const heed = this.building ? smoothstep(float(17), float(7), length(vec2(to.x, to.z))) : float(1);
       const yawRaw = atan(to.x, to.z).sub(p.facing.add(sway));
       const yawW = atan(sin(yawRaw), cos(yawRaw));
       const elsewhere = step(p.phase, float(0.125));
-      const yaw = mix(clamp(yawW, -1.05, 1.05), sin(uTime.mul(0.2).add(p.phase.mul(40))).mul(0.6), elsewhere);
+      const yaw = mix(clamp(yawW, -1.05, 1.05).mul(heed), sin(uTime.mul(0.2).add(p.phase.mul(40))).mul(0.6), elsewhere);
       const pitchTo = atan(to.y.negate(), length(vec2(to.x, to.z))).clamp(-0.45, 0.75);
       const nod = sin(uTime.mul(0.9).add(p.phase.mul(10.7))).mul(0.03).add(sin(p.tl.mul(8)).mul(0.12).mul(p.nod)).sub(p.laugh.mul(0.14)).sub(p.gasp.mul(0.08)).mul(this.u.motion);
-      const pitch = mix(pitchTo, float(0.05), elsewhere).add(nod);
+      const pitch = mix(pitchTo.mul(heed), float(0.05), elsewhere).add(nod);
       const roll = sin(uTime.mul(0.7).add(p.phase.mul(9))).mul(0.03).mul(this.u.motion);
       // the head's rotation: roll, then pitch (nodding), then yaw (body facing + sway + where they look)
       const cr = cos(roll), sr = sin(roll), cp = cos(pitch), sp = sin(pitch), a = p.facing.add(sway).add(yaw), ca = cos(a), sa = sin(a);
@@ -412,6 +415,14 @@ export class Audience {
   }
   /** someone came in: sort again soon (not every frame of a drag: their fade takes longer than the wait) */
   private soon = false;
+  /** (the building) Person i, an actor until now (away at a table), isn't in the room at the floor's moment: their
+   *  instance takes over where the actor stood and fades out from there (no pop). */
+  vanish(i: number, now: number, fade = true) {
+    if (i < 0 || i >= this.n) return;
+    const o = i * 4;
+    this.live[o] = 0; this.live[o + 1] = 0; this.live[o + 2] = -100; this.live[o + 3] = fade ? now : now - 10;
+    this.liveTex.needsUpdate = true;
+  }
   /** (the building) is person i drawn at all now (in the room, or still fading out)? */
   shown(i: number, now: number) { const o = i * 4; return this.live[o] > 0.5 || now - this.live[o + 3] < FADE; }
 

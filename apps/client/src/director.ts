@@ -110,6 +110,8 @@ export class Director {
   /** comments that arrived live at this table, said next (ids, in the order they came) */
   private breaking: number[] = [];
   onEnd: () => void = () => {};
+  /** a turn is about to be said here (its words are ready): FLOOR_TIMELINE moves the room to its moment */
+  onTurnAhead: (turn: Turn) => void = () => {};
 
   constructor(private sync: LiveSync, private audio: AudioEngine, private crowd: Crowd, private rig: Rig, private ui: UI) {}
 
@@ -139,6 +141,17 @@ export class Director {
     this.crowd.settle(this.spot ? this.spot.seats.map((s) => this.ix(s.name)).filter((i) => i >= 0) : []);
     this.perf?.reset();
     this.ui.subtitle(null); this.ui.placard(null); this.ui.code(null); this.ui.waiting(null);
+  }
+
+  /** (FLOOR_TIMELINE) Voices that landed for this table's comments (comment id → its voicing), in a building: its
+   *  turns keep their order (the order written) and pick up the new audio. */
+  voices(v: Map<number, Turn['v']>) {
+    if (!this.spot) return;
+    let changed = false;
+    const turns = this.spot.table.turns.map((u) => { const x = v.get(u.id); if (!x || (u.v && u.v[0] === x[0])) return u; changed = true; return { ...u, v: x }; });
+    if (!changed) return;
+    this.spot.table = { ...this.spot.table, turns };
+    this.prefetch();
   }
 
   /** A newer snapshot of this floor arrived (new turns, or audio became ready). */
@@ -303,6 +316,8 @@ export class Director {
           this.turnIdx++;
           continue;
         }
+        // (FLOOR_TIMELINE) the comment's moment comes first: the room moves to it, so its writer is in the room to say it
+        this.onTurnAhead(turn);
         // whoever is about to talk comes to the table first (from another table, or out of the lift): the
         // table waits for them, the camera holding the room
         if (this.room && !this.spot.bar) {

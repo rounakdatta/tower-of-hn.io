@@ -64,9 +64,14 @@ export class FloorVoice {
     this.turnOf.clear();
     for (const t of floor.tables) for (const u of t.turns) this.turnOf.set(u.id, u);
     this.k = this.from = Math.max(0, Math.min(c.comments.length, from));
-    this.done = 0; this.cursor = this.audio.now() + 0.05; this.stage = ''; this.spans = [];
+    this.done = 0; this.cursor = this.audio.now() + 0.05; this.stage = ''; this.spans = []; this.announced = -1;
     this.playing = c.comments.length > 0; this.paused = false;
     this.prefetch();
+  }
+
+  /** Voices that landed since (comment id → its voicing): the comments still to come play them. */
+  voices(v: Map<number, Turn['v']>) {
+    for (const [id, x] of v) { const u = this.turnOf.get(id); if (u && x && (!u.v || u.v[0] !== x[0])) this.turnOf.set(id, { ...u, v: x }); }
   }
 
   /** Stop at once: every scheduled word, every performance, every speaker back to their place. */
@@ -89,16 +94,21 @@ export class FloorVoice {
     const now = this.audio.now(), at = (i: number) => c.comments[Math.min(c.comments.length - 1, i)].at;
     let span: { i: number; s0: number; s1: number; partial: boolean } | null = null;
     for (const x of this.spans) if (x.s0 <= now && (!span || x.s0 >= span.s0)) span = x;
-    if (!span) return at(this.from);
+    const lead = this.announced >= 0 ? at(this.announced) : -Infinity;
+    if (!span) return Math.max(at(this.from), lead);
     const next = span.i + 1 < c.comments.length ? at(span.i + 1) : c.end;
     const f = Math.min(span.partial ? 0.5 : 1, Math.max(0, (now - span.s0) / Math.max(0.5, span.s1 - span.s0)));
-    return Math.min(next - 0.001, at(span.i) + f * (next - at(span.i)));
+    // (the next comment, once it's on its way, has happened: the room is at its moment until it's said)
+    return Math.max(lead, Math.min(next - 0.001, at(span.i) + f * (next - at(span.i))));
   }
+  /** the comment whose moment the room has moved to (about to be said, or being said), and who hears of it */
+  private announced = -1;
+  onComment: (i: number) => void = () => {};
   /** each comment said lately: when its words start and end (audio time) */
   private spans: { i: number; s0: number; s1: number; partial: boolean }[] = [];
 
   /** what's being said right now (for the caption), or null */
-  current(): (Line & { spot: TableSpot }) | null {
+  current(): (Line & { spot: TableSpot; i: number }) | null {
     const now = this.audio.now();
     for (const s of this.sched) if (s.start <= now && s.end > now) return s;
     return null;
@@ -147,6 +157,8 @@ export class FloorVoice {
     }
     const r = this.load(turn);
     if (!r) { if (this.waited(`load:${turn.id}`, now) > 12) this.next(); return; }
+    // (its moment comes first: the room moves to it, so whoever writes it is in the room to say it)
+    if (this.announced !== said.i) { this.announced = said.i; this.onComment(said.i); }
     const here = this.room.callOver(turn.by, spot, now);
     if ((here === 'coming' || here === 'busy') && !this.done) {
       const w = this.waited(`call:${turn.id}`, now);
