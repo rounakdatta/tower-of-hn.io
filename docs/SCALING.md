@@ -91,12 +91,17 @@ Everything on the front page is ~19 hours of speech at any moment, so the rankin
 
 ## A public launch, with the same lean box
 
-1. **Cloudflare in front** (orange cloud on the host). Cache rules:
-   - `/assets/*`, `/live/f/*`, `/live/e/*`, `/live/c/*`: cache everything, respect origin headers (immutable).
-   - `/live/head.json`: respect origin (`max-age=1, stale-while-revalidate=10`): the origin sees about one request
-     a second per edge location, whatever the audience.
-   - `/want`, `/profile/*`: bypass. Add an edge rate limit (e.g. 30/min per IP) as a second fence.
-   - towerd already trusts `CF-Connecting-IP` only from Cloudflare's ranges, so per-client limits keep working.
+1. **Cloudflare in front, through a Cloudflare Tunnel** (homelab: the `cloudflared` connector beside towerd).
+   - No new door on the host: the connector dials out to Cloudflare and reaches towerd's `EDGE_PORT` inside the
+     cluster. The NetworkPolicy admits the connector alone to that port, so towerd trusts `CF-Connecting-IP` there:
+     per-visitor limits and "who is listening" keep working. `/status` is not served on it.
+   - Cache rule (JSON is not cached by Cloudflare by default): `/live/*` and `/assets/*` eligible for cache,
+     respecting the origin's headers. Immutable files are then cached a year; `head.json`
+     (`max-age=1, stale-while-revalidate=10`) about a second, so the origin sees about one request a second per edge
+     location, whatever the audience, and a new comment still reaches a listener within one poll (2 s) plus ~1 s.
+   - `/want`, `/profile/*` are POSTs or `no-store`, so they always reach towerd; its own buckets limit them.
+   - towerd also still trusts `CF-Connecting-IP` from Cloudflare's ranges on the main port (an orange-cloud setup
+     without the tunnel).
 2. **Then the origin's load is flat**: head.json at ~1/s per POP, immutable files once each, plus /want and /profile.
 3. **Voicing** is the knob. In order of cost:
    - more runners: any node that joins the cluster gets one (one per worker node), with lanes for its cores;

@@ -16,7 +16,8 @@
 //      at most AUDIO_MAX_MB (1024), and voices nothing new below DISK_FREE_MIN_PCT (15) free; tower-dry only says
 //      what tower would do), PRUNE_EVERY_S (housekeeping, 600), SPONSOR_URL (the maker's GitHub Sponsors page: a
 //      quiet line on the door, a credit at a table, /support; unset, none of it exists) and SPONSOR_UPI (a UPI ID for
-//      /support; see support.ts)
+//      /support; see support.ts), EDGE_PORT (a second HTTP port for a CDN's tunnel connector, cloudflared: there
+//      CF-Connecting-IP names the visitor and /status is private; the NetworkPolicy must admit the connector alone)
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync, brotliCompressSync, constants as zlibc } from 'node:zlib';
@@ -36,6 +37,10 @@ import { playFlags } from './play.ts';
 const HN = (process.env.HN_API || 'https://hacker-news.firebaseio.com/v0').replace(/\/$/, '');   // (empty: unset)
 const UA = { 'User-Agent': 'towerofhn-towerd/0.1' };
 const PORT = Number(process.env.PORT ?? 8787);
+// The edge's way in (a Cloudflare Tunnel's connector, cloudflared): only the connector can reach it (the NetworkPolicy),
+// so the edge's CF-Connecting-IP names the visitor there, and towerd's internals (/status) are not served on it
+const EDGE_PORT = Number(process.env.EDGE_PORT) || 0;
+const viaEdge = (req: import('node:http').IncomingMessage) => EDGE_PORT > 0 && req.socket.localPort === EDGE_PORT;
 const VAR = resolve(process.env.VAR ?? join(import.meta.dirname, '../../../var'));
 const LIVE = join(VAR, 'live'), JOBS = join(VAR, 'jobs'), VOICED = join(VAR, 'voiced.jsonl');
 const FLOORS = 30;
@@ -359,11 +364,12 @@ function cloudflare(ip: string) {
   return CF4.some(([base, m]) => Math.floor(n / 2 ** (32 - m)) === Math.floor(base / 2 ** (32 - m)));
 }
 function clientOf(req: import('node:http').IncomingMessage) {
-  // Traefik replaces X-Real-Ip with the address it saw (and the NetworkPolicy admits only Traefik and agentfest);
-  // when that address is a Cloudflare edge, the edge names the visitor
-  const peer = String(req.headers['x-real-ip'] ?? req.socket.remoteAddress ?? '?').replace(/^::ffff:/, '');
-  const cf = req.headers['cf-connecting-ip'];
-  const ip = (typeof cf === 'string' && cloudflare(peer) ? cf : peer).replace(/%.*$/, '').slice(0, 64);
+  // Through the tunnel (the edge port) the edge names the visitor, always; X-Real-Ip is ignored there (a visitor could
+  // send one). Otherwise Traefik replaces X-Real-Ip with the address it saw (and the NetworkPolicy admits only Traefik
+  // and agentfest); when that address is a Cloudflare edge, the edge names the visitor
+  const cf = req.headers['cf-connecting-ip'], edge = viaEdge(req);
+  const peer = String((edge ? undefined : req.headers['x-real-ip']) ?? req.socket.remoteAddress ?? '?').replace(/^::ffff:/, '');
+  const ip = (typeof cf === 'string' && (edge || cloudflare(peer)) ? cf : peer).replace(/%.*$/, '').slice(0, 64);
   return ip.includes(':') ? v6net(ip) : ip;
 }
 function v6net(ip: string) {
@@ -384,13 +390,22 @@ function allow(req: import('node:http').IncomingMessage) {
   }
   return take(b, 1, 20) && take(everyone, 60, 240);
 }
-createServer((req, res) => {
+function serve(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) {
   try { handle(req, res); } catch (e) {
     console.error('http', String(e).slice(0, 160));
     if (!res.headersSent) res.writeHead(400);
     res.end();
   }
-}).listen(PORT, () => console.log(`towerd on http://localhost:${PORT}  (var: ${VAR})`));
+}
+// The proxies in front (Traefik, cloudflared) keep idle connections to towerd for 90 s. Node's default of 5 s would
+// close one under a request now and then, and the proxy answers that request 502: so hold them longer than they do
+function server() {
+  const s = createServer(serve);
+  s.keepAliveTimeout = 120_000; s.headersTimeout = 125_000;
+  return s;
+}
+server().listen(PORT, () => console.log(`towerd on http://localhost:${PORT}  (var: ${VAR})`));
+if (EDGE_PORT) server().listen(EDGE_PORT, () => console.log(`edge (tunnel) on :${EDGE_PORT}`));
 
 function handle(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -463,6 +478,7 @@ function handle(req: import('node:http').IncomingMessage, res: import('node:http
     profileOf(name).then(send, () => { if (!res.writableEnded) { res.writeHead(503, { 'retry-after': '10', 'cache-control': 'no-store' }); res.end(); } });
     return;
   }
+  if (url.pathname === '/status' && viaEdge(req)) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
   if (url.pathname === '/status') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     const ears = new Set<string>();
