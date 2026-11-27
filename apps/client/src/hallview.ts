@@ -18,6 +18,7 @@ import type { Plan } from './building.ts';
 /** towerd's floors have at most 60 tables */
 export const HALL_TABLES = 64;
 const HALL_CHAIRS = HALL_TABLES * 8;
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
 /** a pendant lamp hangs this high over its table */
 const LAMP_Y = FLOOR_H * 0.8;
 
@@ -159,6 +160,7 @@ export class HallView {
     }
     for (const im of [this.tables, this.lamps, this.pools]) { im.count = n; im.instanceMatrix.needsUpdate = true; }
     this.chairs.count = chair; this.chairs.instanceMatrix.needsUpdate = true;
+    (this.aChair.array as Float32Array).fill(0);
     this.aTable.needsUpdate = true; this.aChair.needsUpdate = true;
     this.postsAt = -1;
     this.group.visible = true;
@@ -217,6 +219,7 @@ export class HallView {
     if (Math.abs(wall - this.postsAt) > 0.01) this.place(wall);
   }
 
+  private tmp = { m: new THREE.Matrix4(), q: new THREE.Quaternion(), p: new THREE.Vector3(), s: new THREE.Vector3() };
   /** the floor, the ceiling, the edge line and the glass at radius w */
   private place(w: number) {
     this.postsAt = w;
@@ -226,11 +229,12 @@ export class HallView {
     this.edge.scale.set(this.uClip.value, this.uClip.value, 1);
     this.edge.visible = this.uEdge.value > 0.001;
     const n = Math.min(420, Math.max(56, Math.round((Math.PI * 2 * w) / (w > 9 ? 1.6 : 0.8))));
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), Y = new THREE.Vector3(0, 1, 0), h = this.height;
+    const { m, q, p, s } = this.tmp, h = this.height;
+    s.set(1, h, 1);
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2;
-      q.setFromAxisAngle(Y, a);
-      this.posts.setMatrixAt(i, m.compose(new THREE.Vector3(Math.sin(a) * (w - 0.05), h / 2, Math.cos(a) * (w - 0.05)), q, new THREE.Vector3(1, h, 1)));
+      q.setFromAxisAngle(Y_AXIS, a);
+      this.posts.setMatrixAt(i, m.compose(p.set(Math.sin(a) * (w - 0.05), h / 2, Math.cos(a) * (w - 0.05)), q, s));
     }
     this.posts.count = n; this.postCount = n;
     this.posts.instanceMatrix.needsUpdate = true;

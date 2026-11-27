@@ -110,6 +110,9 @@ export class Director {
   /** comments that arrived live at this table, said next (ids, in the order they came) */
   private breaking: number[] = [];
   onEnd: () => void = () => {};
+  /** (FLOOR_TIMELINE) where a turn of this spot's is on the server's floor now: [its table, its place there] ([-1, -1]:
+   *  gone); null: the floor as the director has it */
+  live: ((spot: TableSpot, turn: Turn) => [number, number]) | null = null;
   /** a turn is about to be said here (its words are ready): FLOOR_TIMELINE moves the room to its moment */
   onTurnAhead: (turn: Turn) => void = () => {};
 
@@ -235,8 +238,11 @@ export class Director {
       if (t.v) this.load(t);
       // not voiced yet, or still arriving clip by clip: ask, and keep asking (demand lapses server-side unless renewed)
       if (!t.v || /\.p\d+\.json$/.test(t.v[0])) {
-        const server = this.floor.tables[this.spot.index]?.turns.findIndex((u) => u.id === t.id) ?? -1;
-        const ti = this.spot.tableOf?.get(t.id) ?? this.spot.index, from = this.spot.tableOf ? 0 : Math.max(0, server);
+        // (FLOOR_TIMELINE: the building keeps its own table order; the server's, where it's asked, may have moved on)
+        const live = this.live?.(this.spot, t);
+        const server = live ? live[1] : this.floor.tables[this.spot.index]?.turns.findIndex((u) => u.id === t.id) ?? -1;
+        const ti = live ? live[0] : this.spot.tableOf?.get(t.id) ?? this.spot.index, from = this.spot.tableOf ? 0 : Math.max(0, server);
+        if (ti < 0) continue;
         const key = `${this.floor.story.id}:${ti}:${from}`, last = this.asked.get(key) ?? -1e9, nowS = performance.now() / 1000;
         if (nowS - last > 30) {
           this.asked.set(key, nowS);
@@ -312,7 +318,8 @@ export class Director {
       if (fresh) {
         // audio voiced while HN still showed a placeholder ([delayed]): the real text is being re-voiced; skip it meanwhile
         if (r.side.clips.length === 1 && !r.side.partial && /^\s*\[(delayed|flagged|dead|deleted|removed)\]\s*$/i.test(r.side.clips[0].t)) {
-          if (this.floor && !this.spot.tableOf) this.sync.want(this.floor.story.id, this.spot.index, this.turnIdx);
+          const live = this.live?.(this.spot, turn);
+          if (this.floor && !this.spot.tableOf && (!live || live[0] >= 0)) this.sync.want(this.floor.story.id, live ? live[0] : this.spot.index, live ? Math.max(0, live[1]) : this.turnIdx);
           this.turnIdx++;
           continue;
         }

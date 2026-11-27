@@ -56,6 +56,9 @@ export class FloorVoice {
   private from = 0;
 
   constructor(private sync: LiveSync, private audio: AudioEngine, private crowd: Crowd, private room: Room, private stageOf: () => Stage) {}
+  /** where a comment is on the server's floor now (its table and its place there: [-1, -1] gone): the building keeps
+   *  its own table order, and a voicing request must name the server's */
+  live: (table: number, id: number) => [number, number] = () => [-1, -1];
 
   /** The floor to narrate (its clock and its tables), and the comment to start from. */
   start(floor: Floor, c: FloorClock, spots: TableSpot[], from: number) {
@@ -69,6 +72,8 @@ export class FloorVoice {
     this.prefetch();
   }
 
+  /** the people at fronts the narration brought (crowd indices) */
+  speakers() { return this.fronts.keys(); }
   /** Voices that landed since (comment id → its voicing): the comments still to come play them. */
   voices(v: Map<number, Turn['v']>) {
     for (const [id, x] of v) { const u = this.turnOf.get(id); if (u && x && (!u.v || u.v[0] !== x[0])) this.turnOf.set(id, { ...u, v: x }); }
@@ -76,6 +81,8 @@ export class FloorVoice {
 
   /** Stop at once: every scheduled word, every performance, every speaker back to their place. */
   stop() {
+    // (a pause of ours suspended the sound: whatever plays next, here or at a table or on the tower, has it back)
+    if (this.paused) { this.paused = false; this.audio.ctx?.resume().catch(() => {}); }
     for (const s of this.sched) { try { s.src.stop(); } catch { /* done */ } }
     this.sched = [];
     for (const p of this.perfs.values()) p.reset();
@@ -185,7 +192,9 @@ export class FloorVoice {
       t += clip.d + 0.06;
     });
     void perf;
-    if (i >= 0) { this.room.speaking(i, t); this.fronts.set(i, t); }
+    // (someone still walking over is at the front too, as far as going home goes)
+    const at = i >= 0 ? i : this.room.who(turn.by);
+    if (at >= 0) { this.room.speaking(at, t); this.fronts.set(at, t); }
     const first = this.sched.find((x) => x.i === said.i)?.start ?? t;
     const sp = this.spans.find((x) => x.i === said.i);
     if (sp) { sp.s1 = t; sp.partial = !!r.side.partial; } else this.spans.push({ i: said.i, s0: first, s1: t, partial: !!r.side.partial });
@@ -275,11 +284,11 @@ export class FloorVoice {
   private want(table: number, turn: Turn) {
     const f = this.floor;
     if (!f) return;
-    const from = f.tables[table]?.turns.findIndex((u) => u.id === turn.id) ?? -1;
-    if (from < 0) return;
-    const key = `${f.story.id}:${table}:${from}`, t = performance.now() / 1000;
+    const [ti, from] = this.live(table, turn.id);
+    if (ti < 0 || from < 0) return;
+    const key = `${f.story.id}:${ti}:${from}`, t = performance.now() / 1000;
     if (t - (this.asked.get(key) ?? -1e9) < 30) return;
     this.asked.set(key, t);
-    this.sync.want(f.story.id, table, from).then((ok) => { if (!ok) this.asked.set(key, t - 25); });
+    this.sync.want(f.story.id, ti, from).then((ok) => { if (!ok) this.asked.set(key, t - 25); });
   }
 }

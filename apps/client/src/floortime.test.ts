@@ -235,3 +235,13 @@ test('a drag costs what changed: a small step looks at a handful of people, howe
   for (let k = 1; k <= 200; k++) most = Math.max(most, room.move(c.end / 3 + k * (c.end / 3) / 2000, () => {}));
   assert.ok(most < 60, `a step of a 2,000th of the line looked at ${most} of 3,000 people`);
 });
+
+test('a thread that runs for weeks still glows: no overflow, however long a table lives', () => {
+  const turns: TTurn[] = Array.from({ length: 40 }, (_, k) => ({ id: k + 1, by: `p${k % 7}`, at: k * 86_400 }));   // a comment a day for 40 days
+  const c = floorClock({ tables: [{ root: 1, turns }] })!;
+  for (const t of [0, 10 * 86_400, 39 * 86_400, 39 * 86_400 + 60]) {
+    const g = tableAt(c, 0, t).glow;
+    assert.ok(Number.isFinite(g) && g >= 0 && g <= 2, `glow ${g} at day ${(t / 86_400).toFixed(1)}`);
+  }
+  assert.ok(tableAt(c, 0, 39 * 86_400).glow >= 1, 'a comment this moment lights its table fully');
+});

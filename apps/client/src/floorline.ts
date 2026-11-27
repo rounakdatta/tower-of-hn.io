@@ -18,7 +18,7 @@ const plural = (n: number, one: string, many: string) => `${n.toLocaleString('en
 export function floorModel(c: FloorClock, only?: number): FloorModel {
   const N = c.comments.length;
   const starts = Float64Array.from(c.comments, (x) => uOf(c, x.at));
-  const opens = Float64Array.from(c.tables.filter((t) => Number.isFinite(t.open)), (t) => uOf(c, t.open));
+  const opens = Float64Array.from(c.opens, (t) => uOf(c, t));                  // (sorted: the clock keeps them so)
   const tb = only !== undefined ? c.tables[only] : undefined;
   let flows: { n: number; v: ReturnType<typeof flowIn> } | null = null;
   const at = (u: number) => (tb ? seatFrom(c, only!, tOf(c, u)) : Math.max(0, latest(c, tOf(c, u))));

@@ -85,7 +85,8 @@ export interface TableClock {
   said: Int32Array;
   /** their moments */
   times: Float64Array;
-  /** prefix sums of exp((at - open) / GLOW) (for the glow at any t) */
+  /** S_k = sum over j ≤ k of exp((t_j - t_k) / GLOW): the glow just after comment k (every exponent ≤ 0, so it never
+   *  overflows however long the thread runs); the glow at t is S_k · exp((t_k - t) / GLOW) */
   glow: Float64Array;
   /** the people at the table, in the order they first spoke there (indices into `people`) */
   people: Int32Array;
@@ -165,8 +166,7 @@ export function floorClock(floor: TFloor, now?: number): FloorClock | null {
   const tables: TableClock[] = floor.tables.map((t, index) => {
     const said = Int32Array.from(perTable[index]), times = Float64Array.from(said, (i) => comments[i].at);
     const open = times.length ? times[0] : Infinity, glow = new Float64Array(said.length);
-    let acc = 0;
-    for (let k = 0; k < said.length; k++) { acc += Math.exp((times[k] - open) / GLOW); glow[k] = acc; }
+    for (let k = 0; k < said.length; k++) glow[k] = 1 + (k ? glow[k - 1] * Math.exp((times[k - 1] - times[k]) / GLOW) : 0);
     const order: number[] = [], firsts: number[] = [], here = new Set<number>();
     for (const i of said) { const p = comments[i].person; if (!here.has(p)) { here.add(p); order.push(p); firsts.push(comments[i].at); } }
     return { root: t.root, index, open, last: times.length ? times[times.length - 1] : -Infinity, said, times, glow, people: Int32Array.from(order), firsts: Float64Array.from(firsts) };
@@ -248,7 +248,7 @@ export interface TableNow {
 export function tableAt(c: FloorClock, k: number, t: number, out?: TableNow): TableNow {
   const tb = c.tables[k], n = countUpTo(tb.times, t), o = out ?? { open: false, turns: 0, last: -1, glow: 0, talking: false };
   o.open = n > 0; o.turns = n; o.last = n ? tb.said[n - 1] : -1;
-  o.glow = n ? tb.glow[n - 1] * Math.exp(-(t - tb.open) / GLOW) : 0;
+  o.glow = n ? tb.glow[n - 1] * Math.exp(-(t - tb.times[n - 1]) / GLOW) : 0;
   o.talking = n > 0 && t - tb.times[n - 1] < TALKING;
   return o;
 }

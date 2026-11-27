@@ -226,14 +226,15 @@ export class Audience {
       const to = F.sub(headAt);
       // (the building: a hall fifty metres across doesn't all turn to one voice; the nearer tables do, the far ones keep
       // to their own)
-      const heed = this.building ? smoothstep(float(17), float(7), length(vec2(to.x, to.z))) : float(1);
+      const heed = this.building ? smoothstep(float(17), float(7), length(vec2(to.x, to.z))) : null;
       const yawRaw = atan(to.x, to.z).sub(p.facing.add(sway));
       const yawW = atan(sin(yawRaw), cos(yawRaw));
       const elsewhere = step(p.phase, float(0.125));
-      const yaw = mix(clamp(yawW, -1.05, 1.05).mul(heed), sin(uTime.mul(0.2).add(p.phase.mul(40))).mul(0.6), elsewhere);
+      const turned = clamp(yawW, -1.05, 1.05);
+      const yaw = mix(heed ? turned.mul(heed) : turned, sin(uTime.mul(0.2).add(p.phase.mul(40))).mul(0.6), elsewhere);
       const pitchTo = atan(to.y.negate(), length(vec2(to.x, to.z))).clamp(-0.45, 0.75);
       const nod = sin(uTime.mul(0.9).add(p.phase.mul(10.7))).mul(0.03).add(sin(p.tl.mul(8)).mul(0.12).mul(p.nod)).sub(p.laugh.mul(0.14)).sub(p.gasp.mul(0.08)).mul(this.u.motion);
-      const pitch = mix(pitchTo.mul(heed), float(0.05), elsewhere).add(nod);
+      const pitch = mix(heed ? pitchTo.mul(heed) : pitchTo, float(0.05), elsewhere).add(nod);
       const roll = sin(uTime.mul(0.7).add(p.phase.mul(9))).mul(0.03).mul(this.u.motion);
       // the head's rotation: roll, then pitch (nodding), then yaw (body facing + sway + where they look)
       const cr = cos(roll), sr = sin(roll), cp = cos(pitch), sp = sin(pitch), a = p.facing.add(sway).add(yaw), ca = cos(a), sa = sin(a);
@@ -423,8 +424,7 @@ export class Audience {
     this.live[o] = 0; this.live[o + 1] = 0; this.live[o + 2] = -100; this.live[o + 3] = fade ? now : now - 10;
     this.liveTex.needsUpdate = true;
   }
-  /** (the building) is person i drawn at all now (in the room, or still fading out)? */
-  shown(i: number, now: number) { const o = i * 4; return this.live[o] > 0.5 || now - this.live[o + 3] < FADE; }
+
 
   /** Heads turn to whoever is speaking now (a world point), a ripple from those nearest. `now`: the scene clock. */
   focus(at: THREE.Vector3, now: number, who = -1) {

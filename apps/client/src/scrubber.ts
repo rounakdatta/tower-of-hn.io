@@ -152,6 +152,8 @@ export class Scrubber {
   }
 
   get scrubbing() { return this.drag; }
+  /** the line has the room: a drag, or the keys still settling (the host's own clock waits meanwhile) */
+  get holding() { return this.drag || this.tKey !== 0; }
 
   /** a new line to scrub (seated at a conversation: lineModel; the floor's: floorline.ts), the playhead at t */
   show(m: ScrubModel, t = 0) {

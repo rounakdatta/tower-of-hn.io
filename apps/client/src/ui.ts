@@ -264,7 +264,8 @@ export class UI {
     const kick = !this.chosen && data.best === s ? 'Start here' : '';
     // the table you're with is subtitled already: its sign doesn't say the same thing again
     const said = line && !focus ? line : null;
-    const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${so ? '' : people}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
+    // (a building's counts tick in place; a sign with no words of its own shows "+N" people, which re-renders)
+    const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${so && t.gist ? '' : people}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
     // (a building's counts tick as the floor's moment moves: just the words, no measuring: their figures are tabular)
     if (key === slot.key) {
       // (written only when they change: a write is a change to the page even when the words are the same)
