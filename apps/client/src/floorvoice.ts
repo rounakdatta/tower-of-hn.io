@@ -226,6 +226,13 @@ export class FloorVoice {
     const r = id === undefined ? undefined : this.ready.get(id) ?? this.kept.get(id);
     return r ? r.side.clips.map((x) => x.t).join(' ') : null;
   }
+  /** comment k's first words and who says them, if they're here already (the caption on a release, at once) */
+  first(k: number): { who: string; text: string; side: Sidecar } | null {
+    const id = this.c?.comments[k]?.id;
+    const r = id === undefined ? undefined : this.ready.get(id) ?? this.kept.get(id);
+    const clip = r?.side.clips[0];
+    return clip ? { who: clip.who, text: clip.t, side: r!.side } : null;
+  }
   /** (the card's words outlive the playing: a few dozen sidecars, kept by id) */
   private kept = new Map<number, Ready>();
 

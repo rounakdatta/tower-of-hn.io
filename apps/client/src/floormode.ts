@@ -43,6 +43,8 @@ export class FloorMode {
   storyTime = 0;
   yaw = 0;
   roomY = 0;
+  /** arrivals ripple out from each table (false under prefers-reduced-motion) */
+  ripple = true;
   /** people whose presence was flipped by the last show(), and how many it looked at (for checks) */
   flipped = 0;
   looked = 0;
@@ -66,9 +68,10 @@ export class FloorMode {
     for (const p of plan.people) { const w = world(p.x, p.z); p.x = w.x; p.z = w.z; p.facing += yaw; }
     this.spots = plan.tables.map((t) => ({ index: t.index, table: floor.tables[t.index], pos: new THREE.Vector3(t.x, 0, t.z), radius: t.r, seats: [], bar: false }));
     this.room = new RoomAt(clock);
+    // (reduced motion: everyone at once, a fade and no ripple)
     this.delays = Float32Array.from(plan.people, (p) => {
       const t = plan.tables[p.home];
-      return p.seated || !t ? 0 : Math.min(RIPPLE_MAX, Math.hypot(p.x - t.x, p.z - t.z) * RIPPLE - (t.r + 2) * RIPPLE);
+      return !this.ripple || p.seated || !t ? 0 : Math.max(0, Math.min(RIPPLE_MAX, Math.hypot(p.x - t.x, p.z - t.z) * RIPPLE - (t.r + 2) * RIPPLE));
     });
     this.now = clock.tables.map(() => ({ open: false, turns: 0, last: -1, glow: 0, talking: false }));
     this.looks = clock.tables.map(() => ({ lit: 0, glow: 0, focus: 0 }));

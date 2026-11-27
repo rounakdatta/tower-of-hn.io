@@ -137,6 +137,7 @@ if (reducedMotion) hallAudience.u.motion.value = 0;
 const hallStage = new Stage(crowd, hallAudience, interior, room);
 hallStage.clock = () => clock;
 const floorMode = new FloorMode(hallView, hallAudience);
+floorMode.ripple = !reducedMotion;
 const floorVoice = new FloorVoice(sync, audio, crowd, room, () => stage);
 // (the comment about to be said has happened: the room is at its moment, so its writer is in it to say it)
 floorVoice.onComment = (i) => { const c = floorMode.clock; if (c?.comments[i]) floorShow(c.comments[i].at, true); };
@@ -266,8 +267,8 @@ function floorScrubbing(on: boolean) {
     const b = floorBefore; floorBefore = null;
     floorShow(b.t, true);
     if (mode === 'table') { director.hold(false); return; }
-    floorLand(b.pos, b.yaw);
-    if (b.playing && activeFloor && floorMode.clock) floorVoice.start(activeFloor, floorMode.clock, spots, Math.max(0, latest(floorMode.clock, b.t)));
+    if (b.walking) floorLand(b.pos, b.yaw);
+    if (b.playing && activeFloor && floorMode.clock) { floorVoice.start(activeFloor, floorMode.clock, spots, Math.max(0, latest(floorMode.clock, b.t))); if (!b.walking) startFollow(); }
   }, 0);
 }
 function floorScrub(u: number, k: number) {
@@ -290,8 +291,54 @@ function floorSeek(k: number) {
   stage.instantUntil = clock + 1.2;                      // (whoever says it is simply there: the camera is cutting)
   if (mode === 'table') { director.seek(seatIndex(k), clock); return; }
   floorVoice.start(activeFloor, c, spots, k);
-  const sp = spots[c.comments[k].table];
-  if (sp) { const p = standAt(sp, camera.position); floorLand(new THREE.Vector3(p.x, 0, p.z), Math.atan2(sp.pos.x - p.x, sp.pos.z - p.z)); }
+  // the caption at once (its words were fetched while the finger rested): the voice follows a moment later
+  const w = floorVoice.first(k);
+  if (w) {
+    const u = c.comments[k], turns = spots[u.table]?.table.turns ?? [], to = u.replyTo ? turns.find((x) => x.id === u.replyTo)?.by : undefined;
+    subLine = null;
+    ui.subtitle({ name: w.who, to: w.who === u.by ? to : undefined, text: w.text, color: '#e8dccb', emotion: w.side.emotion, stance: w.side.stance, intensity: w.side.intensity, you: !!you.me && w.who === you.me, onWho: () => showProfile(w.who, u.id) });
+  }
+  startFollow();
+}
+// ---------------------------------------------------------------- (FLOOR_TIMELINE) the camera follows the floor
+/** On foot, once you've let the line go somewhere, the camera follows the narration round the building: to each table as
+ *  its comment is said, across the table from whoever is speaking (their face, over the table), rising over the hall for
+ *  a long hop so you see where it's going. Walking (keys, the stick) or a click on the room hands the camera back. */
+let follow = false, followSpot: TableSpot | null = null, followHinted = false;
+const followHead = new THREE.Vector3();
+function startFollow() {
+  overhead = false;
+  if (mode !== 'floor' || !building) return;
+  follow = true; followSpot = null;
+  if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.disable(); }
+  rig.fovTarget = 50;
+  if (!followHinted) { followHinted = true; ui.hint(touch ? 'Following the conversation · touch the room to walk' : 'Following the conversation · move to walk on your own'); after(7, () => { if (follow) ui.hint(''); }); }
+}
+function stopFollow() {
+  if (!follow) return;
+  follow = false; followSpot = null;
+  ui.hint('');
+  if (mode !== 'floor' || walk.enabled || scrubber.scrubbing) return;
+  const p = camera.position, yaw = Math.atan2(rig.target.x - p.x, rig.target.z - p.z);
+  walk.begin(new THREE.Vector3(p.x, roomY + EYE, p.z), yaw);
+}
+function followFrame() {
+  if (!follow || mode !== 'floor' || !building || scrubber.scrubbing || floorBefore) return;
+  const l = floorVoice.current(), sp = l?.spot ?? null;
+  if (!sp || sp === followSpot || rig.busy(clock)) return;
+  followSpot = sp;
+  const head = l && l.who >= 0 ? crowd.headPos(l.who, followHead) : followHead.set(sp.pos.x, roomY + 1.15, sp.pos.z);
+  // across the table from the speaker (their face, over the tabletop), in the table's own lane: clear by construction
+  const away = new THREE.Vector2(sp.pos.x - head.x, sp.pos.z - head.z);
+  if (away.lengthSq() < 0.04) away.set(sp.pos.x || 1, sp.pos.z);
+  away.normalize();
+  const cam = new THREE.Vector3(sp.pos.x + away.x * (sp.radius + 1.55), roomY + 1.85, sp.pos.z + away.y * (sp.radius + 1.55));
+  const d = camera.position.distanceTo(cam);
+  // a long hop goes up over the hall on the way (you see the floor, and where you're going); a short one stays low
+  const mid = camera.position.clone().lerp(cam, 0.5);
+  mid.y = Math.min(roomY + hallView.height - 0.8, Math.max(camera.position.y, cam.y) + Math.min(6, d * 0.2));
+  const midLook = rig.target.clone().lerp(head, 0.5);
+  rig.fly([camera.position.clone(), mid, cam], [rig.target.clone(), midLook, head.clone()], Math.max(1.1, Math.min(3.2, 1.0 + d / 12)), clock);
 }
 /** (seated) comment k on the floor is which of this table's turns (the director plays them in the order written) */
 function seatIndex(k: number) {
@@ -304,8 +351,10 @@ function floorSnippet(k: number) {
   return floorVoice.snippet(k) ?? (c && c.comments[k]?.k === 0 ? spots[c.comments[k].table]?.table.gist ?? null : null);
 }
 /** On foot, while dragging: up over the hall, the whole floor below (the room filling and emptying is the thing to see). */
+let overhead = false;
 function overview() {
-  if (!walk.enabled && !rig.busy(clock)) return;
+  if (overhead) return;                                  // (already up there: a second drag)
+  overhead = true; followSpot = null;
   const R0 = ROOM.R, d = new THREE.Vector2(camera.position.x, camera.position.z);
   if (d.lengthSq() < 0.01) d.set(Math.sin(walk.yaw + Math.PI), Math.cos(walk.yaw + Math.PI));
   d.normalize();
@@ -317,6 +366,7 @@ function overview() {
 }
 /** back down from over the hall, on foot at `at` (room space, the floor), facing `yaw` */
 function floorLand(at: THREE.Vector3, yaw: number) {
+  overhead = false;
   if (mode !== 'floor') return;
   const stand = new THREE.Vector3(at.x, roomY + EYE, at.z), look = stand.clone().add(new THREE.Vector3(Math.sin(yaw), -0.08, Math.cos(yaw)));
   if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.disable(); }
@@ -511,6 +561,9 @@ crowd.keepClear = () => {                              // asked every frame anyo
   if (clearList.length !== n) clearList.length = n;
   return clearList;
 };
+// (FLOOR_TIMELINE) a move of your own takes the camera back from following the floor
+addEventListener('keydown', (e) => { if (follow && /^(w|a|s|d|arrowup|arrowdown|arrowleft|arrowright)$/i.test(e.key) && !(e.target as HTMLElement)?.closest?.('[role=slider], input, textarea')) stopFollow(); });
+renderer.domElement.addEventListener('pointerdown', () => { if (follow) stopFollow(); });
 walk.onMove = () => {
   if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); if (!walk.locked) ui.hint(''); tapHint = false; }
   if (touch && !localStorage.getItem('tohn-stick')) { localStorage.setItem('tohn-stick', '1'); walk.ghost(false); }
@@ -613,6 +666,7 @@ map.onWalk = (x, z) => { if (walk.enabled) { chose = ui.chosen = true; walk.goTo
 /** Walk up to a table (from its sign, the map, or a tap on it): beside it, facing it. */
 function walkToTable(s: TableSpot) {
   if (s.bar) { sit(s, true); return; }
+  stopFollow();
   if (!walk.enabled) return;
   chose = ui.chosen = true;
   const p = standAt(s, walk.pos);
@@ -1014,7 +1068,7 @@ function sit(s: TableSpot | undefined, push = false) {
     s.table = { ...s.table, turns: Array.from(tb.said, (i) => byId.get(c.comments[i].id)!).filter(Boolean) };
     const i = seatFrom(c, s.index, floorMode.t);
     floorFrom = i >= 0 ? c.comments[i].k : 0;
-    floorVoice.stop(); floorBefore = null; seatLead = floorMode.t;
+    floorVoice.stop(); floorBefore = null; seatLead = floorMode.t; follow = false;
     seatActors(s);
   }
   if (s.bar && !s.tableOf) {
@@ -1104,7 +1158,7 @@ function standUp() {
  *  and the glass closes behind you before the room goes (frame() clears it once you're well out). */
 function leaveFloor() {
   hideLine();
-  if (building) { hideFloorLine(); floorVoice.stop(); if (director.spot) unseatActors(director.spot); }
+  if (building) { hideFloorLine(); floorVoice.stop(); follow = false; if (director.spot) unseatActors(director.spot); }
   const look0 = walk.enabled ? walk.look.clone() : rig.target.clone();
   director.stop(); setDof(false); mixer.exclude = null;
   nav(location.pathname, false);
@@ -1485,6 +1539,7 @@ function frame(dt: number, draw = true) {
   if (line) lineFrame(dt);
   if (building) {
     floorActors();
+    followFrame();
     floorVoice.update(audio.now(), dt);
     if (!scrubber.scrubbing && !floorBefore) {
       if (mode === 'floor' && floorVoice.playing) floorShow(floorVoice.time());

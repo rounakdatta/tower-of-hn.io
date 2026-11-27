@@ -194,6 +194,7 @@ test('the keys step one comment (Shift: ten), Home and End go to the ends, each 
   await page.keyboard.press('End'); await page.waitForTimeout(420); await step(page, 3);
   const f = await floor(page);
   expect(f.said).toBe(comments.length - 1);
+  await settle(page);
   await same(page, 'after End');
 });
 
@@ -248,18 +249,19 @@ test('cheap at any size: a scrub costs the CPU well under a millisecond a frame 
   const rows: string[] = [];
   for (const fx of ['onepassword', 'n800']) {
     await enter(page, fx);
+    // (timed over runs of 20 frames: a phone's timer, as the browser emulates one, is coarser than a frame's work here)
     const ms = await page.evaluate(() => {
-      const t = (window as unknown as W).__tohn, end = (t.floor() as { end: number }).end, out: number[] = [];
-      for (let k = 0; k <= 240; k++) {
+      const t = (window as unknown as W).__tohn, end = (t.floor() as { end: number }).end, runs: number[] = [];
+      for (let r = 0; r < 24; r++) {
         const a = performance.now();
-        t.floorAt((end * k) / 240); t.frame(1 / 60, false);
-        out.push(performance.now() - a);
+        for (let k = 0; k < 20; k++) { t.floorAt((end * (r * 20 + k)) / 480); t.frame(1 / 60, false); }
+        runs.push((performance.now() - a) / 20);
       }
-      out.sort((a, b) => a - b);
-      return { med: out[out.length >> 1], p95: out[Math.floor(out.length * 0.95)] };
+      runs.sort((a, b) => a - b);
+      return { mean: runs.reduce((a, b) => a + b, 0) / runs.length, worst: runs[runs.length - 1] };
     });
-    rows.push(`${fx}: frame (scrubbing, no draw) median ${ms.med.toFixed(3)} ms, p95 ${ms.p95.toFixed(3)} ms`);
-    expect(ms.med, `${fx}: a scrubbed frame's JavaScript`).toBeLessThan(1.0);
+    rows.push(`${fx}: a scrubbed frame (seek + frame, no draw) mean ${ms.mean.toFixed(3)} ms, worst run of 20 ${ms.worst.toFixed(3)} ms`);
+    expect(ms.mean, `${fx}: a scrubbed frame's JavaScript`).toBeLessThan(1.0);
   }
   const heap = await page.evaluate(async () => {
     const t = (window as unknown as W).__tohn, end = (t.floor() as { end: number }).end, gc = (window as unknown as { gc?: () => void }).gc;
