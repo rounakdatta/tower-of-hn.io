@@ -13,6 +13,7 @@ import * as THREE from 'three/webgpu';
 import { positionWorld, vec3, fract, smoothstep, hash, floor as tfloor, mix, float, uv, sin, uniform, instancedBufferAttribute, length, vec2, abs, min } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { FLOOR_H, uTime, R as TOWER_R } from './world.ts';
+import { uLift } from './interior.ts';
 import type { Plan } from './building.ts';
 
 /** towerd's floors have at most 60 tables */
@@ -49,6 +50,14 @@ export class HallView {
   private postsAt = -1;
   private postCount = 0;
   private reveal: { from: number; to: number; at: number; dur: number } | null = null;
+  /** the lift, in the hall's glass */
+  readonly lift = new THREE.Group();
+  /** Put the lift in the glass in the direction of (x, z) from the middle (the door the room was given), facing in. */
+  setLift(x: number, z: number) {
+    const d = Math.hypot(x, z) || 1, r = this.R - 0.14;
+    this.lift.position.set((x / d) * r, 1.06, (z / d) * r);
+    this.lift.lookAt(0, 1.06 + this.group.position.y, 0);
+  }
   /** the three warm lights of the room: over the liveliest tables, moving with the conversation */
   lights: THREE.PointLight[] = [];
   private fill: THREE.HemisphereLight;
@@ -121,8 +130,17 @@ export class HallView {
     this.pools.renderOrder = 1;
     for (let i = 0; i < 3; i++) { const l = new THREE.PointLight(0xffc48a, 0, 9, 1.6); this.lights.push(l); this.group.add(l); }
     this.fill = new THREE.HemisphereLight(0xffd7b0, 0x2a1c14, 0.5);
+    // the lift, in the glass (setLift puts it where the door is): a dark frame round a warm doorway that brightens as
+    // someone comes in (uLift, as in the tower's own room), its chime the sign someone has walked in
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.25, 2.12, 0.1), new THREE.MeshStandardNodeMaterial({ color: 0x23201d, metalness: 0.7, roughness: 0.35 }));
+    const glowMat = new THREE.MeshBasicNodeMaterial();
+    glowMat.colorNode = vec3(1.0, 0.74, 0.46).mul(uLift.mul(2.4).add(0.18));
+    const doorway = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 1.95), glowMat);
+    doorway.position.z = 0.06;
+    (frame.material as THREE.MeshStandardNodeMaterial).maskNode = inside; glowMat.maskNode = inside;
+    this.lift.add(frame, doorway);
     // (no cords: from above, the hall's worth of them crossed the whole picture; the lamps hang in the dark)
-    this.group.add(this.floorMesh, this.edge, this.ceil, this.posts, this.tables, this.chairs, this.lamps, this.pools, this.fill);
+    this.group.add(this.floorMesh, this.edge, this.ceil, this.posts, this.tables, this.chairs, this.lamps, this.pools, this.fill, this.lift);
     this.group.visible = false;
   }
 

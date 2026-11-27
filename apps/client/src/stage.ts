@@ -296,6 +296,26 @@ export class Stage {
     return true;
   }
 
+  /**
+   * (FLOOR_TIMELINE) Someone whose place is a chair at this table says their piece from it: an actor takes the chair
+   * where the audience had them, seated (no walk to the front, no empty chair). The swap waits out their fade in when
+   * it would be seen. Their crowd index; -1: a moment (they're still coming in); null: not one of this table's chairs.
+   */
+  seat(name: string, spot: TableSpot): number | null {
+    const a = this.ix.get(name), p = a === undefined ? undefined : this.plan?.people[a];
+    if (a === undefined || !p?.seated || p.home !== spot.index || this.audience.isAway(a)) return null;
+    const now = this.clock(), y = this.crowd.group.position.y;
+    if (this.audience.arriving(a, now) && now >= this.instantUntil && this.seen(new THREE.Vector3(p.x, y + 1.1, p.z))) return -1;
+    const had = this.crowd.hasSlot(name);
+    const i = this.crowd.show(name, { pos: new THREE.Vector3(p.x, 0, p.z), facing: p.facing, seated: true });
+    if (i < 0) return null;
+    if (!had) this.room.forget(i);
+    this.homing.delete(i);
+    this.audience.away(a, true, now, false);
+    spot.seats.push({ name, pos: this.crowd.people[i].pose.pos, facing: p.facing, seated: true });
+    return i;
+  }
+
   /** Crowd person i walks back toward their place in the audience, and takes it again (they fade back in there). */
   sendHome(i: number, now: number) {
     const p = this.crowd.people[i];
@@ -303,6 +323,13 @@ export class Stage {
     const a = this.ix.get(p.name) ?? this.join(p.name, p.pose.pos);
     if (a === undefined) return;
     if (!this.ensurePlace(a)) return;                    // (past MAX_TIERS: they stay where they are)
+    // (in their own chair, where they spoke from: the audience has them there again, with no walk)
+    const at = this.audience.places[a];
+    if (this.plan && at.sit && Math.hypot(at.x - p.pose.pos.x, at.z - p.pose.pos.z) < 0.35) {
+      this.room.leave(i); this.free(i); this.homing.delete(i); this.crowd.hide(i);
+      this.audience.away(a, false, this.clock(), false);
+      return;
+    }
     const pos = p.pose.pos.clone();
     this.room.leave(i);
     this.free(i);
