@@ -36,7 +36,11 @@ export class Minimap {
       this.open(false);
     });
     document.addEventListener('pointerdown', (e) => { if (this.big && e.target !== this.cv) { this.open(false); e.stopPropagation(); } }, true);
+    // (its size, kept from the layout's own reports: read in draw(), after the frame's other writes to the page, it would
+    // make the browser lay the page out again a dozen times a second)
+    new ResizeObserver(() => { this.size = this.cv.clientWidth; this.last = -1; }).observe(this.cv);
   }
+  private size = 0;
 
   private big = false;
   open(on: boolean) { this.big = on; this.cv.classList.toggle('big', on); this.last = -1; }
@@ -50,7 +54,7 @@ export class Minimap {
 
   /** where a world point lands on the map (heading up), in CSS pixels */
   private toMap(x: number, z: number, out: P) {
-    const s = this.cv.clientWidth / 2, k = (s - 5) / ROOM.R, c = Math.cos(this.view.yaw), n = Math.sin(this.view.yaw);
+    const s = (this.size || this.cv.clientWidth) / 2, k = (s - 5) / ROOM.R, c = Math.cos(this.view.yaw), n = Math.sin(this.view.yaw);
     // right of you is the map's right; ahead of you is the map's up
     out.x = s + (x * -c + z * n) * k;
     out.z = s - (x * n + z * c) * k;
@@ -78,7 +82,7 @@ export class Minimap {
     if (now - this.last < 0.08 && this.last >= 0) return;
     this.last = now;
     this.view.yaw = yaw; this.view.spots = spots;
-    const css = this.cv.clientWidth;
+    const css = this.size;
     if (!css) return;
     const dpr = Math.min(2, devicePixelRatio || 1), px = Math.round(css * dpr);
     if (px !== this.px) { this.cv.width = this.cv.height = this.px = px; }

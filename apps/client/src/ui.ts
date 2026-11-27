@@ -211,7 +211,10 @@ export class UI {
   signs(you: THREE.Vector3, focus: TableSpot | null, speaking: (s: TableSpot) => Line | null) {
     const data = this.signData;
     if (!data || !this.labelsOn || !this.camera) return;
-    const compact = innerWidth < 700, max = compact ? 4 : 6, box = $('labels'), frame = ++this.frameNo;
+    // (the viewport read once: on a phone, reading it after a write to the page makes the browser lay the page out again,
+    // and this loop writes signs between its reads)
+    const vw = innerWidth, vh = innerHeight;
+    const compact = vw < 700, max = compact ? 4 : 6, box = $('labels'), frame = ++this.frameNo;
     // candidates: tables in front of you, near enough to matter, the one you're with first, then the nearest (the bar
     // is one sign, however many remarks it holds)
     this.cand.length = 0;
@@ -223,7 +226,7 @@ export class UI {
       if (d > (s.bar ? 7.5 : 11.5) || (s === focus && d < s.radius + 0.4)) continue;   // too far, or right on top of it
       this.v.set(s.bar ? s.pos.x * 0.92 : s.pos.x, data.roomY + (s.bar ? 2.0 : 2.08), s.bar ? s.pos.z * 0.92 : s.pos.z).project(this.camera);
       if (this.v.z >= 1 || Math.abs(this.v.x) > 1.05 || this.v.y > 1.05 || this.v.y < -0.6) continue;
-      this.cand.push({ s, d: s === focus ? -1 : d + (s.bar ? 2 : 0), x: (this.v.x * 0.5 + 0.5) * innerWidth, y: (-this.v.y * 0.5 + 0.5) * innerHeight });
+      this.cand.push({ s, d: s === focus ? -1 : d + (s.bar ? 2 : 0), x: (this.v.x * 0.5 + 0.5) * vw, y: (-this.v.y * 0.5 + 0.5) * vh });
     }
     this.cand.sort((p, q) => p.d - q.d);
     this.rects.length = 0;
@@ -236,11 +239,11 @@ export class UI {
       const k = c.s === focus ? 1.04 : Math.max(0.8, Math.min(1, 1.08 - c.d * 0.035));
       // (a building: where it would go first, by its last size; its words only if it will show)
       if (this.asOf && slot.w) {
-        const w0 = slot.w * k, h0 = slot.h * k, x0 = Math.max(w0 / 2 + 8, Math.min(innerWidth - w0 / 2 - 8, c.x)), y0 = Math.max(h0 / 2 + 64, c.y - h0 / 2);
+        const w0 = slot.w * k, h0 = slot.h * k, x0 = Math.max(w0 / 2 + 8, Math.min(vw - w0 / 2 - 8, c.x)), y0 = Math.max(h0 / 2 + 64, c.y - h0 / 2);
         if (this.rects.some((r) => Math.abs(r.x - x0) < (r.w + w0) / 2 + 6 && Math.abs(r.y - y0) < (r.h + h0) / 2 + 4)) continue;
       }
       this.fill(slot, c.s, data, c.s === focus, speaking(c.s), compact);
-      const w = slot.w * k, h = slot.h * k, x = Math.max(w / 2 + 8, Math.min(innerWidth - w / 2 - 8, c.x)), y = Math.max(h / 2 + 64, c.y - h / 2);
+      const w = slot.w * k, h = slot.h * k, x = Math.max(w / 2 + 8, Math.min(vw - w / 2 - 8, c.x)), y = Math.max(h / 2 + 64, c.y - h / 2);
       if (this.rects.some((r) => Math.abs(r.x - x) < (r.w + w) / 2 + 6 && Math.abs(r.y - y) < (r.h + h) / 2 + 4)) continue;   // waits for room
       this.rects.push({ x, y, w, h });
       // (a sign that hasn't moved isn't written again: a write is parsed CSS. In a building, whole pixels: the camera's
