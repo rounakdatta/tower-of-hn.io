@@ -266,7 +266,19 @@ test('cheap at any size: a scrub costs the CPU well under a millisecond a frame 
       return { ...both, seek: seek.mean, frame: frame.mean, parts: t.floorCost() as Record<string, number> };
     });
     rows.push(`${fx}: a scrubbed frame (seek + frame, no draw) mean ${ms.mean.toFixed(3)} ms (seek ${ms.seek.toFixed(3)}, frame ${ms.frame.toFixed(3)}), worst run of 20 ${ms.worst.toFixed(3)} ms; parts ${JSON.stringify(ms.parts)}`);
-    console.log(rows[rows.length - 1]);
+    // what the GPU is given in the wide shot at the floor's fullest moment: triangles, draw calls, people by level of detail
+    const gpu = await page.evaluate(() => {
+      const t = (window as unknown as W).__tohn, comments = t.floorComments() as { at: number }[];
+      let best = 0, bestN = -1;
+      for (let k = 0; k <= 40; k++) { const at = ((t.floor() as { end: number }).end * k) / 40; t.floorAt(at); const n = (t.floor() as { here: number }).here; if (n > bestN) { bestN = n; best = at; } }
+      t.floorAt(best); for (let k = 0; k < 30; k++) t.frame(1 / 30, false);
+      t.frame(1 / 30, true);
+      const r = (t.info() as { render: Record<string, number> }).render, f = t.floor() as { here: number; drawn: number[] };
+      void comments;
+      return { here: f.here, drawn: f.drawn, triangles: r.triangles, calls: r.calls ?? r.drawCalls };
+    });
+    rows.push(`${fx}: the wide shot at its fullest (${gpu.here} in the room): ${gpu.triangles} triangles, ${gpu.calls} draw calls, people drawn near/far/distant ${gpu.drawn.join('/')}`);
+    console.log(rows[rows.length - 2]); console.log(rows[rows.length - 1]);
     expect(ms.mean, `${fx}: a scrubbed frame's JavaScript`).toBeLessThan(1.0);
   }
   const heap = await page.evaluate(async () => {
