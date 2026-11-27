@@ -5,7 +5,7 @@
 import * as THREE from 'three/webgpu';
 import type { Crowd } from './people.ts';
 import type { TableSpot } from './interior.ts';
-import { R } from './world.ts';
+import { ROOM } from './world.ts';
 import type { Stage } from './stage.ts';
 
 const RING = 0.95;                                       // where people stand round a table, past its edge
@@ -125,7 +125,7 @@ export class Room {
     // a place is taken by anyone there, or reserved by someone on their way to it (two bodies and a little air)
     const taken = (q: THREE.Vector3) => this.crowd.people.some((p, j) => !this.going.has(j) && Math.hypot(p.pose.pos.x - q.x, p.pose.pos.z - q.z) < 2 * BODY + 0.08)
       || [...this.dest.values()].some((d) => Math.hypot(d.x - q.x, d.z - q.z) < 2 * BODY + 0.08);
-    const ok = (q: THREE.Vector3) => Math.hypot(q.x, q.z) < R - 0.65
+    const ok = (q: THREE.Vector3) => Math.hypot(q.x, q.z) < ROOM.R - 0.65
       && this.spots.every((s) => s === spot || s.bar || Math.hypot(q.x - s.pos.x, q.z - s.pos.z) > s.radius + 0.55);
     for (const ring of [RING, RING + 0.5, RING + 1.0, RING + 1.5]) {
       let best: THREE.Vector3 | null = null, bestD = Infinity;
@@ -165,7 +165,7 @@ export class Room {
       if (d >= out - 0.15 || d < 1e-3 || (b.x - a.x) * -dx + (b.z - a.z) * -dz <= 0) continue;   // clear of it, or heading away
       const o = new THREE.Vector3(s.pos.x + (dx / d) * out, 0, s.pos.z + (dz / d) * out);
       const or = Math.hypot(o.x, o.z);
-      if (or > R - 0.6) o.multiplyScalar((R - 0.6) / or);   // inside the glass
+      if (or > ROOM.R - 0.6) o.multiplyScalar((ROOM.R - 0.6) / or);   // inside the glass
       return [o, ...this.route(o, b, to, depth + 1)];
     }
     for (const s of tables) {
@@ -183,7 +183,7 @@ export class Room {
       const beside = (sg: number) => {
         const w = new THREE.Vector3(s.pos.x + sg * (nx / nl) * (r + 0.18), 0, s.pos.z + sg * (nz / nl) * (r + 0.18));
         const wr = Math.hypot(w.x, w.z);
-        if (wr > R - 0.6) w.multiplyScalar((R - 0.6) / wr);   // inside the glass
+        if (wr > ROOM.R - 0.6) w.multiplyScalar((ROOM.R - 0.6) / wr);   // inside the glass
         return w;
       };
       // a table by the glass leaves no room on that side (the glass pulls the detour back into its crowd): the other

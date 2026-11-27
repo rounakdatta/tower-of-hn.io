@@ -9,6 +9,9 @@ import {
 import { clamp as clampN, easeInOut } from './util.ts';
 
 export const FLOORS = 30, FLOOR_H = 2.4, R = 7, LOBBY_H = 4.2;
+/** the room you're in, inside the tower: its glass. The tower's own (R), or a FLOOR_TIMELINE hall's, wider (hallview.ts):
+ *  whatever walks, stands or films in a room stays inside this */
+export const ROOM = { R: R as number };
 /** the title sign along the top of each floor: its height, and its centre above the floor's centre */
 const BAND_H = 0.56, BAND_Y = 0.84;
 export const floorY = (rank: number) => LOBBY_H + (FLOORS - 1 - rank) * FLOOR_H + FLOOR_H / 2;

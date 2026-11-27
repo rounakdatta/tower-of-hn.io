@@ -89,6 +89,8 @@ export interface TableClock {
   glow: Float64Array;
   /** the people at the table, in the order they first spoke there (indices into `people`) */
   people: Int32Array;
+  /** when each of them first spoke there (sorted): the table's people at t is how many of these are ≤ t */
+  firsts: Float64Array;
 }
 
 export interface FloorClock {
@@ -165,9 +167,9 @@ export function floorClock(floor: TFloor, now?: number): FloorClock | null {
     const open = times.length ? times[0] : Infinity, glow = new Float64Array(said.length);
     let acc = 0;
     for (let k = 0; k < said.length; k++) { acc += Math.exp((times[k] - open) / GLOW); glow[k] = acc; }
-    const order: number[] = [], here = new Set<number>();
-    for (const i of said) { const p = comments[i].person; if (!here.has(p)) { here.add(p); order.push(p); } }
-    return { root: t.root, index, open, last: times.length ? times[times.length - 1] : -Infinity, said, times, glow, people: Int32Array.from(order) };
+    const order: number[] = [], firsts: number[] = [], here = new Set<number>();
+    for (const i of said) { const p = comments[i].person; if (!here.has(p)) { here.add(p); order.push(p); firsts.push(comments[i].at); } }
+    return { root: t.root, index, open, last: times.length ? times[times.length - 1] : -Infinity, said, times, glow, people: Int32Array.from(order), firsts: Float64Array.from(firsts) };
   });
   const last = comments.length ? comments[comments.length - 1].at : 0;
   const end = Math.max(last, now === undefined ? last + DWELL : Math.min(now, last + DWELL));
@@ -330,4 +332,49 @@ export function seatFrom(c: FloorClock, only: number, t: number): number {
   if (!tb.said.length) return -1;
   const k = countUpTo(tb.times, t) - 1;
   return tb.said[Math.max(0, k)];
+}
+
+/**
+ * Who is in the room, kept up to date as the moment moves (the room's view of the floor: its audience is told only
+ * about people whose presence changed). move(t) re-derives presence from t itself for everyone whose state can differ
+ * from the last moment (an arrival or a departure between the two; for a long jump, everyone), so the flags after any
+ * path of moves are exactly those of going straight to t, and a drag costs what changed, not the size of the floor.
+ */
+export class RoomAt {
+  /** 1: in the room at t, per person */
+  readonly here: Uint8Array;
+  t = NaN;
+  private byEnter: Int32Array; private byLeave: Int32Array;
+  private enterAt: Float64Array; private leaveAt: Float64Array;
+  private c: FloorClock;
+  constructor(c: FloorClock) {
+    this.c = c;
+    const P = c.people;
+    this.here = new Uint8Array(P.length);
+    this.byEnter = Int32Array.from(P.keys()).sort((a, b) => P[a].enter - P[b].enter || a - b);
+    this.byLeave = Int32Array.from(P.keys()).sort((a, b) => P[a].leave - P[b].leave || a - b);
+    this.enterAt = Float64Array.from(this.byEnter, (i) => P[i].enter);
+    this.leaveAt = Float64Array.from(this.byLeave, (i) => P[i].leave);
+  }
+  /** Go to t: `flip` hears each person whose presence changed. Returns how many people it looked at (for checks). */
+  move(t: number, flip: (i: number, on: boolean) => void): number {
+    const P = this.c.people, prev = this.t;
+    let looked = 0;
+    const apply = (i: number) => {
+      looked++;
+      const on = P[i].enter <= t && t < P[i].leave;
+      if ((this.here[i] === 1) === on) return;
+      this.here[i] = on ? 1 : 0;
+      flip(i, on);
+    };
+    if (Number.isNaN(prev)) for (let i = 0; i < P.length; i++) apply(i);
+    else {
+      const lo = Math.min(prev, t), hi = Math.max(prev, t);
+      const e0 = countUpTo(this.enterAt, lo), e1 = countUpTo(this.enterAt, hi), l0 = countUpTo(this.leaveAt, lo), l1 = countUpTo(this.leaveAt, hi);
+      if ((e1 - e0) + (l1 - l0) > P.length / 2) for (let i = 0; i < P.length; i++) apply(i);
+      else { for (let k = e0; k < e1; k++) apply(this.byEnter[k]); for (let k = l0; k < l1; k++) apply(this.byLeave[k]); }
+    }
+    this.t = t;
+    return looked;
+  }
 }

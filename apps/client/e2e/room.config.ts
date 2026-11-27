@@ -19,5 +19,8 @@ export default defineConfig({
   projects: [
     { name: 'room-desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 } },
     { name: 'room-pixel', use: { ...devices['Pixel 7'], deviceScaleFactor: 1 } },
+    // (FLOOR_TIMELINE) the floor's line on an iPhone's screen and touch, in Chromium (WebKit has no WebGL to draw the room
+    // with here; the line itself is tested in WebKit by e2e/timeline.spec.ts)
+    { name: 'room-iphone', testMatch: /room-floor\.spec\.ts$/, use: { ...devices['iPhone 15'], browserName: 'chromium', deviceScaleFactor: 1 } },
   ],
 });

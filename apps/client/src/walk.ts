@@ -7,7 +7,7 @@
 // Tables, people and the glass are in the way: you slide along them, never through. Steps ease in and out, and the
 // view never bobs (a walking camera that bobs makes phones seasick).
 import * as THREE from 'three/webgpu';
-import { R } from './world.ts';
+import { ROOM } from './world.ts';
 
 export const EYE = 1.5;                                  // eye height on a floor, metres
 
@@ -132,7 +132,7 @@ export class WalkCam {
       q.set(o.x + (ux / n) * (o.r + 0.05), 0, o.z + (uz / n) * (o.r + 0.05));
     }
     const r = Math.hypot(q.x, q.z);
-    if (r > R - 0.6) q.multiplyScalar((R - 0.6) / r);
+    if (r > ROOM.R - 0.6) q.multiplyScalar((ROOM.R - 0.6) / r);
     this.dest = { path: this.route(this.pos, q), face };
     this.stall = { t: 0, left: Infinity };
     if (mark) { this.marker.position.set(q.x, this.roomY + 0.025, q.z); this.marker.visible = true; this.markerMat.opacity = 0.9; }
@@ -299,7 +299,7 @@ export class WalkCam {
         if (d < o.r && d > 1e-4) { this.pos.x = o.x + (dx / d) * o.r; this.pos.z = o.z + (dz / d) * o.r; }
       }
       const r = Math.hypot(this.pos.x, this.pos.z);
-      if (r > R - 0.55) { this.pos.x *= (R - 0.55) / r; this.pos.z *= (R - 0.55) / r; }
+      if (r > ROOM.R - 0.55) { this.pos.x *= (ROOM.R - 0.55) / r; this.pos.z *= (ROOM.R - 0.55) / r; }
     }
   }
 }

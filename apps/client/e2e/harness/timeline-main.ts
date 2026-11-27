@@ -2,7 +2,7 @@
 // markup), for the e2e tests: no 3D room, so it runs the same in Chromium, Firefox and WebKit, on desktops and phones.
 // A conversation as long as the 1Password thread (271 turns, 179 people, nearly two hours); the host records what it is
 // told, stamped with the animation frame it came in, so a test can say what the timeline asked of it and when.
-import { Scrubber, type ScrubberHost } from '../../src/scrubber.ts';
+import { Scrubber, lineModel, type ScrubberHost } from '../../src/scrubber.ts';
 import { lineOf, valueText, type Said } from '../../src/timeline.ts';
 
 const N = 271, PEOPLE = 179, OTHERS = 12;
@@ -99,7 +99,7 @@ w.__who = 0;
 document.querySelector<HTMLElement>('#subs .who')!.onclick = () => { (w.__who as number)++; };
 
 const scrubber = new Scrubber(host);
-scrubber.show(line, OTHERS, 0);
+scrubber.show(lineModel(line, OTHERS), 0);
 document.body.classList.add('timeline');                  // (as main.ts does while it's shown: the subtitles make room on a phone)
 Object.assign(w, {
   __scrubber: scrubber, __line: line, __turns: turns, __lineOf: lineOf, __valueText: valueText, __others: OTHERS,

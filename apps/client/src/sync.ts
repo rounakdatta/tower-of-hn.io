@@ -8,10 +8,12 @@
 const PLAY = typeof location === 'undefined' ? null : new URLSearchParams(location.search).get('play')?.split(',').map((x) => x.trim()).filter(Boolean) ?? null;
 
 /** voiced: [sidecar path, seconds, emotion, intensity 0..1] (older servers: just the first two) */
-export interface Turn { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; v?: [string, number, string?, number?] }
+/** at: when it was written, seconds after the story went up (FLOOR_TIMELINE; older servers: absent) */
+export interface Turn { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; v?: [string, number, string?, number?]; at?: number }
 /** gist: the first words of the comment that started it (older servers: absent) */
 export interface Table { root: number; turns: Turn[]; seated: string[]; standing: string[]; gist?: string }
-export interface Floor { story: { id: number; title: string; url?: string; by?: string; score: number; comments: number }; rev: number; epoch: number; tables: Table[] }
+/** story.time: when it went up (unix s; older servers: absent) */
+export interface Floor { story: { id: number; title: string; url?: string; by?: string; score: number; comments: number; time?: number }; rev: number; epoch: number; tables: Table[] }
 export interface Head {
   epoch: number; at: number; tower: number[]; floors: Record<number, number>;
   stories: Record<number, [string, number, number, string, string]>; act: Record<number, number>;

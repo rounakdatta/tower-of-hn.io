@@ -203,6 +203,9 @@ export class UI {
     this.met.add(name);
     try { localStorage.setItem('tohn-met', JSON.stringify([...this.met].slice(-300))); } catch { /* private mode */ }
   }
+  /** (FLOOR_TIMELINE) a table as of the floor's moment: its comments and people so far (null: not open yet, and no sign
+   *  for it: a dark table with nobody at it says that itself) */
+  asOf: ((s: TableSpot) => { turns: number; people: number } | null) | null = null;
   private cand: { s: TableSpot; d: number; x: number; y: number }[] = [];
   private rects: { x: number; y: number; w: number; h: number }[] = [];
   signs(you: THREE.Vector3, focus: TableSpot | null, speaking: (s: TableSpot) => Line | null) {
@@ -215,6 +218,7 @@ export class UI {
     let bar = false;
     for (const s of data.spots) {
       if (s.bar) { if (bar) continue; bar = true; }
+      if (this.asOf && !this.asOf(s)) continue;
       const d = Math.hypot(s.pos.x - you.x, s.pos.z - you.z);
       if (d > (s.bar ? 7.5 : 11.5) || (s === focus && d < s.radius + 0.4)) continue;   // too far, or right on top of it
       this.v.set(s.bar ? s.pos.x * 0.92 : s.pos.x, data.roomY + (s.bar ? 2.0 : 2.08), s.bar ? s.pos.z * 0.92 : s.pos.z).project(this.camera);
@@ -250,13 +254,13 @@ export class UI {
     return slot;
   }
   private fill(slot: Sign, s: TableSpot, data: NonNullable<UI['signData']>, focus: boolean, line: Line | null, compact: boolean) {
-    const t = s.table, people = peopleOf(t.turns), mood = tableMood(t.turns).mood;
+    const t = s.table, so = this.asOf?.(s) ?? null, people = so ? so.people : peopleOf(t.turns), mood = tableMood(t.turns).mood;
     const now = line ? moodOf(line.side.emotion, line.side.stance, line.side.intensity) : mood;
     const word = line ? deliveryWord(line.side.emotion, line.side.stance, line.side.intensity) : '';
     const kick = !this.chosen && data.best === s ? 'Start here' : '';
     // the table you're with is subtitled already: its sign doesn't say the same thing again
     const said = line && !focus ? line : null;
-    const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${people}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
+    const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${people}|${so ? so.turns : ''}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
     if (key === slot.key) return;
     slot.key = key;
     let html: string;
@@ -268,6 +272,7 @@ export class UI {
       const row = rowOf(t.turns);
       const meta = said
         ? `<em class="${this.met.has(said.turn.by) ? 'met' : ''}">${esc(said.turn.by)}</em>${word ? ` · <span style="color:${MOOD[now].color}">${esc(word)}</span>` : ' is speaking'}`
+        : so ? `<span class="count">${so.turns.toLocaleString('en-US')} comment${so.turns === 1 ? '' : 's'}</span> · ${people.toLocaleString('en-US')} ${people === 1 ? 'person' : 'people'}`
         : `${row && (mood === 'heated' || mood === 'tense') ? `${esc(row[0])} ⇄ ${esc(row[1])}` : `${people} ${people === 1 ? 'person' : 'people'}`}${mood !== 'calm' ? ` · <em style="color:${MOOD[mood].color}">${MOOD[mood].word}</em>` : ''}`;
       html = `${kick ? `<i class="kick">${kick}</i>` : ''}<b class="gist"><i class="dot" style="background:${MOOD[now].color}"></i>${gist ? `“${esc(gist)}”` : `${esc(t.turns[0]?.by ?? '')}${people > 1 ? ` <em>+${people - 1}</em>` : ''}`}</b><span class="meta">${meta}</span>`;
     }

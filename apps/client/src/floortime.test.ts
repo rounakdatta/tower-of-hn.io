@@ -6,44 +6,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   floorClock, uOf, tOf, latest, presentAt, openAt, tableAt, talkingAt, floorAt, floorText, stepFloor, flowIn, seatFrom, sayIn, isHere,
-  DWELL, GLOW, TALKING, type TFloor, type TTurn, type FloorClock,
+  RoomAt, DWELL, GLOW, TALKING, type TFloor, type TTurn, type FloorClock,
 } from './floortime.ts';
 
-/** a deterministic random source (xorshift) */
-function rng(seed: number) {
-  let s = seed >>> 0 || 1;
-  return () => { s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; };
-}
-
-/**
- * A floor shaped like Hacker News: `tables` top-level threads opening over the first hours, comments arriving in a
- * burst that decays over `hours`, people who mostly say one thing and a few regulars at several tables. Ids rise with
- * time (as on HN), except that a table's turns are listed in thread order (a reply after its parent, not by time).
- */
-export function hnFloor(o: { people: number; tables: number; comments?: number; hours?: number; seed?: number; untimed?: number }): TFloor {
-  const r = rng(o.seed ?? 7), hours = o.hours ?? 18, N = o.comments ?? Math.max(o.tables, Math.round(o.people * 1.6));
-  const span = hours * 3600;
-  // moments: a burst early (most comments in the first few hours), a long tail
-  const moments = Array.from({ length: N }, () => 600 + span * Math.pow(r(), 2.2)).sort((a, b) => a - b);
-  // the first `tables` comments (in time) open the tables; later ones join a table, the busy ones more often
-  const weights = Array.from({ length: o.tables }, (_, k) => 1 / Math.pow(k + 1, 1.1));
-  const wsum = weights.reduce((a, b) => a + b, 0);
-  const pick = () => { let x = r() * wsum; for (let k = 0; k < weights.length; k++) { x -= weights[k]; if (x <= 0) return k; } return weights.length - 1; };
-  const turns: TTurn[][] = Array.from({ length: o.tables }, () => []);
-  let id = 1_000_000, nextNew = 0;
-  const regulars = Math.max(1, Math.floor(o.people * 0.08));
-  for (let k = 0; k < N; k++) {
-    id += 1 + Math.floor(r() * 3);
-    const table = k < o.tables ? k : pick();
-    // a new face while there are people left to meet, else someone back (a regular, mostly)
-    const who = nextNew < o.people && (k < o.tables || r() < o.people / N + 0.15) ? `u${nextNew++}` : `u${Math.floor(r() * Math.min(nextNew || 1, regulars))}`;
-    const at = o.untimed && r() < o.untimed ? undefined : Math.floor(moments[k]);
-    const tt = turns[table];
-    turns[table].push({ id, by: who, at, replyTo: tt.length ? tt[Math.floor(r() * tt.length)].id : undefined });
-  }
-  // thread order: a table lists replies after their parents (here: shuffled within the table, the opener first)
-  return { tables: turns.map((tt, k) => ({ root: tt[0]?.id ?? k, turns: tt.length > 2 ? [tt[0], ...tt.slice(1).sort(() => r() - 0.5)] : tt })).filter((t) => t.turns.length) };
-}
+import { rng, hnFloor } from './floorgen.ts';
 
 /** everything the room shows at t, straight from the definitions (no index, no binary search): the oracle */
 function brute(f: TFloor, c: FloorClock, t: number) {
@@ -235,4 +201,37 @@ test('talking tables are those with a comment in the last half hour', () => {
   assert.equal(talkingAt(c, 1000), 2);
   assert.equal(talkingAt(c, 100 + TALKING), 1);
   assert.equal(talkingAt(c, 1000 + TALKING), 0);
+});
+
+test('who is in the room after any path of moves is exactly who is there going straight to t (1,000 random seeks, 0 to 5,000 people)', () => {
+  for (const [people, tables] of [[1, 1], [5, 2], [50, 9], [356, 58], [800, 58], [3000, 58], [5000, 58]] as const) {
+    const f = hnFloor({ people, tables, seed: people + 1 });
+    const c = floorClock(f)!;
+    const room = new RoomAt(c), r = rng(people * 7 + 3);
+    let flips = 0;
+    const shadow = new Uint8Array(c.people.length);
+    const moves = people >= 3000 ? 300 : 1000;
+    for (let s = 0; s < moves; s++) {
+      // drags (small steps either way), jumps, exact comment moments, the ends, and repeats
+      const x = r();
+      const t = x < 0.45 ? Math.max(0, Math.min(c.end, (Number.isNaN(room.t) ? 0 : room.t) + (r() - 0.5) * c.end * 0.02))
+        : x < 0.7 ? r() * c.end : x < 0.85 ? c.comments[Math.floor(r() * c.comments.length)].at : x < 0.9 ? 0 : x < 0.95 ? c.end : room.t || 0;
+      room.move(t, (i, on) => { assert.notEqual(shadow[i] === 1, on, 'a flip is a change'); shadow[i] = on ? 1 : 0; flips++; });
+      const straight = new RoomAt(c);
+      straight.move(t, () => {});
+      assert.deepEqual(room.here, straight.here, `the room at ${t.toFixed(1)} s after ${s + 1} moves (${people} people)`);
+      assert.deepEqual(room.here, shadow, 'the audience heard every change, and only changes');
+      assert.equal(room.here.reduce((a, b) => a + b, 0), presentAt(c, t));
+    }
+    assert.ok(flips > 0 || people < 2);
+  }
+});
+
+test('a drag costs what changed: a small step looks at a handful of people, however big the floor', () => {
+  const c = floorClock(hnFloor({ people: 3000, tables: 58, seed: 77 }))!;
+  const room = new RoomAt(c);
+  room.move(c.end / 3, () => {});
+  let most = 0;
+  for (let k = 1; k <= 200; k++) most = Math.max(most, room.move(c.end / 3 + k * (c.end / 3) / 2000, () => {}));
+  assert.ok(most < 60, `a step of a 2,000th of the line looked at ${most} of 3,000 people`);
 });

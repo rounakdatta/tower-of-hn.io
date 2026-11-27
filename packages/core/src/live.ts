@@ -14,10 +14,12 @@ export interface Item {
   score?: number; descendants?: number; kids?: number[]; parent?: number; time?: number;
   dead?: boolean; deleted?: boolean;
 }
-export interface StoryMeta { id: number; title: string; url?: string; by?: string; score: number; comments: number }
+/** time: when the story went up (unix s; the floor's clock starts there) */
+export interface StoryMeta { id: number; title: string; url?: string; by?: string; score: number; comments: number; time?: number }
 /** voiced: [sidecar path, seconds, how it's delivered (emotion), how strongly (0..1)] */
 export type Voiced = [string, number, string?, number?];
-export interface TurnOut { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; v?: Voiced }
+/** at: when it was written, seconds after the story went up (absent when HN didn't say) */
+export interface TurnOut { id: number; by: string; depth: number; replyTo?: number; gapMs: number; voice: number; v?: Voiced; at?: number }
 /** gist: the first words of the comment that started the table (what it's about, on its sign) */
 export interface TableOut { root: number; turns: TurnOut[]; seated: string[]; standing: string[]; gist?: string }
 export interface FloorSnapshot { story: StoryMeta; rev: number; epoch: number; tables: TableOut[] }
@@ -230,6 +232,13 @@ export class Live {
     return g || undefined;
   }
 
+  /** a comment's moment on its floor's clock (FLOOR_TIMELINE): seconds after the story went up, whole; undefined when
+   *  HN gave no time for either */
+  private atOf(id: number, story?: number): number | undefined {
+    const t = this.items.get(id)?.time;
+    return t && story ? Math.max(0, t - story) : undefined;
+  }
+
   private buildFloor(sid: number): FloorSnapshot | undefined {
     const st = this.items.get(sid);
     if (!st) return undefined;
@@ -246,14 +255,14 @@ export class Live {
       const turns = playOrder(root);
       if (!turns.length) continue;
       const { seated, standing } = seat(turns);
-      tables.push({ root: rootId, seated, standing, gist: this.gistOf(turns[0].id), turns: turns.map((t) => ({ ...t, voice: this.voiceOf(t.by), v: this.voiced.get(t.id) })) });
+      tables.push({ root: rootId, seated, standing, gist: this.gistOf(turns[0].id), turns: turns.map((t) => ({ ...t, voice: this.voiceOf(t.by), v: this.voiced.get(t.id), at: this.atOf(t.id, st.time) })) });
     }
     return { story: meta(st), rev: 0, epoch: 0, tables };
   }
 }
 
 function meta(it: Item): StoryMeta {
-  return { id: it.id, title: it.title ?? '', url: it.url, by: it.by, score: it.score ?? 0, comments: it.descendants ?? 0 };
+  return { id: it.id, title: it.title ?? '', url: it.url, by: it.by, score: it.score ?? 0, comments: it.descendants ?? 0, ...(it.time ? { time: it.time } : {}) };
 }
 
 /** a floor's structure without its audio: the same shape means a revision changed only voicing */

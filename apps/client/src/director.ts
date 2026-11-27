@@ -8,7 +8,7 @@ import { FACE, tone, RISE_LEAD, Performer, type Plan } from './performer.ts';
 export { FACE };
 import type { TableSpot } from './interior.ts';
 import type { Rig } from './rig.ts';
-import { R, FLOOR_H } from './world.ts';
+import { ROOM, FLOOR_H } from './world.ts';
 import type { UI } from './ui.ts';
 import type { Room } from './room.ts';
 import type { Audience } from './audience.ts';
@@ -564,7 +564,7 @@ export class Director {
    */
   private score(p: THREE.Vector3, subjects: Subject[], near: Set<number>, fov: number) {
     const Y0 = this.roomY;
-    if (p.x * p.x + p.z * p.z > (R - 0.35) ** 2 || p.y > Y0 + FLOOR_H * 0.88 || p.y < Y0 + 0.55) return -Infinity;
+    if (p.x * p.x + p.z * p.z > (ROOM.R - 0.35) ** 2 || p.y > Y0 + FLOOR_H * 0.88 || p.y < Y0 + 0.55) return -Infinity;
     const tp = this.spot!.pos, tr = this.spot!.bar ? 0 : this.spot!.radius;
     const tx = p.x - tp.x, tz = p.z - tp.z;
     if (tr && tx * tx + tz * tz < (tr + 0.1) ** 2 && p.y < Y0 + 0.88) return -Infinity;
