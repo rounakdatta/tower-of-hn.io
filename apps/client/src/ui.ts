@@ -6,7 +6,7 @@ import type { TableSpot } from './interior.ts';
 import type { Line } from './performer.ts';
 import { MOOD, moodOf, tableMood, deliveryWord, rowOf, peopleOf } from './mood.ts';
 
-interface Sign { el: HTMLButtonElement; key: string; w: number; h: number; /** the frame it was last placed in */ shown: number; on: boolean; /** (a building) its counts as written */ counts?: string; /** its transform and opacity as written */ tf?: string; op?: string }
+interface Sign { el: HTMLButtonElement; key: string; w: number; h: number; /** the frame it was last placed in */ shown: number; on: boolean; /** (a building) its counts as written, and where they're written */ counts?: string; nodes?: (Element | null)[]; /** its transform and opacity as written */ tf?: string; op?: string }
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -233,8 +233,13 @@ export class UI {
     for (const c of this.cand) {
       if (used >= max || (this.asOf && ++tried > max * 3)) break;
       const slot = this.signFor.get(c.s) ?? this.newSign(box, c.s);
-      this.fill(slot, c.s, data, c.s === focus, speaking(c.s), compact);
       const k = c.s === focus ? 1.04 : Math.max(0.8, Math.min(1, 1.08 - c.d * 0.035));
+      // (a building: where it would go first, by its last size; its words only if it will show)
+      if (this.asOf && slot.w) {
+        const w0 = slot.w * k, h0 = slot.h * k, x0 = Math.max(w0 / 2 + 8, Math.min(innerWidth - w0 / 2 - 8, c.x)), y0 = Math.max(h0 / 2 + 64, c.y - h0 / 2);
+        if (this.rects.some((r) => Math.abs(r.x - x0) < (r.w + w0) / 2 + 6 && Math.abs(r.y - y0) < (r.h + h0) / 2 + 4)) continue;
+      }
+      this.fill(slot, c.s, data, c.s === focus, speaking(c.s), compact);
       const w = slot.w * k, h = slot.h * k, x = Math.max(w / 2 + 8, Math.min(innerWidth - w / 2 - 8, c.x)), y = Math.max(h / 2 + 64, c.y - h / 2);
       if (this.rects.some((r) => Math.abs(r.x - x) < (r.w + w) / 2 + 6 && Math.abs(r.y - y) < (r.h + h) / 2 + 4)) continue;   // waits for room
       this.rects.push({ x, y, w, h });
@@ -271,14 +276,14 @@ export class UI {
       // (written only when they change: a write is a change to the page even when the words are the same)
       if (so && !said && slot.counts !== `${so.turns}|${people}`) {
         slot.counts = `${so.turns}|${people}`;
-        const c = slot.el.querySelector('.count'), p = slot.el.querySelector('.ppl'), plus = slot.el.querySelector('.plus');
+        const [c, p, plus] = slot.nodes ??= [slot.el.querySelector('.count'), slot.el.querySelector('.ppl'), slot.el.querySelector('.plus')];
         if (c) c.textContent = `${so.turns.toLocaleString('en-US')} comment${so.turns === 1 ? '' : 's'}`;
         if (p) p.textContent = `${people.toLocaleString('en-US')} ${people === 1 ? 'person' : 'people'}`;
         if (plus) plus.textContent = `+${people - 1}`;
       }
       return;
     }
-    slot.key = key; slot.counts = so ? `${so.turns}|${people}` : undefined;
+    slot.key = key; slot.counts = so ? `${so.turns}|${people}` : undefined; slot.nodes = undefined;
     let html: string;
     if (s.bar) html = `<b class="gist">The bar</b><span class="meta">${this.bars} one-liner${this.bars === 1 ? '' : 's'}</span>`;
     else {

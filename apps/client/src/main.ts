@@ -140,12 +140,19 @@ const floorMode = new FloorMode(hallView, hallAudience);
 floorMode.ripple = !reducedMotion;
 const floorVoice = new FloorVoice(sync, audio, crowd, room, () => stage);
 // (the comment about to be said has happened: the room is at its moment, so its writer is in it to say it)
-floorVoice.onComment = (i) => { const c = floorMode.clock; if (c?.comments[i]) floorShow(c.comments[i].at, true); };
+floorVoice.onComment = (i) => { const c = floorMode.clock; if (c?.comments[i] && !scrubber.scrubbing && !scrubber.holding) floorShow(c.comments[i].at, true); };
+// (lean back in a building: when the floor has been said, on to the next floor down the ranking, as at a table)
+floorVoice.onEnd = () => {
+  if (!leanBack || mode !== 'floor' || !sync.head) return;
+  const order = sync.head.tower, next = order[(order.indexOf(activeStory) + 1) % Math.min(order.length, 10)];
+  leaveFloor();
+  after(2.9, () => enterFloor(next));
+};
 /** (seated in a building) the moment of the table's comment that's on its way: the room is there until it's said */
 let seatLead = -Infinity;
 director.onTurnAhead = (u) => {
   const c = floorMode.clock, i = building ? c?.byId.get(u.id) : undefined;
-  if (c && i !== undefined && c.comments[i].at > seatLead) { seatLead = c.comments[i].at; floorShow(seatLead, true); }
+  if (c && i !== undefined && c.comments[i].at > seatLead && !scrubber.scrubbing && !scrubber.holding) { seatLead = c.comments[i].at; floorShow(seatLead, true); }
 };
 /** the floor's line, as the scrubber has it (null: not in a building) */
 let floorLine: FloorModel | null = null;
@@ -154,7 +161,7 @@ let builtFloor: Floor | null = null;
 const floorOn = () => sync.play('floor') && sync.play('crowd');
 /** (FLOOR_TIMELINE) a camera move in a building: a flight, or under prefers-reduced-motion a cut (the same place, no travel) */
 function moveCam(points: THREE.Vector3[], looks: THREE.Vector3[], dur: number, done?: () => void) {
-  if (reducedMotion) { rig.cut(points[points.length - 1], looks[looks.length - 1], 0); done?.(); return; }
+  if (reducedMotion) { rig.halt(); rig.cut(points[points.length - 1], looks[looks.length - 1], 0); done?.(); return; }
   rig.fly(points, looks, dur, clock, done);
 }
 /** this room is a building (FLOOR_TIMELINE), and its walls have drawn back since we came in */
@@ -323,7 +330,7 @@ function startFollow() {
 }
 function stopFollow() {
   if (!follow) return;
-  follow = false; followSpot = null;
+  follow = false; followSpot = null; overhead = false;
   ui.hint('');
   if (mode !== 'floor' || walk.enabled || scrubber.scrubbing) return;
   const p = camera.position, yaw = Math.atan2(rig.target.x - p.x, rig.target.z - p.z);
@@ -585,7 +592,7 @@ walk.obstacles = () => {
 walk.route = (a, b) => room.route(a, b);
 // what walkers keep clear of besides people: the tables (their tops), and the lens (where you stand, or the camera at
 // a table), so nobody walks through you or through the shot. Refreshed in place, as the obstacles above are.
-const clearList: { x: number; z: number; r: number }[] = [];
+const clearList: { x: number; z: number; r: number }[] = [], nearWalk: number[] = [];
 crowd.keepClear = () => {                              // asked every frame anyone animates: no closure, no new objects
   let n = 0;
   for (const s of spots) {
@@ -594,8 +601,13 @@ crowd.keepClear = () => {                              // asked every frame anyo
   }
   if (mode !== 'tower') { const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = camera.position.x; o.z = camera.position.z; o.r = 0.3; }
   // (CROWD_V2) the audience on the ground: walkers keep to the lanes, never through anyone standing in their place (a
-  // building's actors only ever walk inside a table's clear lane: nothing of its audience is in their way)
-  if (room.stage && !building) for (const i of audience.ground) {
+  // building's audience is the whole floor: whoever stands within a few metres of someone walking)
+  if (room.stage && building) for (let w = 0; w < crowd.people.length; w++) {
+    const p = crowd.people[w];
+    if (p.hidden || !crowd.isWalking(w)) continue;
+    for (const i of audience.near(p.pose.pos.x, p.pose.pos.z, 3, nearWalk)) { const pl = audience.places[i], o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = pl.x; o.z = pl.z; o.r = 0.27; }
+  }
+  else if (room.stage) for (const i of audience.ground) {
     if (!audience.present(i)) continue;
     const pl = audience.places[i], o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = pl.x; o.z = pl.z; o.r = 0.27;
   }
@@ -1124,7 +1136,7 @@ function sit(s: TableSpot | undefined, push = false) {
     s.table = { ...s.table, turns: Array.from(tb.said, (i) => byId.get(c.comments[i].id)!).filter(Boolean) };
     const i = seatFrom(c, s.index, floorMode.t);
     floorFrom = Math.max(0, i >= 0 ? s.table.turns.findIndex((u) => u.id === c.comments[i].id) : 0);
-    floorVoice.stop(); floorBefore = null; seatLead = floorMode.t; follow = false;
+    floorVoice.stop(); floorBefore = null; seatLead = floorMode.t; follow = false; overhead = false;
     seatActors(s);
   }
   if (s.bar && !s.tableOf) {

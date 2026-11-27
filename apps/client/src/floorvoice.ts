@@ -64,8 +64,12 @@ export class FloorVoice {
   start(floor: Floor, c: FloorClock, spots: TableSpot[], from: number) {
     this.stop();
     this.floor = floor; this.c = c; this.spots = spots;
+    // (the spots' tables, not the floor's: they carry every voice that has landed since the building was made)
     this.turnOf.clear();
-    for (const t of floor.tables) for (const u of t.turns) this.turnOf.set(u.id, u);
+    for (const sp of spots) for (const u of sp.table.turns) this.turnOf.set(u.id, u);
+    for (const t of floor.tables) for (const u of t.turns) if (!this.turnOf.has(u.id)) this.turnOf.set(u.id, u);
+    // (a pause anywhere, at a table or here, suspended the sound: what starts now is heard)
+    if (this.audio.ctx?.state === 'suspended' && !document.hidden) this.audio.ctx.resume().catch(() => {});
     this.k = this.from = Math.max(0, Math.min(c.comments.length, from));
     this.done = 0; this.cursor = this.audio.now() + 0.05; this.stage = ''; this.spans = []; this.announced = -1;
     this.playing = c.comments.length > 0; this.paused = false;
@@ -111,6 +115,8 @@ export class FloorVoice {
   /** the comment whose moment the room has moved to (about to be said, or being said), and who hears of it */
   private announced = -1;
   onComment: (i: number) => void = () => {};
+  /** the floor's last comment has been said */
+  onEnd: () => void = () => {};
   /** each comment said lately: when its words start and end (audio time) */
   private spans: { i: number; s0: number; s1: number; partial: boolean }[] = [];
 
@@ -154,7 +160,7 @@ export class FloorVoice {
   private feed(now: number) {
     const c = this.c!;
     if (this.cursor - now > LEAD) return;
-    if (this.k >= c.comments.length) { if (!this.sched.length) this.playing = false; return; }
+    if (this.k >= c.comments.length) { if (!this.sched.length && this.playing) { this.playing = false; this.onEnd(); } return; }
     const said = c.comments[this.k], turn = this.turnOf.get(said.id), spot = this.spots[said.table];
     if (!turn || !spot) { this.next(); return; }
     if (!turn.v) {

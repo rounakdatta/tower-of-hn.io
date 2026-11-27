@@ -34,6 +34,8 @@ export class Rig {
   }
 
   busy(now: number) { return (this.dur > 0 && now - this.t0 < this.dur) || !!this.route; }
+  /** Drop any flight or glide under way (its end isn't run): the next cut is where the camera is. */
+  halt() { this.route = null; this.dur = 0; }
 
   /**
    * One continuous flight through several points (a centripetal Catmull-Rom spline: no stop and no kink at any
