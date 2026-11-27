@@ -52,14 +52,17 @@ export class LiveSync {
   async start() {
     await this.poll();
     // every 2 s on a floor (someone may walk in with a new comment) and at a table, even with the screen off (lines
-    // still being voiced reach a table only through these polls); every 4 s on the tower (a window lighting a moment
-    // later is the same window); every 10 s from a background tab that isn't playing (often left open for hours)
+    // still being voiced reach a table only through these polls), every 1 s with the `fast` play flag (behind a CDN,
+    // which answers these polls itself and is up to ~1 s behind the server: this wins that second back, at no cost to
+    // the server); every 4 s on the tower (a window lighting a moment later is the same window); every 10 s from a
+    // background tab that isn't playing (often left open for hours)
     let quiet = 0;
     setInterval(() => {
       ++quiet;
-      if (quiet % (this.listening ? 1 : document.hidden ? 5 : this.relaxed ? 2 : 1)) return;
+      const room = this.play('fast') ? 1 : 2;
+      if (quiet % (this.listening ? room : document.hidden ? 10 : this.relaxed ? 4 : room)) return;
       this.poll().catch(() => {});
-    }, 2000);
+    }, 1000);
     document.addEventListener('visibilitychange', () => { quiet = 0; if (!document.hidden) this.poll().catch(() => {}); });
   }
 
