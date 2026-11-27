@@ -20,7 +20,7 @@ export const you = {
   },
   /** a reply handed to HN in the last half hour and not seen there yet (a reload, or a phone that dropped the tab) */
   pending: () => { if (!you.on) return false; try { const h = JSON.parse(read(HANDOFF) ?? 'null'); return !!h && Date.now() - h.at < 1_800_000; } catch { return false; } },
-  /** Replying is on (once): the page says hello to a companion extension, if there is one. */
+  /** Replying is on: the page says hello to a companion extension, if there is one (each time it comes on). */
   wake() {
     if (you.on) return;
     you.on = true;

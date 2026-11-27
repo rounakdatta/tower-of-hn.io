@@ -96,6 +96,34 @@ test('readable, reachable and calm: no hiding from screen readers, a focus ring,
   assert.match(css, /body\[data-mode="table"\]:not\(\.reply-open\) #credit \{ visibility:visible/);
 });
 
+test('the corner\'s icons go when the corner does: a name made transparent must not leave links to tap or Tab into', () => {
+  const css = withSupport(INDEX, both).match(/<style>\n#splash[\s\S]*?<\/style>/)![0];
+  // every state in which the page hides the corner (it only fades it: opacity), the icons are hidden outright
+  assert.match(INDEX, /body\.door :is\(#brand, #lean\) \{ opacity:0/);
+  assert.match(INDEX, /body\[data-mode="table"\] #brand \{ opacity:0 \}/);
+  // (the media block it sits in: the nearest opening line above it)
+  const at = INDEX.indexOf('body:not([data-mode="tower"]) #brand, body:not([data-mode="tower"]) #scrim { opacity:0 }');
+  assert.ok(at > 0);
+  const opener = INDEX.slice(0, at).split('\n').reverse().find((l) => /^\s*@media .*\{\s*$/.test(l))!;
+  const narrow = /@media (.*?)\s*\{\s*$/.exec(opener)![1];
+  assert.ok(css.includes('body.door #brand .gifts,body[data-mode="table"] #brand .gifts{visibility:hidden}'));
+  assert.ok(css.includes(`@media ${narrow.trim()} { body:not([data-mode="tower"]) #brand .gifts { visibility:hidden } }`), narrow);
+  // a finger finds them: each target at least 24 px (WCAG 2.2, 2.5.8), a little air between the two
+  const icon = Number(/\.gift svg\{width:(\d+)px/.exec(css)![1]), pad = Number(/\.gifts \.gift\{[^}]*padding:(\d+)px/.exec(css)![1]);
+  assert.ok(icon + 2 * pad >= 24, `${icon + 2 * pad} px`);
+  assert.match(css, /\.gifts\{[^}]*gap:[1-9]/);
+  // the tip shows the name to the eye; a screen reader already has it from the link (generated text joins the name)
+  assert.ok(css.includes('content:attr(data-tip);content:attr(data-tip) / "";'));
+  // and the door's icons take their own colour too (its own rule is more specific than the shared one)
+  assert.ok(css.includes('#give .gift.gh:hover svg') && css.includes('#give .gift.coffee:hover svg'));
+});
+
+test('a coffee page without GitHub\'s turns nothing on, and says so', () => {
+  const r = readSupport({ SPONSOR_COFFEE: CUP_ });
+  assert.equal(r.support, null);
+  assert.match(r.problems[0], /SPONSOR_COFFEE needs SPONSOR_URL/);
+});
+
 test('/support: who, what it pays for, monthly or once, any amount, the button, voluntary; no script, no form, no frame', () => {
   const page = supportPage(on);
   for (const said of ['Rounak Datta', 'servers', 'monthly or just once', 'any amount', 'GitHub Sponsors', 'voluntary and unlocks nothing'])

@@ -560,7 +560,9 @@ function seatedFrame() {
     const ci = crowd.index(st.name);
     if (ci >= 0) { room.leave(ci); crowd.hide(ci); }
     hallAudience.away(a, false, clock, false);
-    sp.seats.splice(k, 1);
+    // (room.leave has taken an actor's entry out already: never the neighbour's)
+    const at = sp.seats.indexOf(st);
+    if (at >= 0) sp.seats.splice(at, 1);
   }
   // (someone whose chair is here, just come in: once they've faded in, an actor takes the chair, so they turn to whoever
   // speaks, and speak themselves, as the others at the table do)
@@ -710,8 +712,10 @@ const replyOn = () => sync.play('reply');
 function syncReplies() {
   const on = replyOn();
   document.body.classList.toggle('replies', on);
-  if (!on || you.on) return;
+  if (!on) { you.on = false; return; }                   // (switched off while open: nobody again, at once)
+  if (you.on) return;
   you.wake();
+  replies.start(() => you.me);                            // (its first look now, not two minutes on)
   // back with a reply handed to HN before a reload (a phone can drop this tab while you're there): keep watching for it
   if (you.pending()) replySheet().then((r) => r.resume()).catch(() => {});
 }
@@ -1177,6 +1181,7 @@ function sit(s: TableSpot | undefined, push = false) {
   // (FLOOR_TIMELINE) a building's table plays its comments in the order they were written (the room keeps one clock:
   // the floor's), from where the floor has got to; whoever is in its chairs now becomes an actor (the close-ups)
   let floorFrom = -1;
+  if (building) floorJumpAt = clock;                    // (the room may jump to your table's moment: nobody took the lift)
   if (building && !s.bar && floorMode.clock) {
     const c = floorMode.clock, tb = c.tables[s.index], byId = new Map(s.table.turns.map((u) => [u.id, u]));
     if (mode === 'table' && director.spot && director.spot !== s) unseatActors(director.spot);

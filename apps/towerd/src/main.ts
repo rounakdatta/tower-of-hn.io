@@ -73,7 +73,7 @@ console.log(JSON.stringify({ audio: { policy: AUDIO_POLICY, asked: process.env.A
 const { support: SUPPORT, problems: supportProblems } = readSupport(process.env);
 console.log(JSON.stringify({ support: { on: !!SUPPORT, coffee: !!SUPPORT?.coffee, upi: !!SUPPORT?.upi, ...(supportProblems.length ? { refused: supportProblems } : {}) } }));
 const support = supportSite(SUPPORT);
-// the page must carry its markers, or nothing would point to /support: say so at boot, not to a visitor
+// the page must carry its markers, or none of the ways to give would show: say so at boot, not to a visitor
 if (SUPPORT) { try { const missing = missingMarks(readFileSync(INDEX, 'utf8')); if (missing.length) console.warn(JSON.stringify({ support: { missing } })); } catch { /* no page to read: / answers as it always has */ } }
 for (const d of [LIVE, JOBS]) mkdirSync(d, { recursive: true });
 

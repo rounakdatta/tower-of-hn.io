@@ -4,13 +4,17 @@ Hacker News as a living tower. Every floor is a front-page story, every table is
 
 ## See it
 
-[`docs/img/first-cut.mp4`](docs/img/first-cut.mp4) is 51 s with sound: tonight's front page, a ride up to floor #1, and a table talking in its own voices. It was rendered headlessly on a software GPU, so it looks softer and slower than on a real one.
+**Live at [towerofhn.taptappers.club](https://towerofhn.taptappers.club)**, with sound.
 
-| The live tower | Floors trade ranks |
+| The tower, HN's Y on its roof | A floor: one building, every table |
 |---|---|
-| ![tower](docs/img/first-cut-tower.png) | ![rank swap](docs/img/first-cut-rank-swap.png) |
-| **A floor** | **At a table** |
-| ![floor](docs/img/first-cut-floor.jpg) | ![table](docs/img/first-cut-closeup.png) |
+| ![tower](docs/img/tower-y.jpg) | ![floor](docs/img/floor-building.jpg) |
+| **Drag the floor's line: the whole room at that moment** | **A table speaking, the camera following** |
+| ![drag](docs/img/floor-drag.jpg) | ![table](docs/img/table-live.jpg) |
+
+These were rendered headlessly on a software GPU, so they look softer than on a real one.
+[`docs/img/first-cut.mp4`](docs/img/first-cut.mp4) is the first cut (51 s with sound): that night's front page, a ride
+up to floor #1, and a table talking in its own voices.
 
 ## Run it locally
 
@@ -39,20 +43,24 @@ open http://127.0.0.1:5288
   - Stop on a floor and someone inside is heard through the glass, muffled, before you go in.
   - The first few landings are named in a note ("cogman10 just commented on floor 7"), and so is each floor that turns heated, once. Tap a note to go there.
   - The beacon pulses for every new comment on the front page.
-- **Floor.** You arrive on foot, among every conversation on the floor. The table you're with (nearest, or the one you're facing) is heard clearly and subtitled; the others murmur, muffled, as a room does.
+- **Floor.** A floor is one building: every table and everyone who commented on the story, in a hall as big as the floor needs. The 1Password thread's 58 tables and 356 people fill a hall 52 m across; a floor of five people is the tower's own room. You arrive on foot.
+  - **The line along the bottom is the floor's own clock.**
+    - Drag it, and the whole room goes to that moment. People walk in with their first comment and leave an hour after their last (HN never says when anyone stops reading). Tables open dark and light up as their comments land, and each table's sign counts what it had by then.
+    - Let go, and the floor plays from there: every comment in the order it was written, wherever it was written. The camera travels to each table as its comment is said; a move of your own takes it back.
+    - The lift chimes as people walk in.
+    - Any path through the line lands on the same room as going there directly. `?t=` links a moment.
   - **Desktop:** click the floor and the mouse looks around (Esc gives it back); WASD or the arrows walk, Shift hurries. A dot in the middle aims: click someone to see their card, a table to walk over. E sits down.
   - **Phone:** the left thumb walks (a stick appears where it lands), the right thumb looks round; tap a table to go to it, someone to see their card.
-  - **Signs** over the nearest tables say what each is about (its opener's first words), its mood, and who has the floor and how ("furious", "comeback", "thinking aloud").
-  - **The map** (top right) shows the whole room turned the way you face: tables in their moods, the ones talking pulse. Tap a table to walk there; on a phone it opens big first, with names.
-  - **Lamps** take the colour of what's said under them: red for a row, yellow for laughter, blue for people thinking aloud. A row breaking out elsewhere gets a note you can tap to go there.
-  - Every table in earshot acts what it says, as the one you sit at does: people get to their feet, point, laugh, slump.
-- **Table.** Space pauses, N moves to the next table, Esc stands you up, M mutes.
+  - **Signs** over the nearest tables say what each is about (its opener's first words) and how far it had got at the floor's moment.
+  - **The map** (top right) shows the whole building: the tables lit as lively as they are, everyone in the room, the lift, and the table that's speaking. Tap a table to walk there.
+  - Whoever speaks says it at their table: from their chair if they have one, otherwise stepping out of the crowd to its front. The crowd turns to look.
+- **Table.** Space pauses, N moves to the next table, Esc stands you up, M mutes. The floor's line stays along the bottom, with your table's stretch lit; drag it to hear from any comment, or step with the arrows.
   - Words are said the way a person reads them aloud: "$1.2T" is "1.2 trillion dollars", "LLMs" is "L L Ms", and a link is where it goes ("a GitHub link", "a link to N Y Post dot com"). See `docs/SPEECH.md`.
   - Links are held up as placards you can click.
   - When someone quotes the comment they're answering, its author speaks the quote.
-- **Reply, by voice.** On someone's card, while seated (Reply, or R), or aiming at them: speak, read your words back, fix them, and post. Your browser turns speech into text (nothing rewrites it), the room goes quiet while you talk, and your draft is kept (through closing, a reload, or a phone dropping the tab). Posting is a hand-off: your words are copied and HN's own reply page opens on that comment, so you paste and press reply there (signing in on HN if it asks; we never see a password); the sheet then finds your reply on HN and links to it. A companion extension (`apps/extension`, not published) would post straight from your browser with your own HN session. Your HN name is learned from your first reply (kept in your browser only), and replies to you are brought to your ears on the floor you're on, with a note for the ones elsewhere. See `docs/POSTING.md`; the tests (an HN mock and Playwright on three engines) are in `apps/client/e2e`.
+- **Reply, by voice** (behind the `reply` switch, off on the live site). On someone's card, while seated (Reply, or R), or aiming at them: speak, read your words back, fix them, and post. Your browser turns speech into text (nothing rewrites it), the room goes quiet while you talk, and your draft is kept (through closing, a reload, or a phone dropping the tab). Posting is a hand-off: your words are copied and HN's own reply page opens on that comment, so you paste and press reply there (signing in on HN if it asks; we never see a password); the sheet then finds your reply on HN and links to it. A companion extension (`apps/extension`, not published) would post straight from your browser with your own HN session. Your HN name is learned from your first reply (kept in your browser only), and replies to you are brought to your ears on the floor you're on, with a note for the ones elsewhere. See `docs/POSTING.md`; the tests (an HN mock and Playwright on three engines) are in `apps/client/e2e`.
 - **Lean back:** top right on the tower. It rides to the liveliest floor, plays its best tables one after another, then moves down the ranking, hands-free.
-- **Deep link:** `?story=<id>&table=<root comment id>`. The address bar updates as you sit down. Add `&from=<comment id>` to hear the opener, then jump straight to that reply.
+- **Deep link:** `?story=<id>&table=<root comment id>`. The address bar updates as you sit down. Add `&from=<comment id>` to hear the opener, then jump straight to that reply, or `&t=3h12m` for a moment on the floor's clock.
 
 ## The acting
 
@@ -87,6 +95,7 @@ packages/core       speakability and spoken forms, play order, seats, permanent 
 apps/towerd         local stand-in for the edge + CDN: follows live HN, writes head/epoch/floor files, queues voicing
 apps/voice-worker   tags, voices (Kokoro or OpenAI), writes clips + sidecars with loudness and mouth-shape tracks
 apps/client         the 3D client: three.js on WebGPU, plain TypeScript
+apps/extension      the companion browser extension for replying (not published)
 spikes/ research/   the first night's experiments and evidence
 docs/PLAN.md        the plan; docs/img has the demos
 ```
@@ -105,12 +114,14 @@ The client renders headlessly on a software GPU (`?record` makes time determinis
 
 ## Production
 
-It runs on the homelab (`homelab.setup/kubernetes/apps/towerofhn`), at https://towerofhn.taptappers.club (tailnet only). Its Kubernetes objects and images keep the name it first went out under, `towerofhan`: a deploy never deletes, so renaming them would start a second copy beside the running one, and new image names would rebuild and re-pull every layer.
+It runs on the homelab (`homelab.setup/kubernetes/apps/towerofhn`), at https://towerofhn.taptappers.club, behind Cloudflare: a Cloudflare Tunnel reaches towerd on its own edge port, and the CDN answers the polls and the immutable files. Its Kubernetes objects and images keep the name it first went out under, `towerofhan`: a deploy never deletes, so renaming them would start a second copy beside the running one, and new image names would rebuild and re-pull every layer.
 - `towerofhan` on the control plane: `towerofhan-web` (towerd, which also serves the built client) and a fallback voice lane, sharing `/data`
 - `towerofhan-runner`, one per worker node: `towerofhan-voice` lanes that voice what towerd hands out on its in-cluster voice port
 
 Both images are private, in GHCR. `docs/DEPLOY.md` covers the costs and the reasoning.
 
+- **Switches.** How the room plays is switched in towerd's `CLIENT_FLAGS` and carried to every page in `head.json`. The live site runs `stream,cue,quick,crowd,timeline,floor,fast`; `reply` (replying to HN) is off. `docs/LAUNCH.md` has each one and how to roll it back; `?play=` tries a set on one page.
+- **Support.** `SPONSOR_URL` (GitHub Sponsors) and `SPONSOR_COFFEE` (Buy Me a Coffee) put two small icons by the name, a line at the foot of the start page and a `/support` page. Unset, nothing of it is in the page.
 - **Release.** Push an annotated tag `vX.Y.Z` on its own; CI builds and pushes both images at that version. Then bump the three image tags in homelab.setup's `values.yaml` (tag AND digest; the voice image is used twice), deploy that branch with `deploy-stuff.yml --ref`, check it, and merge.
 - **Housekeeping is automatic.**
   - Deltas, old floor revisions and audio past `RETENTION_DAYS` are pruned. With `AUDIO_POLICY=tower`, audio is kept only while a floor can still play it, capped, and never written into a nearly full disk: `docs/AUDIO.md`.
@@ -122,4 +133,12 @@ Both images are private, in GHCR. `docs/DEPLOY.md` covers the costs and the reas
 
 ## Status
 
-This is the first cut and runs locally only. Deployment follows `docs/PLAN.md` (Cloudflare R2 + CDN, one GPU box).
+Live since November 2026: the front page as it happens, every comment voiced on CPUs as it lands, each floor one
+building you can scrub through time. `docs/PLAN.md` was the first night's plan; `docs/LAUNCH.md` is what launched,
+what each switch does, and how to roll each part back.
+
+## Support
+
+Tower of HN is made by one person, Rounak Datta. If it gave you something, you can
+[sponsor it on GitHub](https://github.com/sponsors/rounakdatta), monthly or once, or
+[buy me a coffee](https://buymeacoffee.com/rounakdatta). It pays for the servers that read the comments aloud.

@@ -4,7 +4,8 @@
 //   SPONSOR_COFFEE  optional, a Buy Me a Coffee page (https://buymeacoffee.com/<name>): offered beside GitHub, everywhere.
 //   SPONSOR_UPI     optional, a UPI ID (name@bank): /support offers it beside GitHub, for people paying from India.
 // Set, towerd fills four markers in the client's index.html (the styles; two small icons after the name in the corner;
-// a line at the foot of the door; a credit in the table's letterbox, the frame round the picture) and serves /support.
+// a line at the foot of the door; a credit in the table's letterbox, the frame round the picture), each going straight
+// to GitHub Sponsors (and the coffee page), and serves /support: the page to share (the app links the ways themselves).
 // Unset, it empties them: index.html goes out byte for byte as it did before this existed, and /support is the app, as
 // any other unknown path is.
 // None of it is a comment or a turn: nothing here can reach the voices, which only ever read Hacker News.
@@ -28,7 +29,10 @@ const COFFEE = /^\/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\/?$/;
 export function readSupport(env: Record<string, string | undefined>): { support: Support | null; problems: string[] } {
   const problems: string[] = [];
   const raw = (env.SPONSOR_URL ?? '').trim();
-  if (!raw) return { support: null, problems };
+  if (!raw) {
+    if ((env.SPONSOR_COFFEE ?? '').trim()) problems.push('SPONSOR_COFFEE needs SPONSOR_URL beside it: support stays off');
+    return { support: null, problems };
+  }
   let u: URL | null = null;
   try { u = new URL(raw); } catch { /* refused below */ }
   if (!u || u.protocol !== 'https:' || u.hostname !== 'github.com' || u.port || u.username || u.password || !LOGIN.test(u.pathname)) {
@@ -92,17 +96,19 @@ const CSS = `<style>
 .gift svg{width:13px;height:13px;flex:none;transition:color .2s}
 #give .gift{display:inline-flex;align-items:center;gap:5px}
 #give .gift svg{color:var(--mute)}
-.gift.gh:hover svg,.gift.gh:focus-visible svg{color:#db61a2}
-.gift.coffee:hover svg,.gift.coffee:focus-visible svg{color:#ffdd00}
-.gifts{display:inline-flex;align-items:center;margin-left:8px;vertical-align:-3px;letter-spacing:0;text-shadow:none}
-.gifts .gift{position:relative;display:inline-flex;padding:5px;border-radius:999px;color:var(--mute);opacity:.7;pointer-events:auto;text-decoration:none;transition:opacity .2s}
+.gift.gh:hover svg,.gift.gh:focus-visible svg,#give .gift.gh:hover svg,#give .gift.gh:focus-visible svg{color:#db61a2}
+.gift.coffee:hover svg,.gift.coffee:focus-visible svg,#give .gift.coffee:hover svg,#give .gift.coffee:focus-visible svg{color:#ffdd00}
+.gifts{display:inline-flex;align-items:center;gap:3px;margin-left:7px;vertical-align:-4px;letter-spacing:0;text-shadow:none}
+.gifts .gift{position:relative;display:inline-flex;padding:6px;border-radius:999px;color:var(--mute);opacity:.7;pointer-events:auto;text-decoration:none;transition:opacity .2s}
 .gifts .gift:hover,.gifts .gift:focus-visible{opacity:1}
-.gifts .gift::after{content:attr(data-tip);position:absolute;left:50%;top:calc(100% + 6px);transform:translate(-50%, -3px);padding:4px 9px;border-radius:7px;background:#0b0e18f0;color:var(--ink);font-size:12px;font-weight:500;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s, transform .15s}
+.gifts .gift::after{content:attr(data-tip);content:attr(data-tip) / "";position:absolute;left:50%;top:calc(100% + 6px);transform:translate(-50%, -3px);padding:4px 9px;border-radius:7px;background:#0b0e18f0;color:var(--ink);font-size:12px;font-weight:500;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s, transform .15s}
 .gifts .gift:hover::after,.gifts .gift:focus-visible::after{opacity:1;transform:translate(-50%, 0)}
 #credit .gifts{margin-left:6px;vertical-align:-4px}
 #credit .gifts .gift::after{top:auto;bottom:calc(100% + 6px);transform:translate(-50%, 3px)}
 #credit .gifts .gift:hover::after,#credit .gifts .gift:focus-visible::after{transform:translate(-50%, 0)}
 @media (hover: none) { .gifts .gift::after { display:none } }
+body.door #brand .gifts,body[data-mode="table"] #brand .gifts{visibility:hidden}
+@media (max-width: 700px), (hover: none) { body:not([data-mode="tower"]) #brand .gifts { visibility:hidden } }
 @media not all and (max-width: 1180px) { body[data-mode="table"]:not(.reply-open) #credit { visibility:visible; opacity:1; transition:opacity .6s .5s } }
 @media (max-height: 420px) { #splash #give { display:none } }
 @media (prefers-reduced-motion: reduce) { #credit, body[data-mode="table"]:not(.reply-open) #credit { transition:none } .gift svg, .gifts .gift, .gifts .gift::after { transition:none } }
