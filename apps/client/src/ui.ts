@@ -264,16 +264,17 @@ export class UI {
     const kick = !this.chosen && data.best === s ? 'Start here' : '';
     // the table you're with is subtitled already: its sign doesn't say the same thing again
     const said = line && !focus ? line : null;
-    // (a building's counts tick in place; a sign with no words of its own shows "+N" people, which re-renders)
-    const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${so && t.gist ? '' : people}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
+    // (a building's counts tick in place, "+N" on a sign with no words of its own too: nothing is re-measured as they do)
+    const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${so ? (people > 1 ? 'n' : '1') : people}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
     // (a building's counts tick as the floor's moment moves: just the words, no measuring: their figures are tabular)
     if (key === slot.key) {
       // (written only when they change: a write is a change to the page even when the words are the same)
       if (so && !said && slot.counts !== `${so.turns}|${people}`) {
         slot.counts = `${so.turns}|${people}`;
-        const c = slot.el.querySelector('.count'), p = slot.el.querySelector('.ppl');
+        const c = slot.el.querySelector('.count'), p = slot.el.querySelector('.ppl'), plus = slot.el.querySelector('.plus');
         if (c) c.textContent = `${so.turns.toLocaleString('en-US')} comment${so.turns === 1 ? '' : 's'}`;
         if (p) p.textContent = `${people.toLocaleString('en-US')} ${people === 1 ? 'person' : 'people'}`;
+        if (plus) plus.textContent = `+${people - 1}`;
       }
       return;
     }
@@ -289,7 +290,7 @@ export class UI {
         ? `<em class="${this.met.has(said.turn.by) ? 'met' : ''}">${esc(said.turn.by)}</em>${word ? ` · <span style="color:${MOOD[now].color}">${esc(word)}</span>` : ' is speaking'}`
         : so ? `<span class="count">${so.turns.toLocaleString('en-US')} comment${so.turns === 1 ? '' : 's'}</span> · <span class="ppl">${people.toLocaleString('en-US')} ${people === 1 ? 'person' : 'people'}</span>`
         : `${row && (mood === 'heated' || mood === 'tense') ? `${esc(row[0])} ⇄ ${esc(row[1])}` : `${people} ${people === 1 ? 'person' : 'people'}`}${mood !== 'calm' ? ` · <em style="color:${MOOD[mood].color}">${MOOD[mood].word}</em>` : ''}`;
-      html = `${kick ? `<i class="kick">${kick}</i>` : ''}<b class="gist"><i class="dot" style="background:${MOOD[now].color}"></i>${gist ? `“${esc(gist)}”` : `${esc(t.turns[0]?.by ?? '')}${people > 1 ? ` <em>+${people - 1}</em>` : ''}`}</b><span class="meta">${meta}</span>`;
+      html = `${kick ? `<i class="kick">${kick}</i>` : ''}<b class="gist"><i class="dot" style="background:${MOOD[now].color}"></i>${gist ? `“${esc(gist)}”` : `${esc(t.turns[0]?.by ?? '')}${people > 1 ? ` <em class="plus">+${people - 1}</em>` : ''}`}</b><span class="meta">${meta}</span>`;
     }
     slot.el.innerHTML = html;
     slot.el.classList.toggle('focus', focus);
