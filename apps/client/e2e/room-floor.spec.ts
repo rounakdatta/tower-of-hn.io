@@ -247,7 +247,7 @@ test('reduced motion: the same room at every moment, without the growing and the
 
 test('cheap at any size: a scrub costs the CPU well under a millisecond a frame (800 people, and the 1Password floor), and 1,000 seeks leave the heap where it was', async ({ page }, info) => {
   const rows: string[] = [];
-  for (const fx of ['onepassword', 'n800']) {
+  for (const fx of ['onepassword', 'n800', 'n3000']) {
     await enter(page, fx);
     // (timed over runs of 20 frames: a phone's timer, as the browser emulates one, is coarser than a frame's work here)
     const ms = await page.evaluate(() => {
@@ -278,8 +278,10 @@ test('cheap at any size: a scrub costs the CPU well under a millisecond a frame 
       return { here: f.here, drawn: f.drawn, triangles: r.triangles, calls: r.calls ?? r.drawCalls };
     });
     rows.push(`${fx}: the wide shot at its fullest (${gpu.here} in the room): ${gpu.triangles} triangles, ${gpu.calls} draw calls, people drawn near/far/distant ${gpu.drawn.join('/')}`);
+    if (fx === 'n800') expect(gpu.here, 'the 800-person floor at its fullest is a crowd (its comments span a day, as HN\'s do)').toBeGreaterThan(100);
     console.log(rows[rows.length - 2]); console.log(rows[rows.length - 1]);
-    expect(ms.mean, `${fx}: a scrubbed frame's JavaScript`).toBeLessThan(1.0);
+    // (the budget is for 800 people and the 1Password floor; 3,000 is measured, for the record)
+    if (fx !== 'n3000') expect(ms.mean, `${fx}: a scrubbed frame's JavaScript`).toBeLessThan(1.0);
   }
   const heap = await page.evaluate(async () => {
     const t = (window as unknown as W).__tohn, end = (t.floor() as { end: number }).end, gc = (window as unknown as { gc?: () => void }).gc;

@@ -27,14 +27,17 @@ export function synthetic(n) {
   const w = Array.from({ length: nt }, (_, k) => 1 / Math.pow(k + 1, 1.15)), W = w.reduce((a, b) => a + b, 0);
   const home = people.map(() => { let x = r() * W; for (let k = 0; k < nt; k++) { x -= w[k]; if (x <= 0) return k; } return nt - 1; });
   const byTable = Array.from({ length: nt }, () => []);
-  let clock = 0;
+  let clock = 0, seq = 0;
   for (const k of people.map((_, k) => k).sort(() => r() - 0.5)) {
     const m = 1 + (r() < 0.35 ? 1 : 0) + (r() < 0.12 ? 1 : 0);
     for (let j = 0; j < m; j++) {
       clock += -Math.log(1 - r()) * (20 + clock / 40);
-      byTable[j > 0 && r() < 0.15 ? Math.floor(r() * nt) : home[k]].push({ by: people[k], at: Math.round(clock) });
+      byTable[j > 0 && r() < 0.15 ? Math.floor(r() * nt) : home[k]].push({ by: people[k], at: Math.round(clock), j: seq++ });
     }
   }
+  // when each comment was written (FLOOR_TIMELINE): HN's shape, most of a thread in its first hours and a long tail
+  // over about eighteen (the clock above only orders them: it grows too fast to be a time)
+  const when = (j) => Math.round(600 + 18 * 3600 * Math.pow(j / Math.max(1, seq), 2.2));
   let id = S + 1;
   const tables = [];
   for (const cs of byTable) {
@@ -48,7 +51,7 @@ export function synthetic(n) {
       const nd = nodes[k], gapMs = turns.length === 0 ? 0 : depth > prev ? 220 : depth === prev ? 480 : 800;
       // (one comment in eleven not voiced yet, as on a live floor: the table asks the server for it when it's near)
       const dur = Math.round((6 + -Math.log(1 - r()) * 18) * 100) / 100, emo = EMO[Math.floor(r() * EMO.length)], amp = Math.round(r() * 10) / 10;
-      turns.push({ id: nd.id, by: nd.by, depth, ...(nd.parent !== null ? { replyTo: nodes[nd.parent].id } : {}), gapMs, voice: Math.floor(r() * 110), at: nd.at,
+      turns.push({ id: nd.id, by: nd.by, depth, ...(nd.parent !== null ? { replyTo: nodes[nd.parent].id } : {}), gapMs, voice: Math.floor(r() * 110), at: when(nd.j),
         ...(turns.length % 11 === 7 ? {} : { v: [`c/${nd.id}.f1.json`, dur, emo, amp] }) });
       prev = depth;
       for (const c of nd.kids) walk(c, depth + 1);
