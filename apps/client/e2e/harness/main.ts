@@ -3,6 +3,8 @@
 import { you } from '../../src/you.ts';
 import type { Reply, ReplyTarget } from '../../src/reply.ts';
 
+you.wake();                                               // (the reply flag, on: as main.ts does when head.json says so)
+
 const T: Record<string, ReplyTarget> = {
   bob: { id: 46100001, by: 'bob', story: 46100000, title: 'Show HN: A tower you can walk into' },
   carol: { id: 46100002, by: 'carol', story: 46100000, title: 'Show HN: A tower you can walk into' },

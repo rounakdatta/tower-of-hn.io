@@ -704,14 +704,23 @@ function replyLanded(l: Landed) {
   if (reply?.to?.id === l.parent) return;
   ui.toast(`Your reply to <b>${esc(l.to)}</b> is on Hacker News`, () => window.open(`https://news.ycombinator.com/item?id=${l.id}`, '_blank', 'noopener'));
 }
-// back with a reply handed to HN before a reload (a phone can drop this tab while you're there): keep watching for it
-if (you.pending()) replySheet().then((r) => r.resume()).catch(() => {});
+/** REPLY (head.play "reply", or ?play=…,reply): replying, and everything that knows who you are. Off, none of it shows:
+ *  no Reply button, no R, no reply on a card, no notes of replies to you (you.ts is nobody) */
+const replyOn = () => sync.play('reply');
+function syncReplies() {
+  const on = replyOn();
+  document.body.classList.toggle('replies', on);
+  if (!on || you.on) return;
+  you.wake();
+  // back with a reply handed to HN before a reload (a phone can drop this tab while you're there): keep watching for it
+  if (you.pending()) replySheet().then((r) => r.resume()).catch(() => {});
+}
 director.isMe = (n) => !!you.me && n === you.me;
 director.onWho = (n, turn) => showProfile(n, turn);
 function syncPause() { const b = document.getElementById('pause'); if (b) b.textContent = director.paused ? 'Play' : 'Pause'; }
 /** Answer `by`: their comment at the table you're at, else at the nearest table they've spoken at, the latest. */
 function replyTo(by: string, prefer?: number) {
-  if (!activeFloor) return;
+  if (!activeFloor || !replyOn()) return;
   const at = (mode === 'table' ? director.spot : nearTable()) ?? null;
   const theirs = (s: TableSpot) => s.table.turns.filter((u) => u.by === by);
   let id = prefer;
@@ -782,6 +791,7 @@ const after = (secs: number, fn: () => void) => timers.push({ at: clock + secs, 
 const camDir2 = () => new THREE.Vector2(camera.position.x, camera.position.z).normalize();
 
 sync.onHead = (h: Head, prev) => {
+  syncReplies();
   tower.setOrder(h.tower, h.stories, h.act, clock, camDir2(), h.people, h.heat);
   cam.floors = h.tower.length;
   // the focus is a story, not a height: when the front page reorders, it follows its story
@@ -1194,13 +1204,13 @@ function sit(s: TableSpot | undefined, push = false) {
   ui.aim('');
   ui.sitDown(null);
   mode = 'table'; ui.mode('table'); audio.setMode('table'); audio.sfx('sit'); ui.showLabels(false); map.show(false); awake();
-  (window.requestIdleCallback ?? setTimeout)(() => replySheet().catch(() => {}));   // seated: the reply sheet, ready (it isn't in the first load)
+  if (replyOn()) (window.requestIdleCallback ?? setTimeout)(() => replySheet().catch(() => {}));   // seated: the reply sheet, ready (it isn't in the first load)
   subLine = null; ui.subtitle(null);
   ui.flash(); setDof(true);
   nav(`?story=${activeFloor.story.id}&table=${s.table.root}`, fromFloor && depth === 1);
   media(activeFloor.story.title, s.table.turns[0]?.by);
   // (short: it shares the bottom with the seat's controls)
-  ui.hint(touch ? '' : 'Esc stand up · Space pause · N next · R reply');
+  ui.hint(touch ? '' : `Esc stand up · Space pause · N next${replyOn() ? ' · R reply' : ''}`);
   // (a building has no murmur from other tables: it would be a comment from another moment)
   director.others = building ? [] : spots.filter((x) => !x.bar && x !== s).map((x) => ({ pos: x.pos, turns: x.table.turns }));
   director.jumpTo = deepFrom; deepFrom = 0;
@@ -1324,7 +1334,7 @@ addEventListener('keydown', (e) => {
   }
   else if ((e.key === 'n' || e.key === 'N') && mode === 'table') nextTable();
   else if (e.key === 'm' || e.key === 'M') audio.setMuted(!audio.muted);
-  else if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey && !reply?.open && !(e.target as HTMLElement)?.closest?.('input, textarea')) {
+  else if ((e.key === 'r' || e.key === 'R') && replyOn() && !e.metaKey && !e.ctrlKey && !e.altKey && !reply?.open && !(e.target as HTMLElement)?.closest?.('input, textarea')) {
     e.preventDefault();
     if (mode === 'table') replyHere();
     else if (mode === 'floor' && walk.locked) { const a = aimAt(innerWidth / 2, innerHeight / 2); const who = nameAt(a); if (who) replyTo(who); }
@@ -1392,7 +1402,7 @@ function aimAt(x: number, y: number): { kind: 'person'; i: number } | { kind: 'a
   return { kind: null, at: ray.ray.intersectPlane(floorPlane, hitPoint) ? hitPoint.clone() : undefined };
 }
 /** has `name` said something at one of this room's tables (so R can answer it here)? */
-function canReply(name: string) { return spots.some((s) => !s.bar && s.table.turns.some((t) => t.by === name)); }
+function canReply(name: string) { return replyOn() && spots.some((s) => !s.bar && s.table.turns.some((t) => t.by === name)); }
 /** whoever is at a point on the screen (at a table, or in the audience), by name */
 function nameAt(a: ReturnType<typeof aimAt>) { return a.kind === 'person' ? crowd.people[a.i].name : a.kind === 'audience' ? a.name : null; }
 /** the table you're standing beside (close enough to sit), if any */
@@ -1433,7 +1443,7 @@ function showProfile(name: string, prefer?: number) {
   // the card leads somewhere: to their table (the nearest one they've spoken at), when that's not where you are
   const near = here.slice().sort((a, b) => Math.hypot(a.pos.x - walk.pos.x, a.pos.z - walk.pos.z) - Math.hypot(b.pos.x - walk.pos.x, b.pos.z - walk.pos.z))[0];
   const go = mode === 'floor' && near && nearTable() !== near ? () => walkToTable(near) : undefined;
-  const answer = said ? () => replyTo(name, prefer) : undefined;
+  const answer = said && replyOn() ? () => replyTo(name, prefer) : undefined;
   ui.profile({ name, said, tables: here.length, go, reply: answer, data: null });
   p.then((data) => ui.profile({ name, said, tables: here.length, go, reply: answer, data: (data ?? {}) as never }, true));
 }

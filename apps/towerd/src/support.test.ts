@@ -5,8 +5,12 @@ import { join } from 'node:path';
 import { readSupport, withSupport, supportPage, supportSite, missingMarks, MARKS, SUPPORT_CSP, type Support } from './support.ts';
 
 const INDEX = readFileSync(join(import.meta.dirname, '../../client/index.html'), 'utf8');
-const URL_ = 'https://github.com/sponsors/example';
-const on: Support = { url: URL_, upi: null };
+const URL_ = 'https://github.com/sponsors/example', CUP_ = 'https://buymeacoffee.com/example';
+const on: Support = { url: URL_, coffee: null, upi: null };
+/** GitHub and a coffee: what the tower runs with */
+const both: Support = { url: URL_, coffee: CUP_, upi: null };
+/** what support adds to the page, taken out again (each piece, wherever it went) */
+const strip = (page: string) => page.replace(/<style>\n#splash[\s\S]*?<\/style>|<p id="give">[\s\S]*?<\/p>|<p id="credit">[\s\S]*?<\/p>|<span class="gifts">[\s\S]*?<\/a><\/span>/g, '');
 const count = (s: string, x: string | RegExp) => typeof x === 'string' ? s.split(x).length - 1 : (s.match(new RegExp(x, 'g')) ?? []).length;
 /** every <a …> tag in a page, with its attributes */
 const links = (html: string) => [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)].map(([, attrs, inner]) => ({ attrs, inner, href: /href="([^"]*)"/.exec(attrs)?.[1] }));
@@ -20,50 +24,73 @@ test('the page carries each marker exactly once (else a piece would silently go 
 test('unset: the page goes out exactly as it was before support existed, with nothing of it inside', () => {
   const off = withSupport(INDEX, null);
   assert.equal(off, Object.values(MARKS).reduce((s, m) => s.replace(m, ''), INDEX));
-  for (const trace of ['support', 'Sponsor', 'sponsor', 'github.com', 'Rounak', 'id="give"', 'id="credit"']) assert.ok(!off.includes(trace), trace);
+  for (const trace of ['support', 'Sponsor', 'sponsor', 'github.com', 'buymeacoffee', 'coffee', 'Rounak', 'id="give"', 'id="credit"', 'class="gifts"']) assert.ok(!off.includes(trace), trace);
   assert.equal(readSupport({}).support, null);
   assert.equal(readSupport({ SPONSOR_URL: '   ' }).support, null);
   assert.equal(readSupport({ SPONSOR_UPI: 'name@bank' }).support, null, 'a UPI ID alone turns nothing on');
+  assert.equal(readSupport({ SPONSOR_COFFEE: CUP_ }).support, null, 'nor a coffee page alone');
 });
 
-test('set: a line at the foot of the door, a credit at the table, their styles, each once', () => {
-  const page = withSupport(INDEX, on);
-  for (const m of Object.values(MARKS)) assert.ok(!page.includes(m), `${m} filled`);
-  assert.equal(count(page, 'id="give"'), 1);
-  assert.equal(count(page, 'id="credit"'), 1);
-  assert.equal(count(page, '<style>'), count(INDEX, '<style>') + 1);
-  // the door's line is the splash's own last child, right after the door's words; the credit is the body's, right after
-  // the seat's controls (next in tab order) and outside them (#controls is transformed on touch screens, which would
-  // make it the credit's containing block)
-  assert.match(page, /<small>Headphones on\. Sound is half of it\.<\/small>\n<\/div><p id="give">[^\n]*<\/p><\/div>\n/);
-  assert.match(page, /id="leave">Stand up<\/button><\/div><p id="credit">[^\n]*<\/p>\n<div id="splash"/);
-  assert.ok(page.indexOf('</style><style>\n#splash') > 0 && page.indexOf('<style>\n#splash') < page.indexOf('</head>'), 'the styles, in the head');
-  // and nothing else in the page changed
-  assert.equal(page.replace(/<style>\n#splash[\s\S]*?<\/style>|<p id="give">[\s\S]*?<\/p>|<p id="credit">[\s\S]*?<\/p>/g, ''), withSupport(INDEX, null));
+test('set: two icons after the name, a line at the foot of the door, a credit at the table, their styles, each once', () => {
+  for (const s of [on, both]) {
+    const page = withSupport(INDEX, s);
+    for (const m of Object.values(MARKS)) assert.ok(!page.includes(m), `${m} filled`);
+    assert.equal(count(page, 'id="give"'), 1);
+    assert.equal(count(page, 'id="credit"'), 1);
+    assert.equal(count(page, 'class="gifts"'), 2, 'the corner and the table');
+    assert.equal(count(page, '<style>'), count(INDEX, '<style>') + 1);
+    // the icons follow the name in the corner, on its line; the door's line is the splash's own last child, right after
+    // its button; the credit is the body's, right after the seat's controls (next in tab order) and outside them
+    // (#controls is transformed on touch screens, which would make it the credit's containing block)
+    assert.match(page, /Tower <i>of<\/i> HN<span class="gifts">[^\n]*?<\/a><\/span><\/div><div id="live">/);
+    assert.match(page, /Waking the tower…<\/button>\n<\/div><p id="give">[^\n]*<\/p><\/div>\n/);
+    assert.match(page, /id="leave">Stand up<\/button><\/div><p id="credit">[^\n]*<\/p>\n<div id="splash"/);
+    assert.ok(page.indexOf('</style><style>\n#splash') > 0 && page.indexOf('<style>\n#splash') < page.indexOf('</head>'), 'the styles, in the head');
+    // and nothing else in the page changed
+    assert.equal(strip(page), withSupport(INDEX, null));
+  }
 });
 
-test('the door points to /support; the credit points straight to GitHub, in a new tab, telling no one where from', () => {
-  const page = withSupport(INDEX, on);
-  const door = links(page.slice(page.indexOf('<p id="give">')))[0], credit = links(page.slice(page.indexOf('<p id="credit">')))[0];
-  assert.equal(door.href, '/support');
-  assert.ok(!/target=/.test(door.attrs), 'our own page: same tab');
-  assert.equal(credit.href, URL_);
-  assert.match(credit.attrs, /target="_blank"/);
-  assert.match(credit.attrs, /rel="noopener noreferrer"/);
-  // GitHub is named where the eye reads the link, and a screen reader hears that it opens a tab
-  assert.match(credit.inner, /^Sponsor on GitHub/);
-  assert.match(credit.inner, /<span class="vh"> \(opens in a new tab\)<\/span>/);
-  assert.match(credit.inner, /<svg[^>]*aria-hidden="true"/);
-  assert.equal(count(page, 'href="https://'), count(INDEX, 'href="https://') + 1, 'one way out to GitHub, no more');
+test('every way to give goes straight to its page, in a new tab, telling no one where from; the door names them, the corner and the table show their icons', () => {
+  const page = withSupport(INDEX, both), words = (h: string) => h.replace(/<svg[\s\S]*?<\/svg>|<[^>]+>/g, '');
+  const at = (from: string) => { const i = page.indexOf(from); return links(page.slice(i, page.indexOf(from.startsWith('<p') ? '</p>' : '</span></div>', i))); };
+  const door = at('<p id="give">'), corner = at('<span class="gifts">'), credit = at('<p id="credit">');
+  for (const [where, ls] of [['door', door], ['corner', corner], ['table', credit]] as const) {
+    assert.deepEqual(ls.map((l) => l.href), [URL_, CUP_], where);
+    for (const l of ls) {
+      assert.match(l.attrs, /target="_blank" rel="noopener noreferrer"/, where);
+      assert.match(l.inner, /<span class="vh"> \(opens in a new tab\)<\/span>$/, `${where}: a screen reader hears that it opens a tab`);
+      assert.match(l.inner, /^<svg viewBox="0 0 16 16" aria-hidden="true">/, `${where}: the icon is drawn, and hidden (the words say it)`);
+    }
+  }
+  // the door, where a first visit reads them: each with its word; a screen reader hears whose and where
+  assert.deepEqual(door.map((l) => words(l.inner)), ['Sponsor Rounak on GitHub (opens in a new tab)', 'Buy me a coffee (opens in a new tab)']);
+  assert.ok(page.includes('<p id="give">Made by Rounak · <a class="gift gh"'), 'who made it, then the ways to give');
+  // the corner and the table: the icons alone, named for a screen reader, and for a pointer or focus by their tip
+  for (const ls of [corner, credit]) {
+    assert.deepEqual(ls.map((l) => words(l.inner)), ['Sponsor Rounak on GitHub (opens in a new tab)', 'Buy Rounak a coffee (opens in a new tab)']);
+    assert.deepEqual(ls.map((l) => /data-tip="([^"]*)"/.exec(l.attrs)?.[1]), ['Sponsor on GitHub', 'Buy me a coffee']);
+  }
+  assert.equal(count(page, 'href="https://'), count(INDEX, 'href="https://') + 6, 'two ways out, in three places, no more');
+  // GitHub alone: one way, in each place
+  assert.equal(count(withSupport(INDEX, on), 'href="https://'), count(INDEX, 'href="https://') + 3);
+  assert.ok(!withSupport(INDEX, on).includes('buymeacoffee'), 'no coffee page, no cup');
 });
 
 test('readable, reachable and calm: no hiding from screen readers, a focus ring, and no motion when asked for none', () => {
-  const page = withSupport(INDEX, on), css = page.slice(page.indexOf('<style>\n#splash'), page.indexOf('</style>', page.indexOf('<style>\n#splash')));
+  const page = withSupport(INDEX, both), css = page.slice(page.indexOf('<style>\n#splash'), page.indexOf('</style>', page.indexOf('<style>\n#splash')));
   const give = /<p id="give">[\s\S]*?<\/p>/.exec(page)![0], credit = /<p id="credit">[\s\S]*?<\/p>/.exec(page)![0];
-  // (the arrow is drawn, and hidden: the words say it)
-  for (const el of [give, credit]) assert.ok(!/aria-hidden|tabindex="-1"|aria-live/.test(el.replace(/<svg[\s\S]*?<\/svg>/, '')), el);
-  assert.match(css, /#give a:focus-visible,#credit a:focus-visible\{outline:2px solid #fff/);
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{ #credit, body\[data-mode="table"\]:not\(\.reply-open\) #credit \{ transition:none \} \}/);
+  const corner = /<span class="gifts">[\s\S]*?<\/a><\/span>/.exec(page)![0];
+  // (the icons are drawn, and hidden: the words say it)
+  for (const el of [give, credit, corner]) assert.ok(!/aria-hidden|tabindex="-1"|aria-live/.test(el.replace(/<svg[\s\S]*?<\/svg>/g, '')), el);
+  assert.match(css, /#give a:focus-visible,#credit a:focus-visible,\.gifts \.gift:focus-visible\{outline:2px solid #fff/);
+  // a tip shows for the keyboard as for a pointer; a touch screen has no pointer to rest, and no tip that would stick
+  assert.match(css, /\.gifts \.gift:hover::after,\.gifts \.gift:focus-visible::after\{opacity:1/);
+  assert.match(css, /@media \(hover: none\) \{ \.gifts \.gift::after \{ display:none \} \}/);
+  // the corner is the name's: it takes no clicks (the scene's), but its icons do
+  assert.match(INDEX, /#brand \{[^}]*pointer-events:none/);
+  assert.match(css, /\.gifts \.gift\{[^}]*pointer-events:auto/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{ #credit, body\[data-mode="table"\]:not\(\.reply-open\) #credit \{ transition:none \} \.gift svg, \.gifts \.gift, \.gifts \.gift::after \{ transition:none \} \}/);
   // hidden (not merely transparent) outside a table: no invisible link to tab into on the tower
   assert.match(css, /#credit\{[^}]*visibility:hidden/);
   assert.match(css, /body\[data-mode="table"\]:not\(\.reply-open\) #credit \{ visibility:visible/);
@@ -79,6 +106,13 @@ test('/support: who, what it pays for, monthly or once, any amount, the button, 
   assert.equal(out[0].href, URL_);
   assert.match(out[0].attrs, /target="_blank" rel="noopener noreferrer"/);
   assert.match(out[0].inner, /^Sponsor on GitHub/);
+  // with a coffee page: offered beside GitHub, in a quieter button, and said in the words above them
+  const two = supportPage(both), ways = links(two).filter((l) => l.href?.startsWith('https:'));
+  assert.deepEqual(ways.map((l) => l.href), [URL_, CUP_]);
+  assert.match(ways[1].attrs, /class="go two"/);
+  assert.match(ways[1].inner, /^Buy me a coffee/);
+  assert.ok(two.includes('through GitHub Sponsors, or buy me a coffee.') && !page.includes('coffee'));
+  assert.ok(Buffer.byteLength(two) < 4096, `small: ${Buffer.byteLength(two)} bytes`);
   assert.ok(links(page).some((l) => l.href === '/'), 'a way back to the tower');
   assert.ok(Buffer.byteLength(page) < 4096, `small: ${Buffer.byteLength(page)} bytes`);
   // its policy lets it run nothing, be framed by no one, post nowhere, and load nothing but its own icon (which exists)
@@ -89,8 +123,8 @@ test('/support: who, what it pays for, monthly or once, any amount, the button, 
 
 test('no exclamation marks and no "please" anywhere a visitor reads', () => {
   const words = (h: string) => h.replace(/<style>[\s\S]*?<\/style>|<svg[\s\S]*?<\/svg>|<[^>]+>/g, ' ');
-  const page = withSupport(INDEX, on), added = /<p id="give">[\s\S]*?<\/p>/.exec(page)![0] + /<p id="credit">[\s\S]*?<\/p>/.exec(page)![0];
-  for (const said of [words(added), words(supportPage({ url: URL_, upi: 'name@bank' }).replace(/<!doctype html>/, ''))]) {
+  const page = withSupport(INDEX, both), added = /<p id="give">[\s\S]*?<\/p>/.exec(page)![0] + /<p id="credit">[\s\S]*?<\/p>/.exec(page)![0] + /<span class="gifts">[\s\S]*?<\/a><\/span>/.exec(page)![0];
+  for (const said of [words(added), words(supportPage({ url: URL_, coffee: CUP_, upi: 'name@bank' }).replace(/<!doctype html>/, ''))]) {
     assert.ok(!said.includes('!'), said);
     assert.ok(!/please/i.test(said), said);
   }
@@ -115,9 +149,21 @@ test('only a GitHub Sponsors page turns it on: anything else keeps it off, so a 
   assert.ok(supportPage(q).includes('href="https://github.com/sponsors/example?frequency=one-time&amp;sponsor=x%22%3C"'));
 });
 
+test('a coffee page is only ever Buy Me a Coffee\'s: anything else is left out, and said so; GitHub stays on', () => {
+  for (const good of [' https://buymeacoffee.com/rounakdatta ', 'https://www.buymeacoffee.com/rounakdatta', 'https://buymeacoffee.com/rounakdatta/', 'https://buymeacoffee.com/rounakdatta#x'])
+    assert.match(readSupport({ SPONSOR_URL: URL_, SPONSOR_COFFEE: good }).support!.coffee!, /^https:\/\/(www\.)?buymeacoffee\.com\/rounakdatta\/?$/, good);
+  for (const bad of ['http://buymeacoffee.com/x', 'https://buymeacoffee.com/', 'https://buymeacoffee.com/a/b', 'https://buymeacoffee.com/x?ref=y', 'https://evil.example/x',
+    'https://buymeacoffee.com.evil.example/x', 'https://me@buymeacoffee.com/x', 'https://buymeacoffee.com:8443/x', 'buymeacoffee.com/x', 'javascript:alert(1)', 'https://buymeacoffee.com/-x"<']) {
+    const r = readSupport({ SPONSOR_URL: URL_, SPONSOR_COFFEE: bad });
+    assert.equal(r.support?.url, URL_, bad);
+    assert.equal(r.support?.coffee, null, bad);
+    assert.match(r.problems[0], /SPONSOR_COFFEE must be/, bad);
+  }
+});
+
 test('a UPI ID adds one line to /support only; a malformed one is left out, and said so', () => {
   const r = readSupport({ SPONSOR_URL: URL_, SPONSOR_UPI: 'rounak.d@okaxis' });
-  assert.deepEqual(r, { support: { url: URL_, upi: 'rounak.d@okaxis' }, problems: [] });
+  assert.deepEqual(r, { support: { url: URL_, coffee: null, upi: 'rounak.d@okaxis' }, problems: [] });
   const page = supportPage(r.support!);
   assert.ok(page.includes('<a href="upi://pay?pa=rounak.d%40okaxis&amp;pn=Rounak%20Datta&amp;cu=INR">rounak.d@okaxis</a>'));
   assert.ok(!withSupport(INDEX, r.support).includes('upi'), 'never on the door or at a table');
@@ -135,7 +181,7 @@ test('a $ in the URL is only ever a character: nothing of the page is copied int
   const page = withSupport(INDEX, s), credit = /<p id="credit">[\s\S]*?<\/p>/.exec(page)![0];
   assert.equal(links(credit)[0].href, 'https://github.com/sponsors/example?a=$&amp;b=$`&amp;c=$$');
   assert.equal(count(page, '<!doctype html>'), 1);
-  assert.equal(page.replace(/<style>\n#splash[\s\S]*?<\/style>|<p id="give">[\s\S]*?<\/p>|<p id="credit">[\s\S]*?<\/p>/g, ''), withSupport(INDEX, null));
+  assert.equal(strip(page), withSupport(INDEX, null));
 });
 
 test('the voices never say it: what they read is made from Hacker News by code that cannot see the note', () => {
@@ -163,10 +209,11 @@ test('the door styles its own paragraphs: the line beneath them is specific enou
 
 test('a hand-made config still cannot break out of its attribute or its line of text', () => {
   // readSupport would refuse these; the escaping must hold on its own all the same
-  const evil: Support = { url: 'https://github.com/sponsors/x?a="><script>alert(1)</script>&b=\'', upi: '"><img src=x onerror=alert(1)>@x' };
+  const evil: Support = { url: 'https://github.com/sponsors/x?a="><script>alert(1)</script>&b=\'', coffee: 'https://buymeacoffee.com/x"><svg onload=alert(1)>', upi: '"><img src=x onerror=alert(1)>@x' };
   for (const page of [withSupport(INDEX, evil), supportPage(evil)]) {
-    assert.ok(!/<script>alert|<img src=x/.test(page), 'no markup from the config');
+    assert.ok(!/<script>alert|<img src=x|<svg onload/.test(page), 'no markup from the config');
     assert.ok(page.includes(`href="https://github.com/sponsors/x?a=&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;b='"`), 'one attribute, escaped');
+    assert.ok(page.includes('href="https://buymeacoffee.com/x&quot;&gt;&lt;svg onload=alert(1)&gt;"'), 'and the coffee page\'s');
   }
   assert.ok(supportPage(evil).includes('pa=%22%3E%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E%40x&amp;'));
 });

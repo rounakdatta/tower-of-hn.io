@@ -215,6 +215,8 @@
   #profile.show { opacity:1; transform:none; pointer-events:auto }
   body.reply-open #sitdown, body.reply-open #hint, body.reply-open #subs, body.reply-open #controls { opacity:0; pointer-events:none }
   #profile .acts { display:flex; align-items:center; gap:14px }
+  /* REPLY: replying shows only with its flag (main.ts: body.replies) */
+  body:not(.replies) #answer { display:none }
   #profile .answer { padding:7px 14px; border:0; border-radius:999px; background:var(--ink); color:#15110d; font:inherit; font-weight:700; cursor:pointer; white-space:nowrap }
   #profile .answer:hover { background:#fff }
   /* a speaker's name is a way in (their card, ready to answer that line); your own line says so */
@@ -309,7 +311,7 @@
 </head>
 <body data-mode="tower" class="door">
 <div id="scrim"></div>
-<div id="brand"><div class="w"><svg class="y" viewBox="0 0 18 18" aria-hidden="true" focusable="false"><rect x=".5" y=".5" width="17" height="17" fill="#ff6600" stroke="#fff"/><path d="M4.8 4h2.1L9 8.2 11.1 4h2.1L10 10v4H8v-4z" fill="#fff"/></svg>Tower <i>of</i> HN</div><div id="live">connecting to Hacker News…</div></div>
+<div id="brand"><div class="w"><svg class="y" viewBox="0 0 18 18" aria-hidden="true" focusable="false"><rect x=".5" y=".5" width="17" height="17" fill="#ff6600" stroke="#fff"/><path d="M4.8 4h2.1L9 8.2 11.1 4h2.1L10 10v4H8v-4z" fill="#fff"/></svg>Tower <i>of</i> HN<!--support:brand--></div><div id="live">connecting to Hacker News…</div></div>
 <button class="pill" id="lean" title="Hands-free: the liveliest floors and tables, one after another"><svg viewBox="0 0 16 16" aria-hidden="true" style="width:10px;height:10px;margin-right:6px;vertical-align:-1px"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>Lean back</button>
 <div id="tip"></div>
 <div id="focus" role="group" aria-label="Floor in focus"><div class="rank" id="frank"></div><div class="body"><div class="t" id="fname"></div><div class="m" id="fmeta"></div>

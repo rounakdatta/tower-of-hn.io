@@ -158,6 +158,30 @@ test('the audience hears it: heads turn to each new speaker, and how it was said
   expect(reactions.size, 'reactions that rippled through the room').toBeGreaterThan(1);
 });
 
+test('replying is behind its flag: without it there is no Reply button, no R, no Reply on a card, no word of it in the hints; with it, all of it', async ({ page }) => {
+  for (const on of [false, true]) {
+    await open(page, 'n50', on ? `${V2},reply` : V2);
+    await call(page, 'sit'); await step(page, 120);
+    expect(await call<string>(page, 'mode')).toBe('table');
+    const answer = page.locator('#answer');
+    if (on) await expect(answer, 'the Reply button, with the flag').toBeVisible(); else await expect(answer, 'no Reply button').toBeHidden();
+    if (!(await page.evaluate(() => matchMedia('(hover: none)').matches))) {
+      const hint = (await page.locator('#hint').textContent()) ?? '';
+      expect(hint.includes('R reply'), `the seated hint names R only with the flag: "${hint}"`).toBe(on);
+    }
+    // R answers whoever is speaking: the sheet comes only with the flag (without it, it never even loads)
+    await page.keyboard.press('r'); await step(page, 3);
+    if (on) await expect(page.locator('#reply'), 'R opens the reply sheet').toBeVisible();
+    else { await page.waitForTimeout(500); await expect(page.locator('#reply'), 'R does nothing').toHaveCount(0); }
+    if (on) { await page.keyboard.press('Escape'); await step(page, 3); }
+    // a person's card: Reply on it only with the flag
+    const name = (await call<{ by: string }[]>(page, 'turns'))[0].by;
+    await call(page, 'profile', name); await step(page, 3);
+    await expect(page.locator('#profile')).toBeVisible();
+    await expect(page.locator('#profile .answer'), `Reply on ${name}'s card`).toHaveCount(on ? 1 : 0);
+  }
+});
+
 test('a small room is the room it always was', async ({ page }) => {
   const at = async (play: string) => { await open(page, 'n5', play); return (await call<Plan>(page, 'plan')).crowd.map((c) => c.slice(0, 3)); };
   const before = await at(TODAY), after = await at(V2);

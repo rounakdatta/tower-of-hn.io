@@ -5,27 +5,35 @@ const HN = 'https://hacker-news.firebaseio.com/v0';
 const KEY = 'tohn-me', HANDOFF = 'tohn-handoff';
 const read = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };   // storage can be off
 
+let name = read(KEY) ?? '';
 export const you = {
-  /** your Hacker News username, or '' */
-  me: read(KEY) ?? '',
+  /** (REPLY, head.json's play "reply") replying is on, and with it everything that knows who you are. Off, you are
+   *  nobody here: no name, no word with the extension, no notes of replies to you (main.ts wakes it with the flag) */
+  on: false,
+  /** your Hacker News username, or '' (always '' while replying is off) */
+  get me() { return you.on ? name : ''; },
   /** the companion extension answered (it posts with your own HN session) */
   ext: false,
-  set(name: string) {
-    const n = name.trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 15);
-    you.me = n;
-    try { if (n) localStorage.setItem(KEY, n); else localStorage.removeItem(KEY); } catch { /* private mode */ }
+  set(n: string) {
+    name = n.trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 15);
+    try { if (name) localStorage.setItem(KEY, name); else localStorage.removeItem(KEY); } catch { /* private mode */ }
   },
   /** a reply handed to HN in the last half hour and not seen there yet (a reload, or a phone that dropped the tab) */
-  pending: () => { try { const h = JSON.parse(read(HANDOFF) ?? 'null'); return !!h && Date.now() - h.at < 1_800_000; } catch { return false; } },
+  pending: () => { if (!you.on) return false; try { const h = JSON.parse(read(HANDOFF) ?? 'null'); return !!h && Date.now() - h.at < 1_800_000; } catch { return false; } },
+  /** Replying is on (once): the page says hello to a companion extension, if there is one. */
+  wake() {
+    if (you.on) return;
+    you.on = true;
+    window.postMessage({ tohn: 'hello' }, location.origin);
+  },
 };
 
 // a companion extension says hello through the page (its content script listens on our origin, and only there)
 addEventListener('message', (e) => {
-  if (e.source !== window || !e.data || typeof e.data !== 'object' || e.data.tohn !== 'here') return;
+  if (!you.on || e.source !== window || !e.data || typeof e.data !== 'object' || e.data.tohn !== 'here') return;
   you.ext = true;
   if (!you.me && typeof e.data.user === 'string' && e.data.user) you.set(e.data.user);
 });
-window.postMessage({ tohn: 'hello' }, location.origin);
 
 /**
  * Replies to you, anywhere on Hacker News: your recent comments, checked every couple of minutes while the page is

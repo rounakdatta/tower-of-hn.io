@@ -19,3 +19,7 @@ test('the floor timeline (FLOOR_TIMELINE) reaches head.play too: a flag the whit
 test('fast (head.json every second in a room, behind a CDN) reaches head.play too', () => {
   assert.deepEqual(playFlags('stream,cue,quick,crowd,timeline,floor,fast').on, ['stream', 'cue', 'quick', 'crowd', 'timeline', 'floor', 'fast']);
 });
+test('reply (replying to HN, and everything that knows who you are) reaches head.play only when it is asked for', () => {
+  assert.deepEqual(playFlags('stream,cue,quick,crowd,timeline,floor,fast,reply').on, ['stream', 'cue', 'quick', 'crowd', 'timeline', 'floor', 'fast', 'reply']);
+  assert.ok(!playFlags('stream,cue,quick,crowd,timeline,floor,fast').on.includes('reply'));
+});

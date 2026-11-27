@@ -11,12 +11,13 @@
 //      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_AHEAD (audience, the default, or all: voice
 //      everything on the tower ahead of listeners), VOICE_VERSION, VOICE_PORT (default 8788),
 //      VOICE_TOKEN (runners must send it, if set), HN_API (a stand-in for HN's API, for staging), CLIENT_FLAGS
-//      (stream,cue,quick,crowd,timeline,floor: how the room plays), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
+//      (stream,cue,quick,crowd,timeline,floor,fast,reply: how the room plays), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
 //      deletes it after RETENTION_DAYS; tower keeps only what a floor can still play, AUDIO_GRACE_HOURS (24) after,
 //      at most AUDIO_MAX_MB (1024), and voices nothing new below DISK_FREE_MIN_PCT (15) free; tower-dry only says
-//      what tower would do), PRUNE_EVERY_S (housekeeping, 600), SPONSOR_URL (the maker's GitHub Sponsors page: a
-//      quiet line on the door, a credit at a table, /support; unset, none of it exists) and SPONSOR_UPI (a UPI ID for
-//      /support; see support.ts), EDGE_PORT (a second HTTP port for a CDN's tunnel connector, cloudflared: there
+//      what tower would do), PRUNE_EVERY_S (housekeeping, 600), SPONSOR_URL (the maker's GitHub Sponsors page: two
+//      small icons after the name, a quiet line on the door, a credit at a table, /support; unset, none of it exists),
+//      SPONSOR_COFFEE (a Buy Me a Coffee page, beside GitHub's) and SPONSOR_UPI (a UPI ID for /support; see
+//      support.ts), EDGE_PORT (a second HTTP port for a CDN's tunnel connector, cloudflared: there
 //      CF-Connecting-IP names the visitor and /status is private; the NetworkPolicy must admit the connector alone)
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
@@ -70,7 +71,7 @@ const AUDIO = { grace: Math.max(1, Number(process.env.AUDIO_GRACE_HOURS) || 24) 
 const PRUNE_MS = Math.max(10, Number(process.env.PRUNE_EVERY_S) || 600) * 1000;   // housekeeping (tests run it faster)
 console.log(JSON.stringify({ audio: { policy: AUDIO_POLICY, asked: process.env.AUDIO_POLICY ?? null, grace_h: AUDIO.grace / 3_600_000, max_mb: AUDIO.maxBytes / 1_048_576, free_min_pct: AUDIO.freeMin, retention_days: RETENTION_DAYS } }));
 const { support: SUPPORT, problems: supportProblems } = readSupport(process.env);
-console.log(JSON.stringify({ support: { on: !!SUPPORT, upi: !!SUPPORT?.upi, ...(supportProblems.length ? { refused: supportProblems } : {}) } }));
+console.log(JSON.stringify({ support: { on: !!SUPPORT, coffee: !!SUPPORT?.coffee, upi: !!SUPPORT?.upi, ...(supportProblems.length ? { refused: supportProblems } : {}) } }));
 const support = supportSite(SUPPORT);
 // the page must carry its markers, or nothing would point to /support: say so at boot, not to a visitor
 if (SUPPORT) { try { const missing = missingMarks(readFileSync(INDEX, 'utf8')); if (missing.length) console.warn(JSON.stringify({ support: { missing } })); } catch { /* no page to read: / answers as it always has */ } }
