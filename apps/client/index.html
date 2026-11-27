@@ -111,6 +111,7 @@
   #labels .tlabel .gist { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; font-size:13px; font-weight:600; letter-spacing:.005em }
   #labels .tlabel .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin:0 7px 1px 0; vertical-align:middle; box-shadow:0 0 8px currentColor }
   #labels .tlabel .meta { color:#c9b6a3; font-size:11.5px }
+  #labels .tlabel .count { font-variant-numeric:tabular-nums }
   #labels .tlabel em { font-style:normal; font-weight:650; color:#e8dccf }
   #labels .tlabel:hover { background:rgba(40,24,14,.82); border-color:rgba(255,170,110,.4) }
   #labels .tlabel.focus { background:rgba(22,16,12,.78); border-color:rgba(255,220,190,.32); box-shadow:0 8px 28px rgba(0,0,0,.4) }
@@ -273,6 +274,14 @@
      it; while a drag holds the conversation, the caption (the words from before the drag) goes */
   body:has(#timeline:is([data-state="open"], [data-state="drag"]):not([data-card="off"])) #subs { translate:0 -86px }
   body.scrubbing #subs { opacity:0 }
+  /* (FLOOR_TIMELINE) on foot in a building the floor's line is there too, on the bar it has at a table: the bottom bar comes
+     up under it (on a phone too: on foot there are no pills in it), and what sits at the bottom on foot steps up over it */
+  body.floorline[data-mode="floor"] #lbb { height:8.5vh }
+  @media (max-aspect-ratio: 4/5) { body.floorline[data-mode="floor"] #lbb { height:6.5vh } }
+  body.floorline[data-mode="floor"] .tl { --bar:8.5vh }
+  @media (max-aspect-ratio: 4/5) { body.floorline[data-mode="floor"] .tl { --bar:6.5vh } }
+  body.floorline[data-mode="floor"] #sitdown { bottom:calc(8.5vh + 22px + env(safe-area-inset-bottom) / 2) }
+  body.floorline[data-mode="floor"] #hint { bottom:calc(8.5vh / 2 - 9px) }
   @media (max-width: 700px), (hover: none) {
     body[data-mode="table"] #hint { display:none }
     #hint { white-space:normal; width:min(92vw, 520px); text-align:center; line-height:1.4 }

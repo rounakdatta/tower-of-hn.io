@@ -3,9 +3,9 @@ import * as THREE from 'three/webgpu';
 import { pass, screenUV, smoothstep, vec3, hash, float, uniform } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { dof } from 'three/addons/tsl/display/DepthOfFieldNode.js';
-import { LiveSync, type Floor, type Head } from './sync.ts';
+import { LiveSync, type Floor, type Head, type Turn } from './sync.ts';
 import { AudioEngine } from './audio.ts';
-import { buildSky, buildCity, buildSnow, Tower, uTime, uBeacon, uNeon, uNeonOf, floorY, FLOOR_H, R, TOWER_TOP } from './world.ts';
+import { buildSky, buildCity, buildSnow, Tower, uTime, uBeacon, uNeon, uNeonOf, floorY, FLOOR_H, R, ROOM, TOWER_TOP } from './world.ts';
 import { TowerCam } from './towercam.ts';
 import { Interior, uLift, type TableSpot } from './interior.ts';
 import { Room } from './room.ts';
@@ -19,8 +19,13 @@ import { Crowd, setTimeValue } from './people.ts';
 import { Audience } from './audience.ts';
 import { Stage } from './stage.ts';
 import { lineOf, turnAt, stepFrom, parseT, formatT, type Line } from './timeline.ts';
-import { Scrubber } from './scrubber.ts';
+import { Scrubber, lineModel } from './scrubber.ts';
 import { Director } from './director.ts';
+import { HallView } from './hallview.ts';
+import { FloorMode } from './floormode.ts';
+import { FloorVoice } from './floorvoice.ts';
+import { floorModel, type FloorModel } from './floorline.ts';
+import { tOf, uOf, latest, seatFrom, tableAt, countUpTo } from './floortime.ts';
 import { esc, hash32 } from './util.ts';
 import { Rig } from './rig.ts';
 import { UI } from './ui.ts';
@@ -114,12 +119,55 @@ mixer.pushChair = (c, k) => interior.pushChair(c, k);
 director.room = room; director.ambient = true;
 // CROWD_V2 (head.play "crowd", or ?play=crowd): a room that fits any crowd: tables keep a few people at their front,
 // everyone else stands in the audience (galleries above, if the floor needs them) and steps forward to speak
-const audience = new Audience();
-const stage = new Stage(crowd, audience, interior, room);
-scene.add(audience.group);
-audience.group.visible = false;                           // (drawn, and its shaders built, only once a room uses it)
-if (matchMedia('(prefers-reduced-motion: reduce)').matches) audience.u.motion.value = 0;
-stage.clock = () => clock;
+const roomAudience = new Audience();
+const roomStage = new Stage(crowd, roomAudience, interior, room);
+scene.add(roomAudience.group);
+roomAudience.group.visible = false;                       // (drawn, and its shaders built, only once a room uses it)
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+if (reducedMotion) roomAudience.u.motion.value = 0;
+roomStage.clock = () => clock;
+// FLOOR_TIMELINE (head.play "floor", with "crowd"): the whole floor in one building, every table and every person on it,
+// and one line for the floor's own clock: drag it and the whole room goes to that moment (floormode.ts)
+const hallView = new HallView();
+scene.add(hallView.group);
+const hallAudience = new Audience({ clip: hallView.uClip });
+scene.add(hallAudience.group);
+hallAudience.group.visible = false;
+if (reducedMotion) hallAudience.u.motion.value = 0;
+const hallStage = new Stage(crowd, hallAudience, interior, room);
+hallStage.clock = () => clock;
+const floorMode = new FloorMode(hallView, hallAudience);
+floorMode.ripple = !reducedMotion;
+const floorVoice = new FloorVoice(sync, audio, crowd, room, () => stage);
+// (the comment about to be said has happened: the room is at its moment, so its writer is in it to say it)
+floorVoice.onComment = (i) => { const c = floorMode.clock; if (c?.comments[i] && !scrubber.scrubbing && !scrubber.holding) floorShow(c.comments[i].at, true); };
+// (lean back in a building: when the floor has been said, on to the next floor down the ranking, as at a table)
+floorVoice.onEnd = () => {
+  if (!leanBack || mode !== 'floor' || !sync.head) return;
+  const order = sync.head.tower, next = order[(order.indexOf(activeStory) + 1) % Math.min(order.length, 10)];
+  leaveFloor();
+  after(2.9, () => enterFloor(next));
+};
+/** (seated in a building) the moment of the table's comment that's on its way: the room is there until it's said */
+let seatLead = -Infinity;
+director.onTurnAhead = (u) => {
+  const c = floorMode.clock, i = building ? c?.byId.get(u.id) : undefined;
+  if (c && i !== undefined && c.comments[i].at > seatLead && !scrubber.scrubbing && !scrubber.holding) { seatLead = c.comments[i].at; floorShow(seatLead, true); }
+};
+/** the floor's line, as the scrubber has it (null: not in a building) */
+let floorLine: FloorModel | null = null;
+/** the floor the building was built from: its table order is the building's (the live floor's may move on) */
+let builtFloor: Floor | null = null;
+const floorOn = () => sync.play('floor') && sync.play('crowd');
+/** (FLOOR_TIMELINE) a camera move in a building: a flight, or under prefers-reduced-motion a cut (the same place, no travel) */
+function moveCam(points: THREE.Vector3[], looks: THREE.Vector3[], dur: number, done?: () => void) {
+  if (reducedMotion) { rig.halt(); rig.cut(points[points.length - 1], looks[looks.length - 1], 0); done?.(); return; }
+  rig.fly(points, looks, dur, clock, done);
+}
+/** this room is a building (FLOOR_TIMELINE), and its walls have drawn back since we came in */
+let building = false, revealed = false;
+// the room's audience and stage: the hall's (CROWD_V2) or the building's, whichever this room is
+let audience = roomAudience, stage = roomStage;
 director.galleries = () => interior.galleryCount;
 const crowdV2 = () => sync.play('crowd');
 // TIMELINE (head.play "timeline", or ?play=timeline): at a table, a line along the bottom to scrub through the
@@ -132,18 +180,20 @@ let scrubTimer = 0, keySeek = 0, keyTo = -1, lineHeld = 0, lineLast = 0;
 const scrubber = new Scrubber({
   onScrubbing(on) {
     document.body.classList.toggle('scrubbing', on);
+    if (building) { floorScrubbing(on); return; }
     if (!director.spot) return;
     if (on) { director.hold(true); director.establish(clock); return; }   // the wide shot: the room filling and emptying as you drag
     // a drag that ended without a seek (cancelled): the conversation goes on from where it was, the room as it was
     setTimeout(() => { if (director.spot && !scrubber.scrubbing) { director.hold(false); const p = director.position(); if (p) audience.playhead(p.k); } }, 0);
   },
   onScrub(_t, k) {
+    if (building) { floorScrub(_t, k); return; }
     audience.playhead(k);                                 // people appear and disappear, as of then (a ripple)
     clearTimeout(scrubTimer);
     scrubTimer = window.setTimeout(() => director.prefetchAt(k), 150);   // where the finger rests: its words, ready
   },
-  onSeek(_t, k) { clearTimeout(scrubTimer); seekTo(k); },
-  snippet: (k) => director.snippet(k) ?? (k === 0 ? lineSpot?.table.gist ?? null : null),
+  onSeek(_t, k) { clearTimeout(scrubTimer); if (building) floorSeek(k); else seekTo(k); },
+  snippet: (k) => (building ? floorSnippet(k) : director.snippet(k) ?? (k === 0 ? lineSpot?.table.gist ?? null : null)),
 });
 /**
  * The conversation at `sp` on its own clock, and who is in the room when: everyone else on the floor is always here;
@@ -171,7 +221,7 @@ function showLine(sp: TableSpot) {
   audience.joins(c.keys);
   const p = director.position(), k = p?.k ?? 0;
   audience.playhead(lineLast, false); audience.playhead(k);
-  scrubber.show(line, lineOthers, (line.moments[k]?.start ?? 0) + (p?.into ?? 0));
+  scrubber.show(lineModel(line, lineOthers), (line.moments[k]?.start ?? 0) + (p?.into ?? 0));
   document.body.classList.add('timeline');
   // the first time ever: it rises by itself for a moment, once the letterbox is down, so there's no secret to find
   if (!localStorage.getItem('tohn-timeline')) { localStorage.setItem('tohn-timeline', '1'); after(2.2, () => { if (line) scrubber.peek(); }); }
@@ -195,6 +245,297 @@ function seekTo(k: number) {
   lineAt = -1;
   shareMoment(k);
 }
+// ---------------------------------------------------------------- (FLOOR_TIMELINE) the floor's line
+/** The whole room to moment t (seconds since the story went up): who is in it, every table as of then. The only way
+ *  the building's moment changes; the line's knob follows (a few times a second), and so does the address bar. */
+let floorKnobAt = 0;
+function floorShow(t: number, force = false) {
+  if (!building) return;
+  t = Math.max(0, Math.min(floorMode.end, t));
+  floorMode.show(t, clock);
+  const c = floorMode.clock;
+  if (!c || !floorLine || scrubber.scrubbing) return;
+  if (!force && clock - floorKnobAt < 0.2) return;
+  floorKnobAt = clock;
+  scrubber.setTime(uOf(c, t), floorPlaying());
+  shareFloor(t);
+}
+/** the narration is going (on foot, the floor's; seated, the director's) */
+const floorPlaying = () => (mode === 'table' ? director.playing && !director.paused : floorVoice.playing && !floorVoice.paused);
+/** where the room was when a drag began, and how it was being watched: a drag that ends without a seek goes back there */
+let floorBefore: { t: number; playing: boolean; walking: boolean; pos: THREE.Vector3; yaw: number } | null = null;
+let floorNoted = !!localStorage.getItem('tohn-floor-note');
+function floorScrubbing(on: boolean) {
+  if (on) {
+    floorBefore = { t: floorMode.t, playing: floorPlaying(), walking: walk.enabled, pos: walk.pos.clone(), yaw: walk.yaw };
+    if (mode === 'table') { director.hold(true); director.establish(clock); }
+    else { floorVoice.stop(); overview(); }
+    // (the line keeps a rule HN doesn't: when people leave. Said where it shows, the first time someone scrubs)
+    if (!floorNoted) { floorNoted = true; localStorage.setItem('tohn-floor-note', '1'); scrubber.note('People arrive with their first comment and leave an hour after their last: Hacker News doesn’t say when anyone stops reading.'); after(14, () => scrubber.note(null)); }
+    return;
+  }
+  // a drag that ended without a seek (cancelled): the room goes back to where it was, the narration with it
+  // (a seek, if there is one, comes straight after this and takes floorBefore: then there's nothing to go back to)
+  setTimeout(() => {
+    if (!building || scrubber.scrubbing || !floorBefore) return;
+    const b = floorBefore; floorBefore = null;
+    floorShow(b.t, true);
+    if (mode === 'table') { director.hold(false); return; }
+    if (b.walking) floorLand(b.pos, b.yaw);
+    if (b.playing && builtFloor && floorMode.clock) { floorVoice.start(builtFloor, floorMode.clock, spots, Math.max(0, latest(floorMode.clock, b.t))); if (!b.walking) startFollow(); }
+  }, 0);
+}
+function floorScrub(u: number, k: number) {
+  const c = floorMode.clock;
+  if (!c) return;
+  floorShow(tOf(c, u));
+  clearTimeout(scrubTimer);
+  // where the finger rests: that comment's words (and the next one's), fetched and decoded for a release there
+  scrubTimer = window.setTimeout(() => { if (mode === 'table') director.prefetchAt(seatIndex(k)); else floorVoice.prefetchAt(k); }, 150);
+}
+/** Let go (or the keys settled) at comment k: the room is at its moment, and it plays from there. On foot you land
+ *  beside its table, facing whoever says it; seated, your table plays its comment there (the line only offers yours). */
+function floorSeek(k: number) {
+  const c = floorMode.clock;
+  if (!c || !builtFloor || !c.comments[k]) return;
+  floorBefore = null;
+  const t = c.comments[k].at;
+  floorShow(t, true);
+  seatLead = t;
+  stage.instantUntil = clock + 1.2;                      // (whoever says it is simply there: the camera is cutting)
+  if (mode === 'table') { director.seek(seatIndex(k), clock); return; }
+  floorVoice.start(builtFloor, c, spots, k);
+  // the caption at once (its words were fetched while the finger rested): the voice follows a moment later
+  const w = floorVoice.first(k);
+  if (w) {
+    const u = c.comments[k], turns = spots[u.table]?.table.turns ?? [], to = u.replyTo ? turns.find((x) => x.id === u.replyTo)?.by : undefined;
+    subLine = null;
+    ui.subtitle({ name: w.who, to: w.who === u.by ? to : undefined, text: w.text, color: '#e8dccb', emotion: w.side.emotion, stance: w.side.stance, intensity: w.side.intensity, you: !!you.me && w.who === you.me, onWho: () => showProfile(w.who, u.id) });
+  }
+  startFollow();
+}
+// ---------------------------------------------------------------- (FLOOR_TIMELINE) the camera follows the floor
+/** On foot, once you've let the line go somewhere, the camera follows the narration round the building: to each table as
+ *  its comment is said, across the table from whoever is speaking (their face, over the table), rising over the hall for
+ *  a long hop so you see where it's going. Walking (keys, the stick) or a click on the room hands the camera back. */
+let follow = false, followSpot: TableSpot | null = null, followHinted = false;
+const followHead = new THREE.Vector3();
+function startFollow() {
+  overhead = false;
+  if (mode !== 'floor' || !building) return;
+  follow = true; followSpot = null;
+  if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.disable(); }
+  rig.fovTarget = 50;
+  if (!followHinted) { followHinted = true; ui.hint(touch ? 'Following the conversation · touch the room to walk' : 'Following the conversation · move to walk on your own'); after(7, () => { if (follow) ui.hint(''); }); }
+}
+function stopFollow() {
+  if (!follow) return;
+  follow = false; followSpot = null; overhead = false;
+  ui.hint('');
+  if (mode !== 'floor' || walk.enabled || scrubber.scrubbing) return;
+  const p = camera.position, yaw = Math.atan2(rig.target.x - p.x, rig.target.z - p.z);
+  walk.begin(new THREE.Vector3(p.x, roomY + EYE, p.z), yaw);
+}
+function followFrame() {
+  if (!follow || mode !== 'floor' || !building || scrubber.scrubbing || floorBefore) return;
+  const l = floorVoice.current(), sp = l?.spot ?? null;
+  if (!sp || sp === followSpot || rig.busy(clock)) return;
+  followSpot = sp; overhead = false;
+  const head = l && l.who >= 0 ? crowd.headPos(l.who, followHead) : followHead.set(sp.pos.x, roomY + 1.15, sp.pos.z);
+  // across the table from the speaker (their face, over the tabletop), in the table's own lane: clear by construction
+  const away = new THREE.Vector2(sp.pos.x - head.x, sp.pos.z - head.z);
+  if (away.lengthSq() < 0.04) away.set(sp.pos.x || 1, sp.pos.z);
+  away.normalize();
+  const cam = new THREE.Vector3(sp.pos.x + away.x * (sp.radius + 1.55), roomY + 1.85, sp.pos.z + away.y * (sp.radius + 1.55));
+  const d = camera.position.distanceTo(cam);
+  // a long hop goes up over the hall on the way (you see the floor, and where you're going); a short one stays low
+  const mid = camera.position.clone().lerp(cam, 0.5);
+  mid.y = Math.min(roomY + hallView.height - 0.8, Math.max(camera.position.y, cam.y) + Math.min(6, d * 0.2));
+  const midLook = rig.target.clone().lerp(head, 0.5);
+  moveCam([camera.position.clone(), mid, cam], [rig.target.clone(), midLook, head.clone()], Math.max(1.1, Math.min(3.2, 1.0 + d / 12)));
+}
+/** (seated) comment k on the floor is which of this table's turns (the director plays them in the order written) */
+function seatIndex(k: number) {
+  const id = floorMode.clock?.comments[k]?.id;
+  return Math.max(0, director.spot?.table.turns.findIndex((u) => u.id === id) ?? 0);
+}
+function floorSnippet(k: number) {
+  const c = floorMode.clock;
+  if (mode === 'table') return director.snippet(seatIndex(k));
+  return floorVoice.snippet(k) ?? (c && c.comments[k]?.k === 0 ? spots[c.comments[k].table]?.table.gist ?? null : null);
+}
+/** On foot, while dragging: up over the hall, the whole floor below (the room filling and emptying is the thing to see). */
+let overhead = false;
+function overview() {
+  if (overhead) return;                                  // (already up there: a second drag)
+  overhead = true; followSpot = null;
+  const R0 = ROOM.R, d = new THREE.Vector2(camera.position.x, camera.position.z);
+  if (d.lengthSq() < 0.01) d.set(Math.sin(walk.yaw + Math.PI), Math.cos(walk.yaw + Math.PI));
+  d.normalize();
+  const h = Math.max(2.2, Math.min(hallView.height - 0.45, Math.max(4, R0 * 0.42)));
+  // (a tall screen looks more steeply down: its lens is widened upward, and would be mostly ceiling and sky)
+  const tall = innerHeight > innerWidth, back = tall ? 0.38 : 0.5;
+  const pos = new THREE.Vector3(d.x * R0 * back, roomY + h, d.y * R0 * back), look = new THREE.Vector3(-d.x * R0 * (tall ? 0.02 : 0.1), roomY, -d.y * R0 * (tall ? 0.02 : 0.1));
+  if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.disable(); }
+  rig.fovTarget = tall ? 70 : 58;
+  moveCam([camera.position.clone(), pos], [rig.target.clone(), look], Math.max(0.9, Math.min(1.8, camera.position.distanceTo(pos) / 9)));
+}
+/** back down from over the hall, on foot at `at` (room space, the floor), facing `yaw` */
+function floorLand(at: THREE.Vector3, yaw: number) {
+  overhead = false;
+  if (mode !== 'floor') return;
+  const stand = new THREE.Vector3(at.x, roomY + EYE, at.z), look = stand.clone().add(new THREE.Vector3(Math.sin(yaw), -0.08, Math.cos(yaw)));
+  if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.disable(); }
+  rig.fovTarget = 56;
+  moveCam([camera.position.clone(), camera.position.clone().lerp(stand, 0.55).setY(Math.max(stand.y, camera.position.y * 0.5 + stand.y * 0.5)), stand], [rig.target.clone(), look, look.clone()], 1.1, () => {
+    if (mode !== 'floor' || scrubber.scrubbing) return;
+    walk.begin(stand, yaw);
+  });
+}
+/** the address bar names the floor's moment (a link starts there) */
+let floorSharedAt = -2;
+function shareFloor(t: number) {
+  if (!activeFloor || recording || !floorMode.clock) return;
+  // (named by the comment it's at, not each second: Safari allows a hundred history edits in ten seconds)
+  const k = floorMode.latest;
+  if (k === floorSharedAt) return;
+  floorSharedAt = k;
+  const s = Math.floor(k >= 0 ? floorMode.clock.comments[k].at : t);
+  const q = new URLSearchParams(location.search);
+  q.set('story', String(activeFloor.story.id)); q.set('t', formatT(s));
+  if (mode === 'table' && director.spot) q.set('table', String(director.spot.table.root)); else q.delete('table');
+  for (const x of ['record', 'manual']) q.delete(x);
+  history.replaceState(history.state, '', `${location.pathname}?${q}`);
+}
+/** Seated or on foot in a building: the floor's line along the bottom (seated, your table's stretch lit). */
+function showFloorLine() {
+  const c = floorMode.clock;
+  if (!building || !c) return;
+  floorLine = floorModel(c, mode === 'table' && director.spot ? director.spot.index : undefined);
+  scrubber.show(floorLine, uOf(c, floorMode.t));
+  document.body.classList.add('timeline', 'floorline');
+  if (!localStorage.getItem('tohn-floor-line')) { localStorage.setItem('tohn-floor-line', '1'); after(2.2, () => { if (floorLine) scrubber.peek(); }); }
+}
+function hideFloorLine() { floorLine = null; scrubber.hide(); document.body.classList.remove('timeline', 'floorline'); }
+/** (FLOOR_TIMELINE) A newer revision of the floor: the voices that landed reach the building's comments (by id), the
+ *  narration's and the seated table's alike; the building's own order (the order written) is kept. */
+function floorVoices(f: Floor) {
+  const v = new Map<number, Turn['v']>();
+  for (const t of f.tables) for (const u of t.turns) if (u.v) v.set(u.id, u.v);
+  const fresh = (u: Turn) => { const x = v.get(u.id); return x && (!u.v || u.v[0] !== x[0]) ? { ...u, v: x } : u; };
+  const seated = mode === 'table' ? director.spot : null;
+  for (const sp of spots) {
+    if (sp === seated) continue;
+    const turns = sp.table.turns.map(fresh);
+    if (turns.some((u, k) => u !== sp.table.turns[k])) sp.table = { ...sp.table, turns };
+  }
+  floorVoice.voices(v);
+  if (seated) director.voices(v);
+}
+/** (FLOOR_TIMELINE) Nobody stands at a table who isn't in the room at the floor's moment: an actor whose hour is up (a
+ *  speaker lingering at a front, someone in a chair at your table) becomes their place in the audience again, fading
+ *  out where they stood. What the room shows is the moment's, whoever happens to be acting. */
+function floorActors() {
+  for (let i = 0; i < crowd.people.length; i++) {
+    const p = crowd.people[i];
+    if (p.hidden) continue;
+    const a = hallStage.ix.get(p.name);
+    if (a === undefined || floorMode.here(a)) continue;
+    // (in their own chair, their place is where the actor sat: they fade out there; brought from elsewhere, they just go)
+    const home = hallAudience.places[a], there = Math.hypot(home.x - p.pose.pos.x, home.z - p.pose.pos.z) < 0.35;
+    room.leave(i); hallStage.free(i); crowd.hide(i);
+    hallAudience.vanish(a, clock, there);
+    for (const sp of spots) { const k = sp.seats.findIndex((st) => st.name === p.name); if (k >= 0) sp.seats.splice(k, 1); }
+  }
+}
+/** (record mode) how long each part of the building's frame takes, for the performance test's breakdown */
+const floorCosts: Record<string, number[]> = {};
+function costed<T>(name: string, f: () => T): T {
+  if (!recording) return f();
+  const a = performance.now(), r = f(), list = (floorCosts[name] ??= []);
+  list.push(performance.now() - a); if (list.length > 120) list.shift();
+  return r;
+}
+/** (FLOOR_TIMELINE) the map: the whole building, the tables lit as lively as they are at the floor's moment (not open
+ *  yet: a faint ring), everyone in the room then, the table someone is speaking at, and you */
+let mapDots = new Float32Array(0);
+const mapYou = new THREE.Vector3();
+let mapAt = -1;
+function floorMap() {
+  const c = floorMode.clock;
+  // (the map draws a dozen times a second: its dots are gathered only then)
+  if (!c || (clock - mapAt < 0.08 && mapAt >= 0)) return;
+  mapAt = clock;
+  if (mapDots.length < c.people.length * 2) mapDots = new Float32Array(c.people.length * 2);
+  let n = 0;
+  for (let i = 0; i < c.people.length; i++) if (floorMode.here(i)) { const p = hallAudience.places[i]; mapDots[2 * n] = p.x; mapDots[2 * n + 1] = p.z; n++; }
+  const speaking = floorVoice.current()?.spot ?? null;
+  if (walk.enabled) mapYou.copy(walk.pos); else mapYou.set(camera.position.x, 0, camera.position.z);
+  const yaw = walk.enabled ? walk.yaw : Math.atan2(rig.target.x - camera.position.x, rig.target.z - camera.position.z);
+  map.draw(clock, spots, mapYou, yaw, { focus: null, talking: (sp) => sp === speaking, dots: mapDots, dotCount: n,
+    lit: (sp) => { const l = floorMode.look(sp.index); return !l || l.lit < 0.5 ? 0 : 0.15 + 0.85 * Math.min(1, l.glow / 1.5); } });
+}
+/** Sitting down at a building's table: whoever is in its chairs now becomes an actor (the director's close-ups need
+ *  faces that act and lips that move); everyone else stays in the audience. The cut to the table hides the swap. */
+function seatActors(s: TableSpot) {
+  const plan = floorMode.plan;
+  s.seats = [];
+  if (!plan) return;
+  for (const st of plan.tables[s.index]?.seats ?? []) {
+    if (st.who < 0 || !floorMode.here(st.who)) continue;
+    const name = plan.people[st.who].name, i = crowd.show(name, { pos: new THREE.Vector3(st.x, 0, st.z), facing: st.facing, seated: true });
+    if (i < 0) continue;
+    room.forget(i);
+    hallAudience.away(st.who, true, clock, false);
+    s.seats.push({ name, pos: crowd.people[i].pose.pos, facing: st.facing, seated: true });
+  }
+}
+/** ...and back: the table's actors are the audience again, where they were (in the room or not, as the floor has it) */
+function unseatActors(s: TableSpot) {
+  for (const st of s.seats) {
+    const i = crowd.index(st.name), a = hallStage.ix.get(st.name);
+    if (i >= 0) { room.leave(i); crowd.hide(i); }
+    if (a !== undefined) hallAudience.away(a, false, clock, false);
+  }
+  s.seats = [];
+  sweepActors();
+}
+/** (FLOOR_TIMELINE) Every actor nobody needs any more (someone who arrived at a table after it was left, a speaker still
+ *  walking when the narration stopped) back to their place: in a building, actors exist only where the camera works,
+ *  so the room after any path is the moment's. Keeps the seated table's people and the narration's speakers. */
+function sweepActors() {
+  const keep = new Set<string>();
+  if (mode === 'table' && director.spot) for (const st of director.spot.seats) keep.add(st.name);
+  for (const i of floorVoice.speakers()) { const p = crowd.people[i]; if (p) keep.add(p.name); }
+  for (let i = 0; i < crowd.people.length; i++) {
+    const p = crowd.people[i];
+    if (p.hidden || keep.has(p.name)) continue;
+    const a = hallStage.ix.get(p.name);
+    room.leave(i); hallStage.free(i); crowd.hide(i);
+    if (a !== undefined) hallAudience.away(a, false, clock, false);
+  }
+}
+/** Seated in a building: the floor keeps the director's time (your table's comment being said, gliding toward its
+ *  next one as it's said: the room moves on around you), and whoever has left the room leaves your table too. */
+function seatedFrame() {
+  const c = floorMode.clock, sp = director.spot, p = director.position();
+  if (!c || !sp || !p) return;
+  const turns = sp.table.turns, u = turns[p.k], i = u ? c.byId.get(u.id) : undefined;
+  if (i === undefined) return;
+  const at = c.comments[i].at, nu = turns[p.k + 1], ni = nu ? c.byId.get(nu.id) : undefined;
+  const next = ni !== undefined ? c.comments[ni].at : Math.min(c.end, at + 900);
+  const f = Math.min(1, p.into / Math.max(1, u.v?.[1] ?? 16));
+  floorShow(Math.max(seatLead, Math.min(next - 0.001, at + f * (next - at))));
+  // (someone in a chair whose hour is up: they're the audience again for the moment it takes to fade them out)
+  for (let k = sp.seats.length - 1; k >= 0; k--) {
+    const st = sp.seats[k], a = hallStage.ix.get(st.name);
+    if (!st.seated || a === undefined || floorMode.here(a)) continue;
+    const ci = crowd.index(st.name);
+    if (ci >= 0) { room.leave(ci); crowd.hide(ci); }
+    hallAudience.away(a, false, clock, false);
+    sp.seats.splice(k, 1);
+  }
+}
 /** the address bar names the moment you're at (a link to share starts there) */
 function shareMoment(k: number) {
   if (!line || !activeFloor || !director.spot) return;
@@ -217,7 +558,7 @@ function lineFrame(dt: number) {
   if (p.k !== lineAt) { lineAt = p.k; audience.playhead(p.k); shareMoment(p.k); }
 }
 const frustum = new THREE.Frustum(), projView = new THREE.Matrix4();
-stage.seen = (p) => {
+roomStage.seen = hallStage.seen = (p) => {
   projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   frustum.setFromProjectionMatrix(projView);
   return frustum.containsPoint(p) && p.distanceTo(camera.position) < 16;
@@ -236,20 +577,22 @@ const cam = new TowerCam(camera, renderer.domElement);
 const walk = new WalkCam(camera, renderer.domElement, scene);
 walk.lens = (f) => rig.lens(f);
 // what's in the way, refreshed in place (asked for every step: no new objects each frame)
-const obstacleList: { x: number; z: number; r: number }[] = [];
+const obstacleList: { x: number; z: number; r: number }[] = [], nearList: number[] = [];
 walk.obstacles = () => {
   let n = 0;
   const put = (x: number, z: number, r: number) => { const o = (obstacleList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = x; o.z = z; o.r = r; };
   for (const s of spots) if (!s.bar) put(s.pos.x, s.pos.z, s.radius + 0.42);
   for (const p of crowd.people) if (!p.hidden) put(p.pose.pos.x + (p.shove?.x ?? 0), p.pose.pos.z + (p.shove?.z ?? 0), 0.34);   // where they stand
-  if (room.stage) for (const i of audience.ground) { if (audience.present(i)) { const pl = audience.places[i]; put(pl.x, pl.z, 0.34); } }
+  // (a building's audience is the whole floor: only those within a few steps can be walked into)
+  if (room.stage && building) for (const i of audience.near(walk.pos.x, walk.pos.z, 5, nearList)) { const pl = audience.places[i]; put(pl.x, pl.z, 0.34); }
+  else if (room.stage) for (const i of audience.ground) { if (audience.present(i)) { const pl = audience.places[i]; put(pl.x, pl.z, 0.34); } }
   obstacleList.length = n;
   return obstacleList;
 };
 walk.route = (a, b) => room.route(a, b);
 // what walkers keep clear of besides people: the tables (their tops), and the lens (where you stand, or the camera at
 // a table), so nobody walks through you or through the shot. Refreshed in place, as the obstacles above are.
-const clearList: { x: number; z: number; r: number }[] = [];
+const clearList: { x: number; z: number; r: number }[] = [], nearWalk: number[] = [];
 crowd.keepClear = () => {                              // asked every frame anyone animates: no closure, no new objects
   let n = 0;
   for (const s of spots) {
@@ -257,14 +600,23 @@ crowd.keepClear = () => {                              // asked every frame anyo
     const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = s.pos.x; o.z = s.pos.z; o.r = s.radius + 0.05;
   }
   if (mode !== 'tower') { const o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = camera.position.x; o.z = camera.position.z; o.r = 0.3; }
-  // (CROWD_V2) the audience on the ground: walkers keep to the lanes, never through anyone standing in their place
-  if (room.stage) for (const i of audience.ground) {
+  // (CROWD_V2) the audience on the ground: walkers keep to the lanes, never through anyone standing in their place (a
+  // building's audience is the whole floor: whoever stands within a few metres of someone walking)
+  if (room.stage && building) for (let w = 0; w < crowd.people.length; w++) {
+    const p = crowd.people[w];
+    if (p.hidden || !crowd.isWalking(w)) continue;
+    for (const i of audience.near(p.pose.pos.x, p.pose.pos.z, 3, nearWalk)) { const pl = audience.places[i], o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = pl.x; o.z = pl.z; o.r = 0.27; }
+  }
+  else if (room.stage) for (const i of audience.ground) {
     if (!audience.present(i)) continue;
     const pl = audience.places[i], o = (clearList[n++] ??= { x: 0, z: 0, r: 0 }); o.x = pl.x; o.z = pl.z; o.r = 0.27;
   }
   if (clearList.length !== n) clearList.length = n;
   return clearList;
 };
+// (FLOOR_TIMELINE) a move of your own takes the camera back from following the floor
+addEventListener('keydown', (e) => { if (follow && /^(w|a|s|d|arrowup|arrowdown|arrowleft|arrowright)$/i.test(e.key) && !(e.target as HTMLElement)?.closest?.('[role=slider], input, textarea')) stopFollow(); });
+renderer.domElement.addEventListener('pointerdown', () => { if (follow) stopFollow(); });
 walk.onMove = () => {
   if (walkHint) { walkHint = false; localStorage.setItem('tohn-walk', '1'); if (!walk.locked) ui.hint(''); tapHint = false; }
   if (touch && !localStorage.getItem('tohn-stick')) { localStorage.setItem('tohn-stick', '1'); walk.ghost(false); }
@@ -367,6 +719,7 @@ map.onWalk = (x, z) => { if (walk.enabled) { chose = ui.chosen = true; walk.goTo
 /** Walk up to a table (from its sign, the map, or a tap on it): beside it, facing it. */
 function walkToTable(s: TableSpot) {
   if (s.bar) { sit(s, true); return; }
+  stopFollow();
   if (!walk.enabled) return;
   chose = ui.chosen = true;
   const p = standAt(s, walk.pos);
@@ -579,16 +932,50 @@ async function enterFloor(sid: number, push = false, listen = false) {
   const out = new THREE.Vector2(camera.position.x, camera.position.z).normalize();
   roomYaw = Math.atan2(out.x, out.y);           // the room's front (its tables) faces the way we came in
   interior.group.position.y = roomY; crowd.group.position.y = roomY; walk.roomY = roomY;
-  interior.group.visible = true; interior.presence(0);
-  const lay = interior.layout(floor, roomYaw, deepTable);
-  spots = lay.spots;
-  const v2 = crowdV2();
-  room.stage = v2 ? stage : null; director.audience = v2 ? audience : null; audience.group.visible = v2;
-  crowd.set(v2 ? stage.trim(spots, lay.people) : lay.people);
-  if (!v2) { audience.set([], []); interior.galleries(0); }
-  room.reset(spots, interior.door);
-  mixer.exclude = null;
-  mixer.start(floor, spots);
+  // (FLOOR_TIMELINE) the whole floor in one building, if the floor says when its comments were written
+  const fl = floorOn() ? floorMode.build(floor, roomYaw, roomY, Date.now() / 1000) : null;
+  building = !!fl; revealed = false; overhead = false; follow = false; floorSharedAt = -2;
+  const v2 = building || crowdV2();
+  if (fl) {
+    audience = hallAudience; stage = hallStage;
+    ROOM.R = floorMode.plan!.R;
+    interior.group.visible = false; roomAudience.group.visible = false; roomAudience.set([], []); interior.galleries(0);
+    spots = fl;
+    room.stage = hallStage; director.audience = hallAudience; hallAudience.group.visible = true;
+    crowd.set([]);                                        // (actors only where the camera works: everyone is in the audience)
+    hallStage.build(floorMode.plan!, spots, roomY);
+    const door = new THREE.Vector3(Math.cos(Math.PI) * (ROOM.R - 0.6), 0, Math.sin(Math.PI) * (ROOM.R - 0.6)).applyAxisAngle(new THREE.Vector3(0, 1, 0), roomYaw);
+    room.reset(spots, door);
+    room.present = (name) => floorMode.here(hallStage.ix.get(name) ?? -1);
+    mixer.exclude = null;
+    mixer.start(floor, []);                               // (no table plays on its own: the floor has one narration)
+    hallView.shut();
+    builtFloor = floor;
+    // (the building keeps the table order it was built in; voicing is asked of the server's current floor, by root)
+    const liveAt = (root: number, id: number): [number, number] => {
+      const lf = activeFloor, k = lf ? lf.tables.findIndex((t) => t.root === root) : -1;
+      return k < 0 ? [-1, -1] : [k, lf!.tables[k].turns.findIndex((u) => u.id === id)];
+    };
+    floorVoice.live = (table, id) => liveAt(floor.tables[table]?.root ?? -1, id);
+    director.live = (sp, turn) => liveAt(sp.table.root, turn.id);
+    // (the tables' signs say how far each has got at the floor's moment; a table not open yet has none)
+    const asOf = { turns: 0, people: 0 };
+    ui.asOf = (sp) => { const c = floorMode.clock, n = floorMode.table(sp.index); if (!c || !n?.open) return null; asOf.turns = n.turns; asOf.people = countUpTo(c.tables[sp.index].firsts, floorMode.t); return asOf; };
+    floorShow(deepT ?? floorMode.start, true);
+    deepT = null;
+  } else {
+    audience = roomAudience; stage = roomStage; ROOM.R = R; ui.asOf = null; room.present = null; director.live = null; builtFloor = null;
+    hallAudience.group.visible = false; floorMode.leave();
+    interior.group.visible = true; interior.presence(0);
+    const lay = interior.layout(floor, roomYaw, deepTable);
+    spots = lay.spots;
+    room.stage = v2 ? stage : null; director.audience = v2 ? audience : null; audience.group.visible = v2;
+    crowd.set(v2 ? stage.trim(spots, lay.people) : lay.people);
+    if (!v2) { audience.set([], []); interior.galleries(0); }
+    room.reset(spots, interior.door);
+    mixer.exclude = null;
+    mixer.start(floor, spots);
+  }
   doorSlot = slot; tower.setDoor(slot, 0);
   ui.floorHeader({ rank: rank + 1, title: floor.story.title, id: floor.story.id, url: floor.story.url });
   const at = (r: number, h: number) => new THREE.Vector3(out.x * r, roomY + h, out.y * r);
@@ -598,12 +985,13 @@ async function enterFloor(sid: number, push = false, listen = false) {
     && spots.every((sp) => sp.bar || Math.hypot(sp.pos.x - q.x, sp.pos.z - q.z) > sp.radius + 1.5);
   // (search near where we come in: a little either side along the glass, a little further in)
   let stand = at(R - 1.7, EYE);
-  for (let k = 1; k < 30 && !free(stand); k++) {
+  if (building) { const q = floorMode.landing(out.x, out.y); stand = new THREE.Vector3(q.x, roomY + EYE, q.z); }
+  else for (let k = 1; k < 30 && !free(stand); k++) {
     const a = roomYaw + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 0.12, r = R - 1.5 - (k % 3) * 0.45;
     stand = new THREE.Vector3(Math.sin(a) * r, roomY + EYE, Math.cos(a) * r);
   }
   // (CROWD_V2) everyone else on the floor takes their place in the hall, clear of where you land and of the bar and lift
-  if (v2) stage.fill(floor, [...interior.keepClear(), { x: stand.x, z: stand.z, r: 1.35 }, { x: out.x * (R - 0.6), z: out.y * (R - 0.6), r: 1.2 }], roomY);
+  if (v2 && !building) stage.fill(floor, [...interior.keepClear(), { x: stand.x, z: stand.z, r: 1.35 }, { x: out.x * (R - 0.6), z: out.y * (R - 0.6), r: 1.2 }], roomY);
   rig.pos.copy(camera.position); rig.target.copy(cam.look);
   rig.matchLens(); rig.fovTarget = 56;                     // the flight starts with the lens as it is: no pop
   const far = camera.position.distanceTo(at(R + 14, 3.2));
@@ -613,7 +1001,10 @@ async function enterFloor(sid: number, push = false, listen = false) {
     [cam.look.clone(), new THREE.Vector3(0, roomY + 1.1, 0), new THREE.Vector3(0, roomY + 1.0, 0), centre, centre.clone(), centre.clone()],
     Math.max(2.6, Math.min(4.0, 2.0 + far / 26)), clock, () => {
       if (activeStory !== sid || mode !== 'floor') return;
-      walk.begin(stand, Math.atan2(-stand.x, -stand.z));     // facing into the room
+      // (FLOOR_TIMELINE) a building: on up into the wide shot, the whole floor below as its walls draw back; the camera
+      // then follows the narration down to whoever speaks first (a move of your own takes it back)
+      if (building) { overview(); follow = true; followSpot = null; }
+      else walk.begin(stand, Math.atan2(-stand.x, -stand.z));     // facing into the room
       // (CROWD_V2) the honest count: everyone who commented, the people the hall holds
       ui.card(v2 ? `Floor ${rank + 1} · ${floor.story.comments.toLocaleString('en-US')} comments${stage.people > 1 ? ` · ${stage.people.toLocaleString('en-US')} people` : ''}`
         : `Floor ${rank + 1} · ${floor.story.comments} comments`, floor.story.title);
@@ -622,7 +1013,13 @@ async function enterFloor(sid: number, push = false, listen = false) {
       chose = ui.chosen = false;
       metNoted.clear(); lampLine.clear();
       const first = bestSpot(false);
-      if (first && !first.bar) lampNow.set(first, [1, 0.42, 0.1, 1]);
+      if (first && !first.bar && !building) lampNow.set(first, [1, 0.42, 0.1, 1]);
+      // (FLOOR_TIMELINE) the floor's line along the bottom, and its narration from the moment shown (the first comment, or ?t=)
+      if (building && floorMode.clock) {
+        showFloorLine();
+        stage.instantUntil = clock + 1.2;
+        if (!recording || params.has('narrate')) floorVoice.start(floor, floorMode.clock, spots, Math.max(0, latest(floorMode.clock, floorMode.t)));
+      }
       const empty = !spots.some((x) => !x.bar), remarks = spots.some((x) => x.bar);
       // nobody here yet (a story that's just gone up): say so, and lean back moves on down the tower. Otherwise, the
       // first time only: on a phone the ghost stick teaches walking and, a few seconds in, one line says how to go
@@ -633,12 +1030,19 @@ async function enterFloor(sid: number, push = false, listen = false) {
       else ui.hint('');
       if (empty && leanBack) after(3, () => { if (mode === 'floor' && leanBack && sync.head) { const o = sync.head.tower; enterFloor(o[(o.indexOf(activeStory) + 1) % Math.min(o.length, 10)], true); } });
       if (touch && !localStorage.getItem('tohn-stick')) walk.ghost(true);
-      if (leanBack || deepLinked) after(deepLinked ? 1.2 : 2.4, () => { if (mode === 'floor' && !chose) sit(bestSpot()); deepLinked = false; });
+      // (a building: lean back is the camera following the floor; a shared moment opens the floor at it, on foot; only
+      // a link that names a table sits you down)
+      if ((leanBack || deepLinked) && (!building || deepTable)) after(deepLinked ? 1.2 : 2.4, () => { if (mode === 'floor' && !chose) sit(bestSpot()); deepLinked = false; });
+      else deepLinked = false;
     });
   audio.sfx('whoosh');
   audio.setMode('floor');
   sync.watch(sid, (f) => {
     activeFloor = f;
+    // (FLOOR_TIMELINE) a building keeps the floor it was built for: voices that land reach its comments (the narration
+    // and the tables play them); comments, people and tables that arrive meanwhile join the building the next time
+    // you come in (the clock and the plan are made once per visit: never under your feet)
+    if (building) { floorVoices(f); return; }
     // the room keeps up with the floor (new turns, audio that just landed): a table you sit at next starts current
     for (const sp of spots) {
       if (sp.bar && sp.index < 0) continue;
@@ -671,7 +1075,7 @@ async function enterFloor(sid: number, push = false, listen = false) {
     }
     if (mode === 'table' && !params.has('freeze')) {
       director.refresh(f);     // ?freeze: a take that live HN can't rewrite mid-shot
-      if (line && lineSpot && lineSpot === director.spot) { const c = conversation(lineSpot); line = c.line; lineOthers = c.others; audience.joins(c.keys); scrubber.refresh(line, lineOthers); }
+      if (line && lineSpot && lineSpot === director.spot) { const c = conversation(lineSpot); line = c.line; lineOthers = c.others; audience.joins(c.keys); scrubber.refresh(lineModel(line, lineOthers)); }
     }
     else if (mode === 'floor') ui.tableLabels(spots, roomY, walkToTable, bestSpot(false));
     if (mode === 'floor') prewarm(sid, 2);              // still standing here a minute on: keep the first words coming
@@ -710,7 +1114,7 @@ function standAt(sp: TableSpot, from: THREE.Vector3) {
   away.normalize();
   const p = new THREE.Vector3(sp.pos.x + away.x * (sp.radius + 1.05), 0, sp.pos.z + away.z * (sp.radius + 1.05));
   const r = Math.hypot(p.x, p.z);
-  if (r > R - 0.65) p.multiplyScalar((R - 0.65) / r);
+  if (r > ROOM.R - 0.65) p.multiplyScalar((ROOM.R - 0.65) / r);
   return p;
 }
 
@@ -719,9 +1123,21 @@ function sit(s: TableSpot | undefined, push = false) {
   const fromFloor = mode === 'floor';
   chose = true;
   // always the table as the floor has it now (its turns and audio move on while we stand here)
-  if (!s.bar) {
+  if (!s.bar && !building) {
     const k = activeFloor.tables.findIndex((t) => t.root === s!.table.root);
     if (k >= 0) { s.table = activeFloor.tables[k]; s.index = k; }
+  }
+  // (FLOOR_TIMELINE) a building's table plays its comments in the order they were written (the room keeps one clock:
+  // the floor's), from where the floor has got to; whoever is in its chairs now becomes an actor (the close-ups)
+  let floorFrom = -1;
+  if (building && !s.bar && floorMode.clock) {
+    const c = floorMode.clock, tb = c.tables[s.index], byId = new Map(s.table.turns.map((u) => [u.id, u]));
+    if (mode === 'table' && director.spot && director.spot !== s) unseatActors(director.spot);
+    s.table = { ...s.table, turns: Array.from(tb.said, (i) => byId.get(c.comments[i].id)!).filter(Boolean) };
+    const i = seatFrom(c, s.index, floorMode.t);
+    floorFrom = Math.max(0, i >= 0 ? s.table.turns.findIndex((u) => u.id === c.comments[i].id) : 0);
+    floorVoice.stop(); floorBefore = null; seatLead = floorMode.t; follow = false; overhead = false;
+    seatActors(s);
   }
   if (s.bar && !s.tableOf) {
     // the bar plays its one-liners in turn, each from its own table
@@ -734,7 +1150,7 @@ function sit(s: TableSpot | undefined, push = false) {
   // the table we leave (next table) goes back to the room where we left it; this one comes to the director from
   // where the room had got to: the conversation you were overhearing goes on
   if (mode === 'table' && director.spot && !director.spot.bar && director.spot !== s) mixer.handBack(director.spot, director.said);
-  const from = s.bar ? 0 : mixer.take(s);
+  const from = s.bar ? 0 : floorFrom >= 0 ? floorFrom : mixer.take(s);
   mixer.exclude = s;
   if (walk.enabled) { rig.pos.copy(camera.position); rig.target.copy(walk.look); rig.matchLens(); walk.disable(); }
   walk.ghost(false);
@@ -748,11 +1164,13 @@ function sit(s: TableSpot | undefined, push = false) {
   media(activeFloor.story.title, s.table.turns[0]?.by);
   // (short: it shares the bottom with the seat's controls)
   ui.hint(touch ? '' : 'Esc stand up · Space pause · N next · R reply');
-  director.others = spots.filter((x) => !x.bar && x !== s).map((x) => ({ pos: x.pos, turns: x.table.turns }));
+  // (a building has no murmur from other tables: it would be a comment from another moment)
+  director.others = building ? [] : spots.filter((x) => !x.bar && x !== s).map((x) => ({ pos: x.pos, turns: x.table.turns }));
   director.jumpTo = deepFrom; deepFrom = 0;
   director.skipIds = new Set((params.get('skip') ?? '').split(',').filter(Boolean).map(Number));
   director.start(activeFloor, s, roomY, clock, from);
-  if (deepT !== null && timelineOn() && !s.bar) {             // a moment shared: straight there
+  if (building) showFloorLine();
+  else if (deepT !== null && timelineOn() && !s.bar) {             // a moment shared: straight there
     const k = turnAt(lineOf(s.table.turns), deepT);
     deepT = null;
     showLine(s);
@@ -785,10 +1203,13 @@ function standUp() {
   hideLine();
   const sp = director.spot, said = director.said;
   director.stop(); setDof(false);
-  if (sp && !sp.bar) mixer.handBack(sp, said);
+  if (building) { if (sp) unseatActors(sp); }
+  else if (sp && !sp.bar) mixer.handBack(sp, said);
   mixer.exclude = null;
   mode = 'floor'; ui.mode('floor'); audio.setMode('floor'); awake();
   ui.hint('');
+  // (FLOOR_TIMELINE) on your feet: the floor's line again (no table lit on it), and the floor's narration from here
+  if (building && builtFloor && floorMode.clock) { sweepActors(); showFloorLine(); floorVoice.start(builtFloor, floorMode.clock, spots, Math.max(0, latest(floorMode.clock, floorMode.t))); }
   const c = sp?.pos ?? new THREE.Vector3(0, 0, 0);
   const p = standAt(sp ?? { pos: c, radius: 0.6 } as TableSpot, camera.position);
   const stand = new THREE.Vector3(p.x, roomY + EYE, p.z), look = new THREE.Vector3(c.x, roomY + 1.0, c.z);
@@ -805,6 +1226,7 @@ function standUp() {
  *  and the glass closes behind you before the room goes (frame() clears it once you're well out). */
 function leaveFloor() {
   hideLine();
+  if (building) { hideFloorLine(); floorVoice.stop(); follow = false; overhead = false; if (director.spot) unseatActors(director.spot); }
   const look0 = walk.enabled ? walk.look.clone() : rig.target.clone();
   director.stop(); setDof(false); mixer.exclude = null;
   nav(location.pathname, false);
@@ -850,6 +1272,7 @@ addEventListener('keydown', (e) => {
   if (reply?.open) { if (e.key === 'Escape') reply.escape(); return; }      // typing a reply never drives the room
   if (e.key === 'Escape') { if (walk.locked || performance.now() - walk.unlockedAt < 500) return; if (mode === 'table') stepOut(1); else if (mode === 'floor') { leanBack = false; stepOut(1); } }
   else if (e.key === ' ' && mode === 'table') { e.preventDefault(); director.togglePause(); }
+  else if (e.key === ' ' && mode === 'floor' && building && !(e.target as HTMLElement)?.closest?.('button, input, textarea')) { e.preventDefault(); floorVoice.togglePause(); }
   else if (line && mode === 'table' && /^(ArrowLeft|ArrowRight|Home|End)$/.test(e.key) && !(e.target as HTMLElement)?.closest?.('[role=slider], input, textarea')) {
     // (seated, the arrows step through the conversation: one comment, ten with Shift; Home and End: its ends)
     e.preventDefault();
@@ -991,8 +1414,16 @@ async function warmShaders() {
   // (CROWD_V2: the audience and the galleries too; three skips what isn't visible)
   const v2 = crowdV2(), aud = audience.group.visible, gal = v2 ? interior.warmGalleries() : null;
   if (v2) { audience.group.visible = true; audience.group.position.y = -400; }
+  // (FLOOR_TIMELINE: the building's hall and its audience as well, so the first flight into a building never stalls)
+  const fl = floorOn(), hallWas = hallView.group.visible, hallAud = hallAudience.group.visible, scraps = fl ? hallView.warm() : null;
+  if (fl) {
+    hallView.group.add(scraps!); hallView.group.visible = true; hallView.group.position.y = -400;
+    hallAudience.group.visible = true; hallAudience.group.position.y = -400;
+  }
   try { await renderer.compileAsync(scene, camera); } catch { /* then they compile on first use */ }
   gal?.removeFromParent();
+  scraps?.removeFromParent();
+  if (fl && !building) { hallView.group.visible = hallWas; hallAudience.group.visible = hallAud; }
   if (v2 && !room.stage) { audience.group.visible = aud; }
   if (mode === 'tower' && doorSlot < 0) {
     crowd.set([]); interior.group.visible = vis;
@@ -1008,7 +1439,10 @@ function media(title: string, by?: string) {
 }
 if (navigator.mediaSession && !recording) {
   const ms = navigator.mediaSession;
-  const toggle = (want: boolean) => { if (mode === 'table' && director.paused === want) { director.togglePause(); $id('pause').textContent = director.paused ? 'Play' : 'Pause'; } };
+  const toggle = (want: boolean) => {
+    if (mode === 'table' && director.paused === want) { director.togglePause(); $id('pause').textContent = director.paused ? 'Play' : 'Pause'; }
+    else if (mode === 'floor' && building && floorVoice.playing && floorVoice.paused === want) floorVoice.togglePause();
+  };
   ms.setActionHandler('play', () => toggle(true));
   ms.setActionHandler('pause', () => toggle(false));
   try { ms.setActionHandler('nexttrack', () => { if (mode === 'table') nextTable(); }); } catch { /* not offered */ }
@@ -1053,12 +1487,14 @@ let lastNear: TableSpot | null = null;
 /** On foot, the table you're with is subtitled (as the one you sit at is): you can follow it, and see how it's said. */
 let subLine: object | null = null;
 function walkSubtitles() {
-  const l = mixer.focus ? mixer.speaking(mixer.focus) : null;
+  const fl = building ? floorVoice.current() : null;
+  const l = building ? fl : mixer.focus ? mixer.speaking(mixer.focus) : null;
   if (l === subLine) return;
   subLine = l;
   if (!l) { ui.subtitle(null); return; }
   const look = crowd.people[l.who]?.look;
-  const to = l.clip.who === l.turn.by && l.turn.replyTo ? mixer.focus!.table.turns.find((u) => u.id === l.turn.replyTo)?.by : undefined;
+  const turnsHere = fl ? fl.spot.table.turns : mixer.focus!.table.turns;
+  const to = l.clip.who === l.turn.by && l.turn.replyTo ? turnsHere.find((u) => u.id === l.turn.replyTo)?.by : undefined;
   const name = l.clip.who, turn = l.turn;
   ui.subtitle({ name, to, text: l.clip.t, color: look ? `#${look.outfit.clone().lerp(new THREE.Color(1, 1, 1), 0.45).getHexString()}` : '#ff9a3c', emotion: l.side.emotion, stance: l.side.stance, intensity: l.side.intensity,
     you: !!you.me && name === you.me, onWho: () => showProfile(name, turn.by === name ? turn.id : undefined) });
@@ -1131,26 +1567,34 @@ function frame(dt: number, draw = true) {
   // the floor we fly into (or out of): its glass clears as we come close; inside, there is no slab at all; well
   // out again, behind closed glass, the room goes
   if (doorSlot >= 0) {
-    const p = camera.position, rad = Math.hypot(p.x, p.z) - R;
-    // inside: within the glass, and between this floor and the top of its hall (a floor with galleries rises through
-    // the floors above it)
-    const top = interior.galleryCount ? interior.hallTop() : FLOOR_H * 0.8 + 1.2;
-    const inside = rad < -0.1 && p.y > roomY + 1.2 - FLOOR_H * 0.8 && p.y < roomY + top;
+    const p = camera.position, cr = Math.hypot(p.x, p.z), rad = cr - R;
+    // (FLOOR_TIMELINE) leaving a building: its walls close in behind you, so you're never outside what's drawn of it
+    if (building && mode === 'tower') hallView.uClip.value = Math.max(R, Math.min(hallView.uClip.value, cr + 1.5));
+    // inside: within the glass (a building's, wider than the tower), and between this floor and the top of its hall (a
+    // floor with galleries rises through the floors above it; so does a building's high ceiling)
+    const wall = building ? Math.max(R, hallView.uClip.value) : R;
+    const top = building ? hallView.height + 0.6 : interior.galleryCount ? interior.hallTop() : FLOOR_H * 0.8 + 1.2;
+    const inside = cr - wall < -0.1 && p.y > roomY + 1.2 - FLOOR_H * 0.8 && p.y < roomY + top;
     if (audience.u.levels.value !== (inside ? 99 : 0)) { audience.u.levels.value = inside ? 99 : 0; audience.resort(); }
     interior.hallShown(inside);
-    if (inside) { tower.hidden = doorSlot; tower.inside = interior.galleryCount > 0; interior.presence(1); }
+    // (through the glass and in: the building's walls draw back to where the floor needs them)
+    if (building && inside && !revealed && mode === 'floor') { revealed = true; hallView.open(clock, reducedMotion ? 0 : 1.8); }
+    if (inside) { tower.hidden = doorSlot; tower.inside = building || interior.galleryCount > 0; interior.presence(1); hallView.presence = 1; }
     else {
       tower.hidden = -1; tower.inside = false;
       const k = Math.max(0, Math.min(1, (9 - rad) / 7.5));
       tower.setDoor(doorSlot, k * k * (3 - 2 * k));
       interior.presence(Math.max(0, Math.min(1, (12 - rad) / 9)));
+      hallView.presence = Math.max(0, Math.min(1, (12 - rad) / 9));
       if (mode === 'tower' && rad > 11) {
         tower.setDoor(-1); doorSlot = -1;
         interior.group.visible = false; crowd.set([]); mixer.stop(); spots = [];
         audience.set([], []); interior.galleries(0); room.stage = null; director.audience = null;
+        if (building) { floorMode.leave(); building = false; hallAudience.group.visible = false; audience = roomAudience; stage = roomStage; ROOM.R = R; room.present = null; ui.asOf = null; }
       }
     }
   }
+  if (building) costed('tables', () => floorMode.frame(clock, dt));
   // on foot beside a table: offer to sit down there
   if (mode === 'floor' && walk.enabled) {
     const here = nearTable();
@@ -1158,25 +1602,39 @@ function frame(dt: number, draw = true) {
     lastNear = here;
     const t = walk.walking ? null : here;
     ui.sitDown(t ? { name: t.table.turns[0]?.by ?? '', go: () => sit(t, true), key: !touch } : null);
-    ui.signs(walk.pos, mixer.focus, (s) => mixer.speaking(s));
+    if (building) { const l = floorVoice.current(); ui.signs(walk.pos, null, (s) => (l && l.spot === s ? l : null)); }
+    else ui.signs(walk.pos, mixer.focus, (s) => mixer.speaking(s));
     walkSubtitles();
-    map.draw(clock, spots, walk.pos, walk.yaw, { focus: mixer.focus, talking: (s) => !!mixer.speaking(s), people: crowd.people, door: interior.door, lift: uLift.value });
+    if (building) floorMap(); else map.draw(clock, spots, walk.pos, walk.yaw, { focus: mixer.focus, talking: (s) => !!mixer.speaking(s), people: crowd.people, door: interior.door, lift: uLift.value });
     // first person at a desk: what the dot in the middle is on, and what a click would do
     if (walk.locked && ++aimTick % 6 === 0) {
       const a = aimAt(innerWidth / 2, innerHeight / 2);
       ui.aim(nameAt(a) ? `${nameAt(a)} · click to meet them${canReply(nameAt(a)!) ? ' · R to reply' : ''}` : a.kind === 'table' ? (nearTable() === a.spot ? 'Click or E to sit down' : 'Click to walk over') : '');
     }
-  } else if (mode === 'floor') ui.sitDown(null);
+  } else if (mode === 'floor') {
+    ui.sitDown(null);
+    if (building) { walkSubtitles(); costed('map', floorMap); const l = floorVoice.current(); mapYou.set(camera.position.x, 0, camera.position.z); costed('signs', () => ui.signs(mapYou, null, (s) => (l && l.spot === s ? l : null))); }
+  }
   neonTick(clock);
-  if ((mode === 'floor' || mode === 'table') && ++lampTick % 4 === 0) lampMoods(dt * 4);
+  if ((mode === 'floor' || mode === 'table') && !building && ++lampTick % 4 === 0) lampMoods(dt * 4);
   director.update(clock, dt);
   if (line) lineFrame(dt);
+  if (building) {
+    costed('actors', floorActors);
+    followFrame();
+    costed('voice', () => floorVoice.update(audio.now(), dt));
+    if (!scrubber.scrubbing && !scrubber.holding && !floorBefore) {
+      if (mode === 'floor' && floorVoice.playing) floorShow(floorVoice.time());
+      else if (mode === 'table') seatedFrame();
+    }
+  }
   crowd.update(dt);
-  if (room.stage && interior.group.visible) {
+  if (room.stage && (interior.group.visible || building)) {
     stage.tidy(audio.now());
     // on foot, heads turn to whoever is speaking at the table you're with (seated, the director says who)
-    if (mode === 'floor' && mixer.focus) { const l = mixer.speaking(mixer.focus); if (l && l.who >= 0) audience.focus(crowd.headPos(l.who, focusAt), clock, l.who); }
-    audience.update(camera, clock, dt);
+    if (mode === 'floor' && building) { const l = floorVoice.current(); if (l && l.who >= 0) audience.focus(crowd.headPos(l.who, focusAt), clock, l.who); }
+    else if (mode === 'floor' && mixer.focus) { const l = mixer.speaking(mixer.focus); if (l && l.who >= 0) audience.focus(crowd.headPos(l.who, focusAt), clock, l.who); }
+    if (building) costed('audience', () => audience.update(camera, clock, dt)); else audience.update(camera, clock, dt);
   }
   ui.update();
   if (dofOn) { uFocus.value = camera.position.distanceTo(rig.target); uBokeh.value = 2.4; }
@@ -1314,6 +1772,46 @@ if (recording) {
       people: crowd.people.map((p, i) => ({ name: p.name, head: crowd.headPos(i).toArray(), seated: p.pose.seated, stand: p.expr.stand, facing: p.pose.facing, turn: p.expr.turn, yaw: p.expr.yaw, at: director.spot?.seats.some((s) => s.name === p.name) })),
     }),
     swap: () => { const h = sync.head!; const t = h.tower.slice(); [t[2], t[7]] = [t[7], t[2]]; tower.setOrder(t, h.stories, h.act, clock, camDir2(), h.people, h.heat); },
+    /** (FLOOR_TIMELINE) the building: is this room one, how big, the moment shown, and what's in it then */
+    floor: () => {
+      const c = floorMode.clock, k = floorMode.latest;
+      return { on: building, webgpu: !!(renderer as unknown as { backend?: { isWebGPUBackend?: boolean } }).backend?.isWebGPUBackend, R: +ROOM.R.toFixed(2), height: +hallView.height.toFixed(2), clip: +hallView.uClip.value.toFixed(2), revealed, t: floorMode.t, end: floorMode.end, u: floorMode.u(),
+        tables: spots.length, people: c?.people.length ?? 0, here: c ? Array.from({ length: c.people.length }, (_, i) => floorMode.here(i)).filter(Boolean).length : 0,
+        drawn: hallAudience.drawn(), said: k, by: c && k >= 0 ? c.comments[k].by : null, playing: floorPlaying(), mode, line: !!floorLine, band: floorLine?.band() ?? null,
+        valuetext: document.querySelector('#timeline .tl-knob')?.getAttribute('aria-valuetext') ?? '', flipped: floorMode.flipped, looked: floorMode.looked };
+    },
+    /** (FLOOR_TIMELINE) what the building's own per-frame work costs, by part (ms, mean over the last 120 frames) */
+    floorCost: () => Object.fromEntries(Object.entries(floorCosts).map(([k, v]) => [k, +(v.reduce((a, b) => a + b, 0) / Math.max(1, v.length)).toFixed(4)])),
+    /** (FLOOR_TIMELINE) the room to moment t, as a drag would put it there */
+    floorAt: (t: number) => floorShow(t, true),
+    /**
+     * (FLOOR_TIMELINE) everything the room shows at its moment, as one string to hash: who the audience draws as in the
+     * room, every table (opened, its comments, its latest, its lamp settled), the floor's latest comment and the
+     * slider's words. `fresh`: the same, worked out from scratch for the moment shown (no history): a path through the
+     * line that left anything behind makes the two differ.
+     */
+    floorHash: (fresh = false, settled = false) => {
+      const c = floorMode.clock;
+      if (!c) return '';
+      const t = floorMode.t, parts: string[] = [`t${t.toFixed(3)}`];
+      if (fresh) {
+        const here = c.people.map((p) => (p.enter <= t && t < p.leave ? 1 : 0)).join('');
+        parts.push(here);
+        for (let k = 0; k < c.tables.length; k++) { const n = tableAt(c, k, t); parts.push(`${n.open ? 1 : 0}:${n.turns}:${n.last}${settled ? `:${n.open ? 1 : 0}` : ''}`); }
+        parts.push(`said${latest(c, t)}`);
+      } else {
+        parts.push(Array.from({ length: c.people.length }, (_, i) => (hallAudience.present(i) || hallAudience.isAway(i) ? 1 : 0)).join(''));
+        for (let k = 0; k < c.tables.length; k++) { const n = floorMode.table(k), l = floorMode.look(k); parts.push(`${n.open ? 1 : 0}:${n.turns}:${n.last}${settled ? `:${Math.round(l.lit)}` : ''}`); }
+        parts.push(`said${floorMode.latest}`);
+      }
+      return parts.join('|');
+    },
+    /** (FLOOR_TIMELINE) the line, as numbers: where a moment is on it, and the moment at a point of it */
+    floorU: (t: number) => (floorMode.clock ? uOf(floorMode.clock, t) : 0),
+    floorT: (u: number) => (floorMode.clock ? tOf(floorMode.clock, u) : 0),
+    /** (FLOOR_TIMELINE) the floor's comments in the order written (for tests: their moments, tables, writers) */
+    floorComments: () => floorMode.clock?.comments.map((x) => ({ i: x.i, id: x.id, at: x.at, table: x.table, by: x.by })) ?? [],
+    floorSpeaking: () => { const l = floorVoice.current(); return l ? { by: l.turn.by, id: l.turn.id, table: l.spot.index } : null; },
   };
   document.getElementById('splash')!.classList.remove('show');   // recordings start inside
   document.body.classList.remove('door');
@@ -1372,7 +1870,7 @@ if (recording) {
   // keep the conversation going when the tab is hidden (rAF stops; a timer keeps scheduling audio)
   let bg = 0;
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && mode === 'table') bg = window.setInterval(() => frame(0.25, false), 250);
+    if (document.hidden && (mode === 'table' || (mode === 'floor' && building && floorVoice.playing))) bg = window.setInterval(() => frame(0.25, false), 250);
     else { clearInterval(bg); last = performance.now(); }
   });
 }

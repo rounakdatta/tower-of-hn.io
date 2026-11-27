@@ -16,7 +16,7 @@ import { uTime } from './world.ts';
 import type { Place } from './hall.ts';
 
 /** people per texture row; texels per person */
-const ROW = 64, TEXELS = 6;
+const ROW = 64;
 const STAND = 0.54 * 2.5;            // a standing body's height (people.ts: 0.54 m lathe, STAND_TALL 2.5)
 /** levels of detail: near (under MID m), far, distant (past FAR m) */
 const MID = 6.5, FAR = 15;
@@ -52,8 +52,20 @@ function headGeo(w: number, h: number) { const g = new THREE.SphereGeometry(0.2,
 /** where someone without a place yet is (they're away: never drawn, never on the ground) */
 const NOWHERE: Place = { x: 0, z: 0, y: -100, level: -1, facing: 0 };
 
+/** FLOOR_TIMELINE's audience (building.ts): everyone on the floor, seated at their tables or standing round them; who
+ *  is in the room is the floor's clock's (a flag per person, flipped as the moment moves), with a fade in the scene's
+ *  own time so a jump of hours is a ripple, never a pop; and only inside the hall's clip (the walls drawing back) */
+// (the hall's clip radius, a uniform node from hallview.ts)
+export interface BuildingOpts { clip: ReturnType<typeof uniform<number>> }
+/** a person's fade in or out of the room (s) */
+const FADE = 0.45;
+
 export class Audience {
   group = new THREE.Group();
+  /** texels per person: 6, and a 7th for the building (seated, ripple delay) */
+  private readonly tx: number;
+  private readonly building: BuildingOpts | null;
+  private off(i: number) { return ((Math.floor(i / ROW) * ROW * this.tx) + (i % ROW) * this.tx) * 4; }
   /** how many people the textures hold */
   n = 0;
   names: string[] = [];
@@ -91,7 +103,8 @@ export class Audience {
   /** everyone on the ground (the standing room): what walkers and you, on foot, keep clear of */
   ground: number[] = [];
 
-  constructor() {
+  constructor(building: BuildingOpts | null = null) {
+    this.building = building; this.tx = building ? 7 : 6;
     const lods: [number, number, number, number][] = [[16, 2, 20, 14], [10, 2, 12, 9], [6, 1, 8, 6]];
     const bodyMat = this.bodyMaterial(), headMat = this.headMaterial();
     for (const [seg, detail, hw, hh] of lods) {
@@ -109,7 +122,7 @@ export class Audience {
   /** texel k of person `pid`, in the vertex shader */
   private T(k: number) {
     const pid = int(attribute('pid', 'float'));
-    return textureLoad(this.u.data, ivec2(pid.mod(ROW).mul(TEXELS).add(k), pid.div(ROW)));
+    return textureLoad(this.u.data, ivec2(pid.mod(ROW).mul(this.tx).add(k), pid.div(ROW)));
   }
   private L() {
     const pid = int(attribute('pid', 'float'));
@@ -124,17 +137,29 @@ export class Audience {
     const P0 = this.T(0), P1 = this.T(1), P2 = this.T(2), P3 = this.T(3), live = this.L();
     const pos = P0.xyz, facing = P0.w, phase = P1.w, height = P2.w, width = P3.w;
     // here: joined by the playhead (a ripple in join order as it moves), and not standing at a table right now
-    const joined = select(live.x.lessThan(0), float(1), smoothstep(live.x.sub(0.5), live.x.add(0.5), this.u.at));
+    // (the building: in the room at the floor's moment, faded in or out since the flag last flipped)
+    const flipK = clamp(uTime.sub(live.w).div(FADE), 0, 1);
+    const joined = this.building ? select(live.x.greaterThan(0.5), flipK, float(1).sub(flipK))
+      : select(live.x.lessThan(0), float(1), smoothstep(live.x.sub(0.5), live.x.add(0.5), this.u.at));
     const awayK = clamp(uTime.sub(live.z).div(0.35), 0, 1);
     const level = this.T(5).w;
-    const here = joined.mul(select(live.y.greaterThan(0.5), float(1).sub(awayK), awayK.max(step(live.z, float(-50))))).mul(step(level, this.u.levels));
+    let here = joined.mul(select(live.y.greaterThan(0.5), float(1).sub(awayK), awayK.max(step(live.z, float(-50))))).mul(step(level, this.u.levels));
+    if (this.building) here = here.mul(step(length(vec2(pos.x, pos.z)), float(this.building.clip)));
+    const sit = this.building ? this.T(6).x : float(0);
     // a reaction travels out from where it happened, 4 m a second, each person a little in their own time
     const R = this.u.react, d = length(vec2(pos.x.sub(R.x), pos.z.sub(R.y)));
     const tl = uTime.sub(R.z).sub(d.div(4)).sub(phase.mul(0.3));
     const env = smoothstep(0, 0.25, tl).mul(float(1).sub(smoothstep(1.1, 2.1, tl))).mul(this.u.reactAmp);
     const kind = R.w;
     const is = (k: number) => step(abs(kind.sub(k)), float(0.5)).mul(env);
-    return { pos, facing, phase, height, width, here, tl, nod: is(REACT.nod), laugh: is(REACT.laugh), gasp: is(REACT.gasp), lean: is(REACT.lean), P1, P2, P3 };
+    return { pos, facing, phase, height, width, here, sit, tl, nod: is(REACT.nod), laugh: is(REACT.laugh), gasp: is(REACT.gasp), lean: is(REACT.lean), P1, P2, P3 };
+  }
+
+  /** arriving or leaving: they grow from a little smaller as they fade in (the building, under reduced motion: no
+   *  growing, only the fade) */
+  private grow(here: ReturnType<Audience['person']>['here']) {
+    const g = mix(float(0.8), float(1), here);
+    return (this.building ? mix(float(1), g, this.u.motion) : g).mul(step(0.002, here));
   }
 
   /** how far a body tips (radians, about its feet): leaning in, rocked back by a gasp, shaken by a laugh */
@@ -151,6 +176,7 @@ export class Audience {
       const local = positionGeometry.toVar();
       const breathe = sin(uTime.mul(1.6).add(p.phase.mul(6.28))).mul(0.008);
       local.assign(local.mul(vec3(p.width.mul(breathe.add(1)), p.height.mul(breathe.mul(0.6).add(1)), p.width.mul(breathe.add(1)))));
+      if (this.building) local.y.assign(local.y.mul(mix(float(1), float(1 / 2.5), p.sit)).add(p.sit.mul(0.42)));
       // a slow sway and a shift of weight; leaning in, or back, with the room
       const sway = this.swayOf(p), pitch = this.pitchOf(p);
       const cy = cos(pitch), sy = sin(pitch);
@@ -159,7 +185,7 @@ export class Audience {
       const x2 = local.x.mul(ca).add(z1.mul(sa)), z2 = local.x.negate().mul(sa).add(z1.mul(ca));
       const bounce = abs(sin(p.tl.mul(13))).mul(0.03).mul(p.laugh).mul(this.u.motion);
       // arriving or leaving: they grow from a little smaller as they fade in (never a pop)
-      const s = mix(float(0.8), float(1), p.here).mul(step(0.002, p.here));
+      const s = this.grow(p.here);
       const n = normalGeometry, ny = n.y.mul(cy).sub(n.z.mul(sy)), nz = n.y.mul(sy).add(n.z.mul(cy));
       normalLocal.assign(vec3(n.x.mul(ca).add(nz.mul(sa)), ny, n.x.negate().mul(sa).add(nz.mul(ca))));
       vHere.assign(p.here);
@@ -190,7 +216,7 @@ export class Audience {
       const local = positionGeometry.add(n.mul(lift)).toVar();
       // where the head is: on top of the body, as the body sways and tips (leaning in, rocked by a gasp)
       const sway = this.swayOf(p), bp = this.pitchOf(p), ba = p.facing.add(sway);
-      const top = float(STAND).mul(p.height).add(0.17), ty = top.mul(cos(bp)), tz = top.mul(sin(bp));
+      const top = (this.building ? mix(float(STAND).mul(p.height), p.height.mul(0.54).add(0.42), p.sit) : float(STAND).mul(p.height)).add(0.17), ty = top.mul(cos(bp)), tz = top.mul(sin(bp));
       const headAt = p.pos.add(vec3(tz.mul(sin(ba)), ty, tz.mul(cos(ba))));
       // where they look: whoever is speaking (from A to B, a beat later the further they are, each in their own time);
       // one in eight are elsewhere, as people in a crowd are
@@ -198,13 +224,17 @@ export class Audience {
       const w = smoothstep(this.u.focusT.add(lag), this.u.focusT.add(lag).add(0.9), uTime);
       const F = mix(this.u.focusA, this.u.focusB, w);
       const to = F.sub(headAt);
+      // (the building: a hall fifty metres across doesn't all turn to one voice; the nearer tables do, the far ones keep
+      // to their own)
+      const heed = this.building ? smoothstep(float(17), float(7), length(vec2(to.x, to.z))) : null;
       const yawRaw = atan(to.x, to.z).sub(p.facing.add(sway));
       const yawW = atan(sin(yawRaw), cos(yawRaw));
       const elsewhere = step(p.phase, float(0.125));
-      const yaw = mix(clamp(yawW, -1.05, 1.05), sin(uTime.mul(0.2).add(p.phase.mul(40))).mul(0.6), elsewhere);
+      const turned = clamp(yawW, -1.05, 1.05);
+      const yaw = mix(heed ? turned.mul(heed) : turned, sin(uTime.mul(0.2).add(p.phase.mul(40))).mul(0.6), elsewhere);
       const pitchTo = atan(to.y.negate(), length(vec2(to.x, to.z))).clamp(-0.45, 0.75);
       const nod = sin(uTime.mul(0.9).add(p.phase.mul(10.7))).mul(0.03).add(sin(p.tl.mul(8)).mul(0.12).mul(p.nod)).sub(p.laugh.mul(0.14)).sub(p.gasp.mul(0.08)).mul(this.u.motion);
-      const pitch = mix(pitchTo, float(0.05), elsewhere).add(nod);
+      const pitch = mix(heed ? pitchTo.mul(heed) : pitchTo, float(0.05), elsewhere).add(nod);
       const roll = sin(uTime.mul(0.7).add(p.phase.mul(9))).mul(0.03).mul(this.u.motion);
       // the head's rotation: roll, then pitch (nodding), then yaw (body facing + sway + where they look)
       const cr = cos(roll), sr = sin(roll), cp = cos(pitch), sp = sin(pitch), a = p.facing.add(sway).add(yaw), ca = cos(a), sa = sin(a);
@@ -214,7 +244,7 @@ export class Audience {
         return vec3(x0.mul(ca).add(z1.mul(sa)), y1, x0.negate().mul(sa).add(z1.mul(ca)));
       };
       const bounce = abs(sin(p.tl.mul(13))).mul(0.039).mul(p.laugh).mul(this.u.motion);
-      const s = mix(float(0.8), float(1), p.here).mul(step(0.002, p.here));
+      const s = this.grow(p.here);
       normalLocal.assign(rot(normalGeometry));
       vHere.assign(p.here);
       vSkin.assign(p.P1); vHair.assign(vec4(p.P3.xyz, style)); vFace.assign(P4);
@@ -279,18 +309,19 @@ export class Audience {
     this.n = n; this.names = names.slice();
     this.places = places;
     const rows = Math.max(1, Math.ceil(n / ROW));
-    this.data = new Float32Array(ROW * TEXELS * rows * 4);
+    this.data = new Float32Array(ROW * this.tx * rows * 4);
     this.live = new Float32Array(ROW * rows * 4);
     this.grid.clear(); this.ground = [];
     for (let i = 0; i < n; i++) {
-      const pl = this.places[i], lk: Look = lookOf(names[i]), o = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;
+      const pl = this.places[i], lk: Look = lookOf(names[i]), o = this.off(i);
       this.data.set([pl.x, pl.y, pl.z, pl.facing, lk.skin.r, lk.skin.g, lk.skin.b, lk.phase, lk.outfit.r, lk.outfit.g, lk.outfit.b, lk.height,
         lk.hair.r, lk.hair.g, lk.hair.b, lk.width, lk.eye, lk.gap, lk.brow, lk.mouth, lk.style, lk.glasses ? 1 : 0, lk.beard ? 1 : 0, pl.level], o);
-      this.live.set([-1, 0, -100, 0], i * 4);
+      if (this.tx > 6) this.data.set([pl.sit ? 1 : 0, 0, 0, 0], o + 24);
+      this.live.set(this.building ? [0, 0, -100, -100] : [-1, 0, -100, 0], i * 4);
       if (pl.level === 0) { const k = cellKey(pl.x, pl.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); this.ground.push(i); }
     }
     this.tex.dispose(); this.liveTex.dispose();
-    this.tex = new THREE.DataTexture(this.data, ROW * TEXELS, rows, THREE.RGBAFormat, THREE.FloatType);
+    this.tex = new THREE.DataTexture(this.data, ROW * this.tx, rows, THREE.RGBAFormat, THREE.FloatType);
     this.liveTex = new THREE.DataTexture(this.live, ROW, rows, THREE.RGBAFormat, THREE.FloatType);
     this.tex.needsUpdate = this.liveTex.needsUpdate = true;
     this.u.data.value = this.tex; this.u.live.value = this.liveTex;
@@ -309,16 +340,17 @@ export class Audience {
    *  row when they're full (64 people), so this is cheap. Their index. */
   append(name: string, place: Place): number {
     const i = this.n, rows = Math.ceil((i + 1) / ROW);
-    if (rows * ROW * TEXELS * 4 > this.data.length) {
+    if (rows * ROW * this.tx * 4 > this.data.length) {
       const names = this.names.concat(name), places = this.places.concat(place), live = this.live.slice(0, i * 4);
       this.layout(names, places);
       this.live.set(live); this.liveTex.needsUpdate = true;
       return i;
     }
-    const lk: Look = lookOf(name), o = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;
+    const lk: Look = lookOf(name), o = this.off(i);
     this.data.set([place.x, place.y, place.z, place.facing, lk.skin.r, lk.skin.g, lk.skin.b, lk.phase, lk.outfit.r, lk.outfit.g, lk.outfit.b, lk.height,
       lk.hair.r, lk.hair.g, lk.hair.b, lk.width, lk.eye, lk.gap, lk.brow, lk.mouth, lk.style, lk.glasses ? 1 : 0, lk.beard ? 1 : 0, place.level], o);
-    this.live.set([-1, 0, -100, 0], i * 4);
+    if (this.tx > 6) this.data.set([place.sit ? 1 : 0, 0, 0, 0], o + 24);
+    this.live.set(this.building ? [0, 0, -100, -100] : [-1, 0, -100, 0], i * 4);
     this.names.push(name); this.places.push(place); this.n++;
     if (place.level === 0) { const k = cellKey(place.x, place.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); this.ground.push(i); }
     for (const m of this.meshes) for (const at of [m.pid, m.hpid]) if (at.array.length < this.n) {
@@ -337,7 +369,7 @@ export class Audience {
   placed(i: number) { return i >= 0 && i < this.n && this.places[i].level >= 0; }
   /** Person i's place, given now: written into their texels (where they stand, which gallery), and into the ground's lists. */
   place(i: number, pl: Place) {
-    const d = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;
+    const d = this.off(i);
     this.places[i] = pl;
     this.data[d] = pl.x; this.data[d + 1] = pl.y; this.data[d + 2] = pl.z; this.data[d + 3] = pl.facing; this.data[d + 23] = pl.level;
     if (pl.level === 0) { const k = cellKey(pl.x, pl.z); (this.grid.get(k) ?? this.grid.set(k, []).get(k)!).push(i); this.ground.push(i); }
@@ -366,7 +398,33 @@ export class Audience {
   /** the playhead, in turns: eased toward it (scrubbing ripples people in and out in join order), or set at once */
   playhead(k: number, ease = true) { this.atTarget = k; if (!ease) this.u.at.value = k; this.lastSort = -1; }
   /** is person i in the room right now (joined, and not away at a table)? */
-  present(i: number) { const o = i * 4; return this.live[o + 1] < 0.5 && (this.live[o] < 0 || this.live[o] <= this.u.at.value + 0.5); }
+  present(i: number) { const o = i * 4; return this.live[o + 1] < 0.5 && (this.building ? this.live[o] > 0.5 : this.live[o] < 0 || this.live[o] <= this.u.at.value + 0.5); }
+
+  /** (the building) Person i is in the room at the floor's moment (on), or not: a fade from wherever the last one had
+   *  got to (scrubbing back and forth over someone never pops them), after `delay` s when it starts from nothing (a
+   *  ripple: those nearest their table first). True if it changed. */
+  presence(i: number, on: boolean, now: number, delay = 0) {
+    const o = i * 4, was = this.live[o] > 0.5;
+    if (was === on || i < 0 || i >= this.n) return false;
+    const k = Math.min(1, Math.max(0, (now - this.live[o + 3]) / FADE)), vis = was ? k : 1 - k;
+    this.live[o] = on ? 1 : 0;
+    // (visible `vis` now, going the other way: the fade's start is set so it continues from there)
+    this.live[o + 3] = on ? (vis <= 0.001 ? now + delay : now - vis * FADE) : (vis >= 0.999 ? now + delay : now - (1 - vis) * FADE);
+    this.liveTex.needsUpdate = true;
+    if (on) this.soon = true;
+    return true;
+  }
+  /** someone came in: sort again soon (not every frame of a drag: their fade takes longer than the wait) */
+  private soon = false;
+  /** (the building) Person i, an actor until now (away at a table), isn't in the room at the floor's moment: their
+   *  instance takes over where the actor stood and fades out from there (no pop). */
+  vanish(i: number, now: number, fade = true) {
+    if (i < 0 || i >= this.n) return;
+    const o = i * 4;
+    this.live[o] = 0; this.live[o + 1] = 0; this.live[o + 2] = -100; this.live[o + 3] = fade ? now : now - 10;
+    this.liveTex.needsUpdate = true;
+  }
+
 
   /** Heads turn to whoever is speaking now (a world point), a ripple from those nearest. `now`: the scene clock. */
   focus(at: THREE.Vector3, now: number, who = -1) {
@@ -399,7 +457,8 @@ export class Audience {
     if (at !== to) this.u.at.value = Math.abs(to - at) < 0.02 ? to : at + (to - at) * Math.min(1, dt * 6);
     camera.getWorldDirection(this.camDir);
     const jumped = camera.position.distanceToSquared(this.camAt) > 0.36;
-    if (!jumped && now - this.lastSort < SORT_EVERY && this.lastSort >= 0) return;
+    if (!jumped && now - this.lastSort < (this.soon ? 0.05 : SORT_EVERY) && this.lastSort >= 0) return;
+    this.soon = false;
     this.lastSort = now; this.camAt.copy(camera.position);
     this.sort(camera, now);
   }
@@ -417,8 +476,8 @@ export class Audience {
     for (let i = 0; i < this.n; i++) {
       const o = i * 4;
       if (this.live[o + 1] > 0.5 && (this.live[o + 2] < -50 || now - this.live[o + 2] > 0.4)) continue;   // away (faded out, or never shown)
-      if (this.live[o] >= 0 && this.live[o] > Math.max(this.u.at.value, this.atTarget) + 0.6) continue;   // not joined yet
-      const d = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;
+      if (this.building ? this.live[o] < 0.5 && now - this.live[o + 3] > FADE + 0.05 : this.live[o] >= 0 && this.live[o] > Math.max(this.u.at.value, this.atTarget) + 0.6) continue;   // not joined yet (the building: not in the room, faded out)
+      const d = this.off(i);
       if (this.data[d + 23] > this.u.levels.value) continue;          // a gallery, seen from outside the glass
       const x = this.data[d], y = this.data[d + 1] + y0 + 0.9, z = this.data[d + 2];
       this.sph.center.set(x, y, z); this.sph.radius = 1.1;
@@ -463,7 +522,7 @@ export class Audience {
   private pq = new THREE.Vector3();
   /** person i's head, room space (their resting pose) */
   headAt(i: number, out: THREE.Vector3) {
-    const d = ((Math.floor(i / ROW) * ROW * TEXELS) + (i % ROW) * TEXELS) * 4;
+    const d = this.off(i);
     return out.set(this.data[d], this.data[d + 1] + STAND * this.data[d + 11] + 0.17, this.data[d + 2]);
   }
   /** everyone here on the ground within r of (x, z): their indices (for the director: who could block a shot) */

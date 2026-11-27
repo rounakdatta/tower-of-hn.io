@@ -127,3 +127,17 @@ test('a story that comes back to the tower is rebuilt: what changed while it was
   assert.equal(turns.find((u) => u.id === 101)?.v, undefined, 'no audio that is gone');
   assert.ok(turns.some((u) => u.id === 105), 'the reply made while it was off');
 });
+
+test('every turn says when it was written, on its floor\'s clock (FLOOR_TIMELINE): seconds after the story; the story says when it went up', () => {
+  const live = new Live();
+  const s = { ...story, time: 1_795_700_000 };
+  live.upsert(s);
+  live.upsert({ ...c(101, 100, 'a', [102]), time: s.time + 780 });
+  live.upsert({ ...c(102, 101, 'b'), time: s.time + 7_800 });
+  live.upsert(c(104, 100, 'c'));                            // HN gave no time: none is invented
+  live.setTower([100]);
+  const f = live.tick(1000).snapshots[0];
+  assert.equal(f.story.time, s.time);
+  assert.deepEqual(f.tables.map((t) => t.turns.map((u) => u.at)), [[780, 7_800], [undefined]]);
+  assert.ok(!('at' in JSON.parse(JSON.stringify(f)).tables[1].turns[0]), 'an unknown time is left out of the file, not written as null');
+});

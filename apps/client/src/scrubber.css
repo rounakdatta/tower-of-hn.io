@@ -38,6 +38,21 @@ body:is(.reply-open, .card-open) .tl * { pointer-events:none }
 .tl-total { position:absolute; right:0; bottom:10px; padding:1px 7px; border-radius:7px; background:rgba(8,10,16,.72); border:1px solid var(--line); color:var(--mute); font-size:11.5px; line-height:1.35;
             font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; backdrop-filter:blur(8px); opacity:0; transition:opacity .2s }
 .tl:is([data-state="open"], [data-state="drag"]) :is(.tl-bars, .tl-ticks, .tl-total) { opacity:1 }
+
+/* the floor's line (FLOOR_TIMELINE). People going: a fainter trace hanging under the line, so the room's ebb reads as well as
+   its arrivals; the tables opening: warm notches across the line itself (under it is where people go) */
+.tl-gone { position:absolute; left:0; right:0; top:calc(var(--hair) + 2px); height:9px; opacity:0; transition:opacity .2s }
+.tl-gone .tl-hist path { fill:var(--ink); fill-opacity:.2 }
+.tl:is([data-state="open"], [data-state="drag"]) .tl-gone { opacity:1 }
+.tl-ebb .tl-ticks { top:-2px; height:calc(var(--hair) + 4px) }
+.tl-ebb .tl-tick path { fill:#ffd2a8; fill-opacity:.8 }
+/* the table you sit at: its stretch of the floor's line, lit (at rest a brighter run of the hairline, raised a soft band) */
+.tl-band { position:absolute; top:-1px; height:calc(var(--hair) + 2px); background:#ffd2a8; opacity:.45; border-radius:2px; pointer-events:none; transition:opacity .2s }
+.tl-band[hidden] { display:none }
+.tl:is([data-state="open"], [data-state="drag"]) .tl-band { opacity:.7 }
+/* the rule the floor's line keeps where Hacker News says nothing (when people leave), under the card's words, once */
+.tl-note { margin-top:5px; font-size:11.5px; line-height:1.35; color:var(--mute); white-space:normal }
+.tl-note:empty { display:none }
 .tl:is([data-state="open"], [data-state="drag"]) .tl-bars { transform:none }
 
 /* the knob: its wrapper moves (a percentage of the track, so nothing is measured); the knob appears, and is the one thing you tab to */

@@ -1,5 +1,6 @@
 // Floors for the room's tests, written once into e2e/room/.fx/<name>/live/ (head.json, the floor, every comment's
-// sidecar): the 1Password thread as it stood on 26 Nov 2026 (its structure, voices' lengths and moods; no words), and
+// sidecar): the 1Password thread as it stood on 26 Nov 2026 (its structure, voices' lengths and moods, when each comment
+// was written, from HN's public Algolia index; no words), and
 // synthetic threads of 5, 50, 200, 800 and 3,000 commenters, shaped like HN's: one thread with about 40% of the
 // people, a long tail of small ones, 1-3 comments each, replies a few levels deep, comments thick in the first hours.
 // Every clip is the same short tone (tone.ogg): the tests hear when audio starts, not what it says.
@@ -26,14 +27,17 @@ export function synthetic(n) {
   const w = Array.from({ length: nt }, (_, k) => 1 / Math.pow(k + 1, 1.15)), W = w.reduce((a, b) => a + b, 0);
   const home = people.map(() => { let x = r() * W; for (let k = 0; k < nt; k++) { x -= w[k]; if (x <= 0) return k; } return nt - 1; });
   const byTable = Array.from({ length: nt }, () => []);
-  let clock = 0;
+  let clock = 0, seq = 0;
   for (const k of people.map((_, k) => k).sort(() => r() - 0.5)) {
     const m = 1 + (r() < 0.35 ? 1 : 0) + (r() < 0.12 ? 1 : 0);
     for (let j = 0; j < m; j++) {
       clock += -Math.log(1 - r()) * (20 + clock / 40);
-      byTable[j > 0 && r() < 0.15 ? Math.floor(r() * nt) : home[k]].push({ by: people[k], at: Math.round(clock) });
+      byTable[j > 0 && r() < 0.15 ? Math.floor(r() * nt) : home[k]].push({ by: people[k], at: Math.round(clock), j: seq++ });
     }
   }
+  // when each comment was written (FLOOR_TIMELINE): HN's shape, most of a thread in its first hours and a long tail
+  // over about eighteen (the clock above only orders them: it grows too fast to be a time)
+  const when = (j) => Math.round(600 + 18 * 3600 * Math.pow(j / Math.max(1, seq), 2.2));
   let id = S + 1;
   const tables = [];
   for (const cs of byTable) {
@@ -47,7 +51,7 @@ export function synthetic(n) {
       const nd = nodes[k], gapMs = turns.length === 0 ? 0 : depth > prev ? 220 : depth === prev ? 480 : 800;
       // (one comment in eleven not voiced yet, as on a live floor: the table asks the server for it when it's near)
       const dur = Math.round((6 + -Math.log(1 - r()) * 18) * 100) / 100, emo = EMO[Math.floor(r() * EMO.length)], amp = Math.round(r() * 10) / 10;
-      turns.push({ id: nd.id, by: nd.by, depth, ...(nd.parent !== null ? { replyTo: nodes[nd.parent].id } : {}), gapMs, voice: Math.floor(r() * 110),
+      turns.push({ id: nd.id, by: nd.by, depth, ...(nd.parent !== null ? { replyTo: nodes[nd.parent].id } : {}), gapMs, voice: Math.floor(r() * 110), at: when(nd.j),
         ...(turns.length % 11 === 7 ? {} : { v: [`c/${nd.id}.f1.json`, dur, emo, amp] }) });
       prev = depth;
       for (const c of nd.kids) walk(c, depth + 1);
@@ -58,7 +62,7 @@ export function synthetic(n) {
     tables.push({ root: turns[0].id, seated: seen.slice(0, 8), standing: seen.slice(8), gist: `What ${turns[0].by} said first`, turns });
   }
   tables.sort((a, b) => b.turns.length - a.turns.length);
-  return { story: { id: S, title: `A thread of ${n.toLocaleString('en-US')} people`, url: 'https://example.com/', by: 'fixture', score: 100 + n, comments: tables.reduce((a, t) => a + t.turns.length, 0) }, rev: 1, epoch: 1, tables };
+  return { story: { id: S, title: `A thread of ${n.toLocaleString('en-US')} people`, url: 'https://example.com/', by: 'fixture', score: 100 + n, comments: tables.reduce((a, t) => a + t.turns.length, 0), time: 1795000000 }, rev: 1, epoch: 1, tables };
 }
 
 /** Write a floor's live files: head.json (this floor alone on the tower), the floor, a sidecar per voiced comment. */
@@ -97,6 +101,11 @@ export function ensure() {
   if (existsSync(mark)) return JSON.parse(readFileSync(mark, 'utf8'));
   out.onepassword = write('onepassword', JSON.parse(readFileSync(join(here, 'onepassword-floor.json'), 'utf8')));
   for (const n of SIZES) out[`n${n}`] = write(`n${n}`, synthetic(n));
+  // (FLOOR_TIMELINE) a floor from a server that doesn't say when comments were written: the room as it always was
+  const untimed = synthetic(50);
+  for (const t of untimed.tables) for (const u of t.turns) delete u.at;
+  delete untimed.story.time;
+  out['n50-untimed'] = write('n50-untimed', untimed);
   mkdirSync(OUT, { recursive: true });
   writeFileSync(mark, JSON.stringify(out, null, 1));
   return out;

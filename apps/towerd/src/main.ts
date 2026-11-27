@@ -11,7 +11,7 @@
 //      PREWARM_FLOORS, PREWARM_TABLES, PREWARM_TURNS, PREWARM_BAR, VOICE_AHEAD (audience, the default, or all: voice
 //      everything on the tower ahead of listeners), VOICE_VERSION, VOICE_PORT (default 8788),
 //      VOICE_TOKEN (runners must send it, if set), HN_API (a stand-in for HN's API, for staging), CLIENT_FLAGS
-//      (stream,cue,quick,crowd,timeline: how the room plays), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
+//      (stream,cue,quick,crowd,timeline,floor: how the room plays), AUDIO_POLICY (how audio is kept, see store.ts: age, the default,
 //      deletes it after RETENTION_DAYS; tower keeps only what a floor can still play, AUDIO_GRACE_HOURS (24) after,
 //      at most AUDIO_MAX_MB (1024), and voices nothing new below DISK_FREE_MIN_PCT (15) free; tower-dry only says
 //      what tower would do), PRUNE_EVERY_S (housekeeping, 600), SPONSOR_URL (the maker's GitHub Sponsors page: a

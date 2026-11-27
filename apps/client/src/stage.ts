@@ -10,8 +10,9 @@ import type { Audience } from './audience.ts';
 import type { Interior, TableSpot } from './interior.ts';
 import type { Room } from './room.ts';
 import type { Floor } from './sync.ts';
-import { Hall, HALL, frontPlaces, type Keep, type HallTable } from './hall.ts';
+import { Hall, HALL, frontPlaces, type Keep, type HallTable, type Place } from './hall.ts';
 import { R } from './world.ts';
+import { PLAN, type Plan } from './building.ts';
 
 /** people standing at a table's front when the room is laid (the rest of its crowd is in the audience) */
 const FRONT_START = 4;
@@ -40,6 +41,39 @@ export class Stage {
 
   constructor(private crowd: Crowd, private audience: Audience, private interior: Interior, private room: Room) {}
 
+  /** (FLOOR_TIMELINE) the building: every table and person placed for good (building.ts); null: the room and its hall */
+  plan: Plan | null = null;
+  /** the glass: the tower's, or the building's */
+  private R: number = R;
+
+  /**
+   * (FLOOR_TIMELINE) Lay a building's people out: everyone on the floor is in the audience, at their place in the plan
+   * (a chair at their table, or a place in the rings round it), and who is in the room at a moment is the floor clock's.
+   * Nobody starts in the crowd: actors are made only where the camera works (a seat taken, a speaker brought forward).
+   */
+  build(plan: Plan, spots: TableSpot[], roomY: number) {
+    this.plan = plan; this.R = plan.R;
+    this.spots = spots; this.fronts.clear(); this.homing.clear(); this.atTable = new Set(); this.hall = null;
+    this.tables = spots.map((s) => ({ x: s.pos.x, z: s.pos.z, r: s.radius }));
+    const names: string[] = [], places: Place[] = [];
+    this.ix.clear(); this.homes = [];
+    // (the plan is in world space: turned to face the way we came in)
+    plan.people.forEach((p, i) => {
+      this.ix.set(p.name, i); names.push(p.name); this.homes.push(p.home);
+      places.push({ x: p.x, z: p.z, y: 0, level: 0, facing: p.facing, sit: p.seated });
+    });
+    this.people = names.length;
+    this.audience.set(names, places);
+    this.audience.group.position.y = roomY;
+    // each table's front: a ring at its edge, and a second inside the lane for a busy moment (inside its own lane: a
+    // building's tables are an aisle apart, so no front ever reaches another table)
+    spots.forEach((sp, k) => {
+      const t = this.tables[k], none: Keep[] = [];
+      const ring = frontPlaces(this.R, t, this.tables, none), wide = frontPlaces(this.R, { ...t, r: t.r + 0.58 }, this.tables, none);
+      this.fronts.set(sp, [...ring.map((q) => ({ ...q, who: -1, ring: 0 })), ...wide.map((q) => ({ ...q, who: -1, ring: 1 }))]);
+    });
+  }
+
   /**
    * Lay the floor's people out: the room (interior.layout) has placed its tables, chairs, front standers and the bar;
    * here the front keeps its first few standers (who the crowd draws: returned), and then (fill) everyone else, every
@@ -64,6 +98,7 @@ export class Stage {
   /** After the crowd is set (and the spot where you land is known, in `keep`): everyone else gets a place in the hall,
    *  and each table's front its places. */
   fill(floor: Floor, keep: Keep[], roomY: number) {
+    this.plan = null; this.R = R;
     const convo = this.spots.filter((s) => !s.bar), atTable = this.atTable;
     // everyone on the floor, by their earliest comment (HN ids rise with time): the first to come stand nearest
     // (their place is near the conversation they first joined among those in the room: the floor's lower threads
@@ -114,6 +149,14 @@ export class Stage {
    */
   private door(a: number, spot: TableSpot | undefined) {
     const home = this.audience.places[a];
+    if (this.plan) {
+      if (!spot) return new THREE.Vector3(home.x, 0, home.z);
+      const t = spot.pos, d = Math.hypot(home.x - t.x, home.z - t.z), lane = spot.radius + PLAN.FRONT + PLAN.LANE;
+      // (one of this table's own crowd: they step forward from where they stand)
+      if (!home.sit && d < lane + 0.9) return new THREE.Vector3(home.x, 0, home.z);
+      const a0 = Math.atan2(home.z - t.z, home.x - t.x), e = lane - 0.15;
+      return new THREE.Vector3(t.x + Math.cos(a0) * e, 0, t.z + Math.sin(a0) * e);
+    }
     // never among a table's chairs or the people standing at its front (whichever table: they're packed close)
     const clear = (x: number, z: number) => this.tables.every((t) => Math.hypot(x - t.x, z - t.z) > t.r + HALL.FRONT + 0.4) && Math.hypot(x, z) < R - 0.65;
     if (home.level === 0 || !spot) {
@@ -140,7 +183,7 @@ export class Stage {
    */
   bring(name: string, spot: TableSpot, now: number): { i: number; from: THREE.Vector3; quiet: boolean } | null {
     const a = this.ix.get(name);
-    if (a === undefined || !this.hall) return null;
+    if (a === undefined || (!this.hall && !this.plan)) return null;
     const home = this.audience.places[a], t = spot.pos, y = this.crowd.group.position.y;
     const from = this.door(a, spot);
     const quiet = this.clock() < this.instantUntil

@@ -9,7 +9,7 @@
 /** room space: metres, y up, the floor at 0 */
 export interface HallTable { x: number; z: number; r: number }
 export interface Keep { x: number; z: number; r: number }
-export interface Place { x: number; z: number; y: number; level: number; facing: number }
+export interface Place { x: number; z: number; y: number; level: number; facing: number; /** (the building) in a chair at their table */ sit?: boolean }
 
 /** the shape of the hall: the same constants draw it (interior.ts) and fill it */
 export const HALL = {

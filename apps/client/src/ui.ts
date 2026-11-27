@@ -6,7 +6,7 @@ import type { TableSpot } from './interior.ts';
 import type { Line } from './performer.ts';
 import { MOOD, moodOf, tableMood, deliveryWord, rowOf, peopleOf } from './mood.ts';
 
-interface Sign { el: HTMLButtonElement; key: string; w: number; h: number; /** the frame it was last placed in */ shown: number; on: boolean }
+interface Sign { el: HTMLButtonElement; key: string; w: number; h: number; /** the frame it was last placed in */ shown: number; on: boolean; /** (a building) its counts as written, and where they're written */ counts?: string; nodes?: (Element | null)[]; /** its transform and opacity as written */ tf?: string; op?: string }
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -203,37 +203,55 @@ export class UI {
     this.met.add(name);
     try { localStorage.setItem('tohn-met', JSON.stringify([...this.met].slice(-300))); } catch { /* private mode */ }
   }
+  /** (FLOOR_TIMELINE) a table as of the floor's moment: its comments and people so far (null: not open yet, and no sign
+   *  for it: a dark table with nobody at it says that itself) */
+  asOf: ((s: TableSpot) => { turns: number; people: number } | null) | null = null;
   private cand: { s: TableSpot; d: number; x: number; y: number }[] = [];
   private rects: { x: number; y: number; w: number; h: number }[] = [];
   signs(you: THREE.Vector3, focus: TableSpot | null, speaking: (s: TableSpot) => Line | null) {
     const data = this.signData;
     if (!data || !this.labelsOn || !this.camera) return;
-    const compact = innerWidth < 700, max = compact ? 4 : 6, box = $('labels'), frame = ++this.frameNo;
+    // (the viewport read once: on a phone, reading it after a write to the page makes the browser lay the page out again,
+    // and this loop writes signs between its reads)
+    const vw = innerWidth, vh = innerHeight;
+    const compact = vw < 700, max = compact ? 4 : 6, box = $('labels'), frame = ++this.frameNo;
     // candidates: tables in front of you, near enough to matter, the one you're with first, then the nearest (the bar
     // is one sign, however many remarks it holds)
     this.cand.length = 0;
     let bar = false;
     for (const s of data.spots) {
       if (s.bar) { if (bar) continue; bar = true; }
+      if (this.asOf && !this.asOf(s)) continue;
       const d = Math.hypot(s.pos.x - you.x, s.pos.z - you.z);
       if (d > (s.bar ? 7.5 : 11.5) || (s === focus && d < s.radius + 0.4)) continue;   // too far, or right on top of it
       this.v.set(s.bar ? s.pos.x * 0.92 : s.pos.x, data.roomY + (s.bar ? 2.0 : 2.08), s.bar ? s.pos.z * 0.92 : s.pos.z).project(this.camera);
       if (this.v.z >= 1 || Math.abs(this.v.x) > 1.05 || this.v.y > 1.05 || this.v.y < -0.6) continue;
-      this.cand.push({ s, d: s === focus ? -1 : d + (s.bar ? 2 : 0), x: (this.v.x * 0.5 + 0.5) * innerWidth, y: (-this.v.y * 0.5 + 0.5) * innerHeight });
+      this.cand.push({ s, d: s === focus ? -1 : d + (s.bar ? 2 : 0), x: (this.v.x * 0.5 + 0.5) * vw, y: (-this.v.y * 0.5 + 0.5) * vh });
     }
     this.cand.sort((p, q) => p.d - q.d);
     this.rects.length = 0;
     let used = 0;
+    // (a building's whole floor can be in view: a few more than fit are tried, the nearest first, and the rest wait)
+    let tried = 0;
     for (const c of this.cand) {
-      if (used >= max) break;
+      if (used >= max || (this.asOf && ++tried > max * 3)) break;
       const slot = this.signFor.get(c.s) ?? this.newSign(box, c.s);
-      this.fill(slot, c.s, data, c.s === focus, speaking(c.s), compact);
       const k = c.s === focus ? 1.04 : Math.max(0.8, Math.min(1, 1.08 - c.d * 0.035));
-      const w = slot.w * k, h = slot.h * k, x = Math.max(w / 2 + 8, Math.min(innerWidth - w / 2 - 8, c.x)), y = Math.max(h / 2 + 64, c.y - h / 2);
+      // (a building: where it would go first, by its last size; its words only if it will show)
+      if (this.asOf && slot.w) {
+        const w0 = slot.w * k, h0 = slot.h * k, x0 = Math.max(w0 / 2 + 8, Math.min(vw - w0 / 2 - 8, c.x)), y0 = Math.max(h0 / 2 + 64, c.y - h0 / 2);
+        if (this.rects.some((r) => Math.abs(r.x - x0) < (r.w + w0) / 2 + 6 && Math.abs(r.y - y0) < (r.h + h0) / 2 + 4)) continue;
+      }
+      this.fill(slot, c.s, data, c.s === focus, speaking(c.s), compact);
+      const w = slot.w * k, h = slot.h * k, x = Math.max(w / 2 + 8, Math.min(vw - w / 2 - 8, c.x)), y = Math.max(h / 2 + 64, c.y - h / 2);
       if (this.rects.some((r) => Math.abs(r.x - x) < (r.w + w) / 2 + 6 && Math.abs(r.y - y) < (r.h + h) / 2 + 4)) continue;   // waits for room
       this.rects.push({ x, y, w, h });
-      slot.el.style.transform = `translate(${(x - slot.w / 2).toFixed(1)}px, ${(y - slot.h / 2).toFixed(1)}px) scale(${k.toFixed(3)})`;
-      slot.el.style.opacity = c.s === focus ? '1' : Math.max(0.72, 1 - c.d * 0.03).toFixed(2);
+      // (a sign that hasn't moved isn't written again: a write is parsed CSS. In a building, whole pixels: the camera's
+      // slow drift over the hall moves signs by fractions of one, which would rewrite every sign every frame)
+      const q = this.asOf ? (v: number) => String(Math.round(v)) : (v: number) => v.toFixed(1);
+      const tf = `translate(${q(x - slot.w / 2)}px, ${q(y - slot.h / 2)}px) scale(${k.toFixed(this.asOf ? 2 : 3)})`, op = c.s === focus ? '1' : Math.max(0.72, 1 - c.d * 0.03).toFixed(2);
+      if (slot.tf !== tf) { slot.tf = tf; slot.el.style.transform = tf; }
+      if (slot.op !== op) { slot.op = op; slot.el.style.opacity = op; }
       if (!slot.on) { slot.el.classList.add('on'); slot.on = true; }
       slot.shown = frame;
       used++;
@@ -250,15 +268,28 @@ export class UI {
     return slot;
   }
   private fill(slot: Sign, s: TableSpot, data: NonNullable<UI['signData']>, focus: boolean, line: Line | null, compact: boolean) {
-    const t = s.table, people = peopleOf(t.turns), mood = tableMood(t.turns).mood;
+    const t = s.table, so = this.asOf?.(s) ?? null, people = so ? so.people : peopleOf(t.turns), mood = tableMood(t.turns).mood;
     const now = line ? moodOf(line.side.emotion, line.side.stance, line.side.intensity) : mood;
     const word = line ? deliveryWord(line.side.emotion, line.side.stance, line.side.intensity) : '';
     const kick = !this.chosen && data.best === s ? 'Start here' : '';
     // the table you're with is subtitled already: its sign doesn't say the same thing again
     const said = line && !focus ? line : null;
-    const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${people}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
-    if (key === slot.key) return;
-    slot.key = key;
+    // (a building's counts tick in place, "+N" on a sign with no words of its own too: nothing is re-measured as they do)
+    const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${so ? (people > 1 ? 'n' : '1') : people}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
+    // (a building's counts tick as the floor's moment moves: just the words, no measuring: their figures are tabular)
+    if (key === slot.key) {
+      // (written only when they change, and at most fifteen times a second: as fast as figures can be read, and a write is
+      // a change to the page)
+      if (so && !said && this.frameNo % 4 === 0 && slot.counts !== `${so.turns}|${people}`) {
+        slot.counts = `${so.turns}|${people}`;
+        const [c, p, plus] = slot.nodes ??= [slot.el.querySelector('.count'), slot.el.querySelector('.ppl'), slot.el.querySelector('.plus')];
+        if (c) c.textContent = `${so.turns.toLocaleString('en-US')} comment${so.turns === 1 ? '' : 's'}`;
+        if (p) p.textContent = `${people.toLocaleString('en-US')} ${people === 1 ? 'person' : 'people'}`;
+        if (plus) plus.textContent = `+${people - 1}`;
+      }
+      return;
+    }
+    slot.key = key; slot.counts = so ? `${so.turns}|${people}` : undefined; slot.nodes = undefined;
     let html: string;
     if (s.bar) html = `<b class="gist">The bar</b><span class="meta">${this.bars} one-liner${this.bars === 1 ? '' : 's'}</span>`;
     else {
@@ -268,8 +299,9 @@ export class UI {
       const row = rowOf(t.turns);
       const meta = said
         ? `<em class="${this.met.has(said.turn.by) ? 'met' : ''}">${esc(said.turn.by)}</em>${word ? ` · <span style="color:${MOOD[now].color}">${esc(word)}</span>` : ' is speaking'}`
+        : so ? `<span class="count">${so.turns.toLocaleString('en-US')} comment${so.turns === 1 ? '' : 's'}</span> · <span class="ppl">${people.toLocaleString('en-US')} ${people === 1 ? 'person' : 'people'}</span>`
         : `${row && (mood === 'heated' || mood === 'tense') ? `${esc(row[0])} ⇄ ${esc(row[1])}` : `${people} ${people === 1 ? 'person' : 'people'}`}${mood !== 'calm' ? ` · <em style="color:${MOOD[mood].color}">${MOOD[mood].word}</em>` : ''}`;
-      html = `${kick ? `<i class="kick">${kick}</i>` : ''}<b class="gist"><i class="dot" style="background:${MOOD[now].color}"></i>${gist ? `“${esc(gist)}”` : `${esc(t.turns[0]?.by ?? '')}${people > 1 ? ` <em>+${people - 1}</em>` : ''}`}</b><span class="meta">${meta}</span>`;
+      html = `${kick ? `<i class="kick">${kick}</i>` : ''}<b class="gist"><i class="dot" style="background:${MOOD[now].color}"></i>${gist ? `“${esc(gist)}”` : `${esc(t.turns[0]?.by ?? '')}${people > 1 ? ` <em class="plus">+${people - 1}</em>` : ''}`}</b><span class="meta">${meta}</span>`;
     }
     slot.el.innerHTML = html;
     slot.el.classList.toggle('focus', focus);

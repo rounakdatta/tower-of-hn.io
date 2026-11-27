@@ -10,7 +10,7 @@ import {
 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { rngFor, pick, SKIN, OUTFIT, HAIR, hash32 } from './util.ts';
-import { uTime, R } from './world.ts';
+import { uTime, R, ROOM } from './world.ts';
 import { faceColor } from './face.ts';
 
 export const MAX_PEOPLE = 220;
@@ -694,7 +694,7 @@ export class Crowd {
         if (dist < min && dist > 1e-5) { pos.x = o.x + (ax / dist) * min; pos.z = o.z + (az / dist) * min; }
       }
       const r = len(pos.x, pos.z);                 // inside the glass
-      if (r > R - 0.6) { pos.x *= (R - 0.6) / r; pos.z *= (R - 0.6) / r; }
+      if (r > ROOM.R - 0.6) { pos.x *= (ROOM.R - 0.6) / r; pos.z *= (ROOM.R - 0.6) / r; }
     }
     this.moved[0] = len(pos.x - x0, pos.z - z0);
   }

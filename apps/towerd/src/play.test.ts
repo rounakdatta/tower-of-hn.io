@@ -13,3 +13,6 @@ test('unset or empty: nothing on, as the room always was', () => {
 test('a typo is left out and named, never passed on; case and spaces don\'t matter; each once', () => {
   assert.deepEqual(playFlags(' Crowd , crowd, timelne ,stream'), { on: ['crowd', 'stream'], unknown: ['timelne'] });
 });
+test('the floor timeline (FLOOR_TIMELINE) reaches head.play too: a flag the whitelist didn\'t know would never switch on', () => {
+  assert.deepEqual(playFlags('stream,cue,quick,crowd,timeline,floor').on, ['stream', 'cue', 'quick', 'crowd', 'timeline', 'floor']);
+});
