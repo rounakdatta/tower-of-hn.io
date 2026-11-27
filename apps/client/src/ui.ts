@@ -243,8 +243,10 @@ export class UI {
       const w = slot.w * k, h = slot.h * k, x = Math.max(w / 2 + 8, Math.min(innerWidth - w / 2 - 8, c.x)), y = Math.max(h / 2 + 64, c.y - h / 2);
       if (this.rects.some((r) => Math.abs(r.x - x) < (r.w + w) / 2 + 6 && Math.abs(r.y - y) < (r.h + h) / 2 + 4)) continue;   // waits for room
       this.rects.push({ x, y, w, h });
-      // (a sign that hasn't moved isn't written again: a still camera over a scrubbing floor moves none of them)
-      const tf = `translate(${(x - slot.w / 2).toFixed(1)}px, ${(y - slot.h / 2).toFixed(1)}px) scale(${k.toFixed(3)})`, op = c.s === focus ? '1' : Math.max(0.72, 1 - c.d * 0.03).toFixed(2);
+      // (a sign that hasn't moved isn't written again: a write is parsed CSS. In a building, whole pixels: the camera's
+      // slow drift over the hall moves signs by fractions of one, which would rewrite every sign every frame)
+      const q = this.asOf ? (v: number) => String(Math.round(v)) : (v: number) => v.toFixed(1);
+      const tf = `translate(${q(x - slot.w / 2)}px, ${q(y - slot.h / 2)}px) scale(${k.toFixed(this.asOf ? 2 : 3)})`, op = c.s === focus ? '1' : Math.max(0.72, 1 - c.d * 0.03).toFixed(2);
       if (slot.tf !== tf) { slot.tf = tf; slot.el.style.transform = tf; }
       if (slot.op !== op) { slot.op = op; slot.el.style.opacity = op; }
       if (!slot.on) { slot.el.classList.add('on'); slot.on = true; }
