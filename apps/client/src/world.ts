@@ -217,8 +217,9 @@ export class Tower {
     const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.42, 20, 14), beaconMat);
     beacon.position.y = TOWER_TOP + 1.2 + 9.2;
     this.sign = neonSign();
-    scene.add(lobby, entrance, crown, spire, beacon, this.sign);
-    this.shell = [lobby, entrance, crown, spire, beacon, this.sign];
+    const y = yBlock();
+    scene.add(lobby, entrance, crown, spire, beacon, this.sign, y);
+    this.shell = [lobby, entrance, crown, spire, beacon, this.sign, y];
 
     // floors: one instanced draw for all thirty
     const geo = new THREE.CylinderGeometry(R, R, FLOOR_H * 0.94, 96, 1);
@@ -396,6 +397,34 @@ export class Tower {
     if (any) this.aState.needsUpdate = true;
     this.searchlights.rotation.y = now * 0.12;
   }
+}
+
+/**
+ * Hacker News's Y on the roof: a lit block on the spire, above the neon name (the orange square with its white border
+ * and its Y, as on news.ycombinator.com), the Y on all four sides so it reads from wherever the camera is.
+ */
+function yBlock() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d')!;
+  const k = 256 / 18;
+  g.fillStyle = '#ff6600'; g.fillRect(0, 0, 256, 256);
+  g.strokeStyle = '#ffffff'; g.lineWidth = k; g.strokeRect(k / 2, k / 2, 256 - k, 256 - k);
+  // (the same Y as the page's header, from its 18-unit drawing)
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  for (const [x, yy] of [[4.8, 4], [6.9, 4], [9, 8.2], [11.1, 4], [13.2, 4], [10, 10], [10, 14], [8, 14], [8, 10]]) g.lineTo(x * k, yy * k);
+  g.closePath(); g.fill();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  const face = new THREE.MeshBasicNodeMaterial({ map: t, fog: false });
+  face.colorNode = texture(t, uv()).rgb.mul(0.92);             // (lit, but HN's own orange: brighter washes it out)
+  const cap = new THREE.MeshBasicNodeMaterial({ color: 0x9e3d00, fog: false });
+  // (a box's faces: +x, -x, +y, -y, +z, -z)
+  const block = new THREE.Mesh(new THREE.BoxGeometry(3.6, 3.6, 3.6), [face, face, cap, cap, face, face]);
+  block.position.y = TOWER_TOP + 1.2 + 1.9 + 0.2 + 1.8;      // just above the neon name (its top is 1.9 m over the roof)
+  block.rotation.y = 0.64;                                  // a face square to where you first see the tower from
+  return block;
 }
 
 /**

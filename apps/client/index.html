@@ -31,6 +31,8 @@
   @keyframes ignite { 0% { opacity:.12 } 8% { opacity:1 } 14% { opacity:.2 } 22% { opacity:.9 } 27% { opacity:.3 } 40%, 100% { opacity:1 } }
   @keyframes buzz { 0%, 91% { opacity:1 } 92% { opacity:.25 } 93% { opacity:1 } 94.5% { opacity:.35 } 95.5%, 100% { opacity:1 } }
   @media (prefers-reduced-motion: reduce) { #brand .w, #brand .w i { animation:none } }
+  /* Hacker News's Y, before the name, as on news.ycombinator.com */
+  #brand .w .y { width:18px; height:18px; margin-right:8px; vertical-align:-3px; filter:drop-shadow(0 0 6px rgba(255,102,0,.45)) }
   /* one line, never under Lean back (the padding keeps the dot's pulse inside the clip) */
   #live { margin:-4px 0 -7px -7px; padding:7px 0 7px 7px; font-size:12px; color:var(--mute); font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
   #live::before, #stats:not(:empty)::before { content:''; display:inline-block; width:6px; height:6px; border-radius:50%; background:#3ddc84; margin-right:7px; vertical-align:1px; box-shadow:0 0 0 0 rgba(61,220,132,.6); animation:pulse 2s infinite }
@@ -213,6 +215,8 @@
   #profile.show { opacity:1; transform:none; pointer-events:auto }
   body.reply-open #sitdown, body.reply-open #hint, body.reply-open #subs, body.reply-open #controls { opacity:0; pointer-events:none }
   #profile .acts { display:flex; align-items:center; gap:14px }
+  /* REPLY: replying shows only with its flag (main.ts: body.replies) */
+  body:not(.replies) #answer { display:none }
   #profile .answer { padding:7px 14px; border:0; border-radius:999px; background:var(--ink); color:#15110d; font:inherit; font-weight:700; cursor:pointer; white-space:nowrap }
   #profile .answer:hover { background:#fff }
   /* a speaker's name is a way in (their card, ready to answer that line); your own line says so */
@@ -297,17 +301,17 @@
   #splash .inner { text-align:center; padding:24px; max-width:620px }
   #splash h1 { margin:0; font-size:clamp(34px, 6vw, 58px); font-weight:700; letter-spacing:-1px }
   #splash h1 i { font-style:normal; color:var(--hn) }
+  #splash h1 .y { width:.74em; height:.74em; margin-right:.24em; vertical-align:-.06em; filter:drop-shadow(0 0 14px rgba(255,102,0,.35)) }
   #splash p { color:#c8c1b6; font-size:clamp(14px, 1.8vw, 17px); margin:14px auto 28px; max-width:520px }
   #stats { margin:-12px 0 24px; color:#ffb27a; font-size:13px; font-variant-numeric:tabular-nums; letter-spacing:.2px }
   #enter { border:0; border-radius:999px; padding:13px 26px; background:var(--ink); color:#111; font-weight:700; font-size:15px; cursor:pointer; box-shadow:0 10px 40px rgba(255,140,60,.25) }
   #enter:hover { background:#fff }
   #enter:disabled { opacity:.55; cursor:progress; box-shadow:none }
-  #splash small { display:block; margin-top:18px; color:var(--mute) }
 </style><!--support:head-->
 </head>
 <body data-mode="tower" class="door">
 <div id="scrim"></div>
-<div id="brand"><div class="w">Tower <i>of</i> HN</div><div id="live">connecting to Hacker News…</div></div>
+<div id="brand"><div class="w"><svg class="y" viewBox="0 0 18 18" aria-hidden="true" focusable="false"><rect x=".5" y=".5" width="17" height="17" fill="#ff6600" stroke="#fff"/><path d="M4.8 4h2.1L9 8.2 11.1 4h2.1L10 10v4H8v-4z" fill="#fff"/></svg>Tower <i>of</i> HN<!--support:brand--></div><div id="live">connecting to Hacker News…</div></div>
 <button class="pill" id="lean" title="Hands-free: the liveliest floors and tables, one after another"><svg viewBox="0 0 16 16" aria-hidden="true" style="width:10px;height:10px;margin-right:6px;vertical-align:-1px"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>Lean back</button>
 <div id="tip"></div>
 <div id="focus" role="group" aria-label="Floor in focus"><div class="rank" id="frank"></div><div class="body"><div class="t" id="fname"></div><div class="m" id="fmeta"></div>
@@ -329,11 +333,10 @@
 <div id="profile" role="dialog" aria-label="Commenter"></div>
 <div id="controls"><button class="pill" id="answer" title="Answer whoever is speaking (R)">Reply</button><button class="pill" id="pause">Pause</button><button class="pill" id="next">Next table</button><button class="pill" id="leave">Stand up</button></div><!--support:table-->
 <div id="splash" class="show"><div class="inner">
-  <h1>Tower <i>of</i> HN</h1>
+  <h1><svg class="y" viewBox="0 0 18 18" aria-hidden="true" focusable="false"><rect x=".5" y=".5" width="17" height="17" fill="#ff6600" stroke="#fff"/><path d="M4.8 4h2.1L9 8.2 11.1 4h2.1L10 10v4H8v-4z" fill="#fff"/></svg>Tower <i>of</i> HN</h1>
   <p>The Hacker News front page, as a living tower. Every floor is a story, every table a thread. Walk in and hear the comments read aloud, in their own words, as they land.</p>
   <div id="stats"></div>
   <button id="enter" disabled>Waking the tower…</button>
-  <small>Headphones on. Sound is half of it.</small>
 </div><!--support:door--></div>
 <script type="module" src="/src/main.ts"></script>
 </body>

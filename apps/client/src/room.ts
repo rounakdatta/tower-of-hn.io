@@ -75,6 +75,10 @@ export class Room {
     if (i >= 0 && this.tableOf(i) === spot) return 'here';
     if (i >= 0 && (this.busyUntil.get(i) ?? 0) > now) return 'busy';
     let from: THREE.Vector3;
+    // (FLOOR_TIMELINE) one of this table's chairs: they say it from their seat (a moment, if they're just coming in)
+    const sat = i < 0 ? this.stage?.seat(name, spot) : null;
+    if (sat === -1) return 'coming';
+    if (sat != null) { this.onArrive(sat, spot); return 'here'; }
     const stepping = i < 0 ? this.stage?.bring(name, spot, now) : null;
     if (stepping) {                                      // out of the audience, at the edge of this table's lane
       i = stepping.i; from = stepping.from.clone();

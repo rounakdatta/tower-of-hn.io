@@ -48,6 +48,8 @@ export class FloorMode {
   /** people whose presence was flipped by the last show(), and how many it looked at (for checks) */
   flipped = 0;
   looked = 0;
+  /** people who walked in with the last show(), the moment moving forward (the lift's chime: main.ts) */
+  arrived = 0;
 
   constructor(private hall: HallView, private audience: Audience) {}
 
@@ -108,10 +110,11 @@ export class FloorMode {
   show(t: number, now: number) {
     const c = this.clock, room = this.room;
     if (!c || !room) return;
+    const forward = t > this.t;
     this.t = t;
-    let flips = 0;
-    this.looked = room.move(t, (i, on) => { this.audience.presence(i, on, now, this.delays[i]); flips++; });
-    this.flipped = flips;
+    let flips = 0, came = 0;
+    this.looked = room.move(t, (i, on) => { this.audience.presence(i, on, now, this.delays[i]); flips++; if (on && forward) came++; });
+    this.flipped = flips; this.arrived = came;
     for (let k = 0; k < c.tables.length; k++) tableAt(c, k, t, this.now[k]);
     this.said = latest(c, t);
   }

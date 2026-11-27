@@ -414,6 +414,8 @@ export class Audience {
     if (on) this.soon = true;
     return true;
   }
+  /** (the building) is person i still on their way in: their presence begun, its fade not finished? */
+  arriving(i: number, now: number) { const o = i * 4; return this.live[o] > 0.5 && now - this.live[o + 3] < FADE; }
   /** someone came in: sort again soon (not every frame of a drag: their fade takes longer than the wait) */
   private soon = false;
   /** (the building) Person i, an actor until now (away at a table), isn't in the room at the floor's moment: their

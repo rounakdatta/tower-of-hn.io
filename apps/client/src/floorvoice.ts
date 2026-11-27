@@ -120,6 +120,24 @@ export class FloorVoice {
   /** each comment said lately: when its words start and end (audio time) */
   private spans: { i: number; s0: number; s1: number; partial: boolean }[] = [];
 
+  /** (main.ts, the camera following) how long the camera needs to get to a table, s (0: it isn't following) */
+  travel: (spot: TableSpot) => number = () => 0;
+  /** The comment that's next (its table, and its writer as an actor, -1 if not one yet), once what's being said now has
+   *  less than `lead` s to go: the camera sets off for it, so it's there as it starts. Null: nothing's next yet. */
+  ahead(lead: number): { spot: TableSpot; who: number } | null {
+    const c = this.c, a = this.announced;
+    if (!c || a < 0 || !this.playing) return null;
+    const now = this.audio.now();
+    let end = -Infinity;
+    for (const s of this.sched) {
+      if (s.i === a && s.start <= now) return null;     // (being said already: current() has it)
+      if (s.i !== a) end = Math.max(end, s.end);
+    }
+    if (end - now > lead) return null;
+    const said = c.comments[a], spot = this.spots[said.table], by = this.turnOf.get(said.id)?.by;
+    return spot ? { spot, who: by ? this.room.who(by) : -1 } : null;
+  }
+
   /** what's being said right now (for the caption), or null */
   current(): (Line & { spot: TableSpot; i: number }) | null {
     const now = this.audio.now();
@@ -188,7 +206,8 @@ export class FloorVoice {
     const i = here === 'here' ? this.room.who(turn.by) : -1;
     const perf = this.perfs.get(spot) ?? this.perfs.set(spot, new Performer(this.crowd, spot, (n) => (spot.seats.some((st) => st.name === n) ? this.crowd.index(n) : -1), () => {})).get(spot)!;
     const gain = emoGain(r.side.emotion, r.side.intensity);
-    let t = Math.max(this.cursor, now + 0.05) + (this.done || !this.sched.length ? 0 : 0.45);
+    // (between comments, a breath; longer if the camera is crossing the hall to this one: it gets there as it starts)
+    let t = Math.max(this.cursor, now + 0.05) + (this.done || !this.sched.length ? 0 : Math.max(0.45, Math.min(1.8, this.travel(spot) - 0.9)));
     r.side.clips.forEach((clip, k) => {
       if (k < this.done) return;
       const pos = i >= 0 ? this.crowd.headPos(i, this.tmp) : this.tmp.set(spot.pos.x, this.crowd.group.position.y + 1.2, spot.pos.z);
