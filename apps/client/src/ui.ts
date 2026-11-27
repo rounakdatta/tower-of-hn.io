@@ -6,7 +6,7 @@ import type { TableSpot } from './interior.ts';
 import type { Line } from './performer.ts';
 import { MOOD, moodOf, tableMood, deliveryWord, rowOf, peopleOf } from './mood.ts';
 
-interface Sign { el: HTMLButtonElement; key: string; w: number; h: number; /** the frame it was last placed in */ shown: number; on: boolean }
+interface Sign { el: HTMLButtonElement; key: string; w: number; h: number; /** the frame it was last placed in */ shown: number; on: boolean; /** (a building) its counts as written */ counts?: string; /** its transform and opacity as written */ tf?: string; op?: string }
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -228,16 +228,20 @@ export class UI {
     this.cand.sort((p, q) => p.d - q.d);
     this.rects.length = 0;
     let used = 0;
+    // (a building's whole floor can be in view: a few more than fit are tried, the nearest first, and the rest wait)
+    let tried = 0;
     for (const c of this.cand) {
-      if (used >= max) break;
+      if (used >= max || (this.asOf && ++tried > max * 3)) break;
       const slot = this.signFor.get(c.s) ?? this.newSign(box, c.s);
       this.fill(slot, c.s, data, c.s === focus, speaking(c.s), compact);
       const k = c.s === focus ? 1.04 : Math.max(0.8, Math.min(1, 1.08 - c.d * 0.035));
       const w = slot.w * k, h = slot.h * k, x = Math.max(w / 2 + 8, Math.min(innerWidth - w / 2 - 8, c.x)), y = Math.max(h / 2 + 64, c.y - h / 2);
       if (this.rects.some((r) => Math.abs(r.x - x) < (r.w + w) / 2 + 6 && Math.abs(r.y - y) < (r.h + h) / 2 + 4)) continue;   // waits for room
       this.rects.push({ x, y, w, h });
-      slot.el.style.transform = `translate(${(x - slot.w / 2).toFixed(1)}px, ${(y - slot.h / 2).toFixed(1)}px) scale(${k.toFixed(3)})`;
-      slot.el.style.opacity = c.s === focus ? '1' : Math.max(0.72, 1 - c.d * 0.03).toFixed(2);
+      // (a sign that hasn't moved isn't written again: a still camera over a scrubbing floor moves none of them)
+      const tf = `translate(${(x - slot.w / 2).toFixed(1)}px, ${(y - slot.h / 2).toFixed(1)}px) scale(${k.toFixed(3)})`, op = c.s === focus ? '1' : Math.max(0.72, 1 - c.d * 0.03).toFixed(2);
+      if (slot.tf !== tf) { slot.tf = tf; slot.el.style.transform = tf; }
+      if (slot.op !== op) { slot.op = op; slot.el.style.opacity = op; }
       if (!slot.on) { slot.el.classList.add('on'); slot.on = true; }
       slot.shown = frame;
       used++;
@@ -263,10 +267,16 @@ export class UI {
     const key = `${t.root}|${focus}|${said ? said.turn.by + ':' + word : ''}|${mood}|${so ? '' : people}|${kick}|${compact}|${s.bar ? this.bars : ''}|${said && this.met.has(said.turn.by)}`;
     // (a building's counts tick as the floor's moment moves: just the words, no measuring: their figures are tabular)
     if (key === slot.key) {
-      if (so && !said) { const c = slot.el.querySelector('.count'), p = slot.el.querySelector('.ppl'); if (c) c.textContent = `${so.turns.toLocaleString('en-US')} comment${so.turns === 1 ? '' : 's'}`; if (p) p.textContent = `${people.toLocaleString('en-US')} ${people === 1 ? 'person' : 'people'}`; }
+      // (written only when they change: a write is a change to the page even when the words are the same)
+      if (so && !said && slot.counts !== `${so.turns}|${people}`) {
+        slot.counts = `${so.turns}|${people}`;
+        const c = slot.el.querySelector('.count'), p = slot.el.querySelector('.ppl');
+        if (c) c.textContent = `${so.turns.toLocaleString('en-US')} comment${so.turns === 1 ? '' : 's'}`;
+        if (p) p.textContent = `${people.toLocaleString('en-US')} ${people === 1 ? 'person' : 'people'}`;
+      }
       return;
     }
-    slot.key = key;
+    slot.key = key; slot.counts = so ? `${so.turns}|${people}` : undefined;
     let html: string;
     if (s.bar) html = `<b class="gist">The bar</b><span class="meta">${this.bars} one-liner${this.bars === 1 ? '' : 's'}</span>`;
     else {
