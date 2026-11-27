@@ -124,7 +124,7 @@ export class FloorVoice {
   travel: (spot: TableSpot) => number = () => 0;
   /** The comment that's next (its table, and its writer as an actor, -1 if not one yet), once what's being said now has
    *  less than `lead` s to go: the camera sets off for it, so it's there as it starts. Null: nothing's next yet. */
-  ahead(lead: number): { spot: TableSpot; who: number } | null {
+  ahead(lead: number): { spot: TableSpot; who: number; by: string } | null {
     const c = this.c, a = this.announced;
     if (!c || a < 0 || !this.playing) return null;
     const now = this.audio.now();
@@ -134,8 +134,8 @@ export class FloorVoice {
       if (s.i !== a) end = Math.max(end, s.end);
     }
     if (end - now > lead) return null;
-    const said = c.comments[a], spot = this.spots[said.table], by = this.turnOf.get(said.id)?.by;
-    return spot ? { spot, who: by ? this.room.who(by) : -1 } : null;
+    const said = c.comments[a], spot = this.spots[said.table], by = this.turnOf.get(said.id)?.by ?? '';
+    return spot ? { spot, who: by ? this.room.who(by) : -1, by } : null;
   }
 
   /** what's being said right now (for the caption), or null */

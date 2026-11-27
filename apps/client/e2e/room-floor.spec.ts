@@ -192,6 +192,42 @@ test('whoever has a chair at the table says their piece from it, seated where th
   expect(chair, 'three people in their chairs spoke').toBe(3);
 });
 
+test('following the floor, the camera faces whoever speaks: from across their table, never from behind them', async ({ page }) => {
+  await enter(page, 'onepassword', '&narrate');
+  const d = await drag(page, 0.05, 0.08);
+  await page.waitForTimeout(300); await step(page, 2);
+  await d.up();
+  type Sp = { by: string; id: number; table: number; at: { x: number; z: number } | null };
+  const tables = await call<{ k: number; x: number; z: number }[]>(page, 'tables'), seen = new Set<number>();
+  let checked = 0, steps = 0;
+  while (checked < 5 && steps++ < 2000) {
+    await step(page, 8);
+    const sp = await call<Sp | null>(page, 'floorSpeaking'), v = await call<{ cam: [number, number]; busy: boolean; following: boolean }>(page, 'floorView');
+    if (!sp?.at || v.busy || !v.following || seen.has(sp.id)) continue;
+    seen.add(sp.id);
+    const t = tables[sp.table], them = Math.atan2(sp.at.z - t.z, sp.at.x - t.x), cam = Math.atan2(v.cam[1] - t.z, v.cam[0] - t.x);
+    const apart = Math.abs(Math.atan2(Math.sin(them - cam), Math.cos(them - cam)));
+    expect(apart, `${sp.by} (table ${sp.table}): the camera is across the table from them, ${(apart * 180 / Math.PI).toFixed(0)}° round it`).toBeGreaterThan(Math.PI / 2);
+    checked++;
+  }
+  expect(checked, 'five speakers looked at, once the camera had arrived').toBe(5);
+  expect((await call<{ misses: number }>(page, 'floorView')).misses, 'went round a table for someone it had aimed wrong for').toBe(0);
+  // and someone walking in (not in the room yet as the camera sets off) is aimed for by their place: across the table
+  // from their chair, for every table whose first words are said from a chair
+  const comments = await call<{ by: string; table: number }[]>(page, 'floorComments'), firsts = new Map<number, string>();
+  for (const u of comments) if (!firsts.has(u.table)) firsts.set(u.table, u.by);
+  let chairs = 0;
+  for (const [k, by] of firsts) {
+    const pl = await call<{ x: number; z: number; seated: boolean; home: number } | null>(page, 'floorPlace', by);
+    if (!pl?.seated || pl.home !== k) continue;
+    const t = tables[k], cam = (await call<[number, number]>(page, 'floorAim', k, by))!;
+    const them = Math.atan2(pl.z - t.z, pl.x - t.x), at = Math.atan2(cam[1] - t.z, cam[0] - t.x);
+    expect(Math.abs(Math.atan2(Math.sin(them - at), Math.cos(them - at))), `${by} walking in to table ${k}: the camera sets up across from their chair`).toBeGreaterThan(Math.PI * 0.9);
+    chairs++;
+  }
+  expect(chairs, 'tables opened from a chair').toBeGreaterThan(20);
+});
+
 test('a drag asks the voice server for nothing; letting go asks once at most', async ({ page }) => {
   await enter(page, 'onepassword', '&narrate');
   await page.request.get('/__wants');

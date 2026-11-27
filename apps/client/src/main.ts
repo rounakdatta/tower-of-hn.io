@@ -328,7 +328,7 @@ function floorSeek(k: number) {
 /** On foot, once you've let the line go somewhere, the camera follows the narration round the building: to each table as
  *  its comment is said, across the table from whoever is speaking (their face, over the table), rising over the hall for
  *  a long hop so you see where it's going. Walking (keys, the stick) or a click on the room hands the camera back. */
-let follow = false, followSpot: TableSpot | null = null, followWho = -1, followHinted = false;
+let follow = false, followSpot: TableSpot | null = null, followWho = -1, followHinted = false, followMisses = 0;
 const followHead = new THREE.Vector3();
 function startFollow() {
   overhead = false;
@@ -353,18 +353,15 @@ function followFrame() {
   const l = floorVoice.current(), nx = floorVoice.ahead(0.6);
   const sp = nx?.spot ?? l?.spot ?? null, who = nx ? nx.who : l ? l.who : -1;
   if (!sp || rig.busy(clock) || (sp === followSpot && (who === followWho || who < 0))) return;
-  const head = who >= 0 ? crowd.headPos(who, followHead) : followHead.set(sp.pos.x, roomY + 1.15, sp.pos.z);
-  // across the table from the speaker (their face, over the tabletop), in the table's own lane: clear by construction
-  const away = new THREE.Vector2(sp.pos.x - head.x, sp.pos.z - head.z);
-  if (away.lengthSq() < 0.04) away.set(sp.pos.x || 1, sp.pos.z);
-  away.normalize();
-  const rr = sp.radius + 1.55, cam = new THREE.Vector3(sp.pos.x + away.x * rr, roomY + 1.85, sp.pos.z + away.y * rr);
+  const head = followHead, cam = followAim(sp, who, nx?.by ?? '', head), rr = sp.radius + 1.55;
   if (sp === followSpot) {
     // someone else at the same table: in view and facing about this way, the camera turns to them; beside it or
     // behind, it goes round the table (never through it) to face them
+    const unknown = followWho < 0;
     followWho = who;
     const a0 = Math.atan2(camera.position.z - sp.pos.z, camera.position.x - sp.pos.x), a1 = Math.atan2(cam.z - sp.pos.z, cam.x - sp.pos.x);
     const da = Math.atan2(Math.sin(a1 - a0), Math.cos(a1 - a0));
+    if (unknown && Math.abs(da) >= 0.9) followMisses++;  // (it had set up for someone not in the room yet, on the wrong side)
     if (Math.abs(da) < 0.9) { moveCam([camera.position.clone(), camera.position.clone()], [rig.target.clone(), head.clone()], 0.9); return; }
     const mid = new THREE.Vector3(sp.pos.x + Math.cos(a0 + da / 2) * rr, roomY + 2.0, sp.pos.z + Math.sin(a0 + da / 2) * rr);
     moveCam([camera.position.clone(), mid, cam], [rig.target.clone(), sp.pos.clone().setY(roomY + 1.1), head.clone()], 1.0 + Math.abs(da) * 0.35);
@@ -377,6 +374,21 @@ function followFrame() {
   mid.y = Math.min(roomY + hallView.height - 0.8, Math.max(camera.position.y, cam.y) + Math.min(6, d * 0.2));
   const midLook = rig.target.clone().lerp(head, 0.5);
   moveCam([camera.position.clone(), mid, cam], [rig.target.clone(), midLook, head.clone()], followTime(d));
+}
+/** Where the camera stands to film someone at a table: across it from them (their face, over the tabletop), in the
+ *  table's own lane (clear by construction); `head` is set to where it looks. Someone not in the room's crowd yet (just
+ *  walking in, `who` -1) is aimed for by their place in the plan: their chair, or the side of the table they come from,
+ *  so the camera never sets up behind them. */
+function followAim(sp: TableSpot, who: number, by: string, head: THREE.Vector3) {
+  const a = who < 0 && by ? hallStage.ix.get(by) : undefined, pl = a !== undefined ? floorMode.plan?.people[a] : undefined;
+  if (who >= 0) crowd.headPos(who, head);
+  else if (pl) head.set(pl.x, roomY + (pl.seated ? 1.15 : 1.55), pl.z);
+  else head.set(sp.pos.x, roomY + 1.15, sp.pos.z);
+  const away = new THREE.Vector2(sp.pos.x - head.x, sp.pos.z - head.z);
+  if (away.lengthSq() < 0.04) away.set(sp.pos.x || 1, sp.pos.z);
+  away.normalize();
+  const rr = sp.radius + 1.55;
+  return new THREE.Vector3(sp.pos.x + away.x * rr, roomY + 1.85, sp.pos.z + away.y * rr);
 }
 /** how long the camera takes to cross the hall to a table d metres off */
 const followTime = (d: number) => Math.max(1.1, Math.min(3.2, 1.0 + d / 12));
@@ -1864,6 +1876,10 @@ if (recording) {
     /** (FLOOR_TIMELINE) the floor's comments in the order written (for tests: their moments, tables, writers) */
     floorComments: () => floorMode.clock?.comments.map((x) => ({ i: x.i, id: x.id, at: x.at, table: x.table, by: x.by })) ?? [],
     floorSpeaking: () => { const l = floorVoice.current(); return l ? { by: l.turn.by, id: l.turn.id, table: l.spot.index, seated: l.who >= 0 ? !!crowd.people[l.who]?.pose.seated : null, at: l.who >= 0 ? { x: crowd.people[l.who].pose.pos.x, z: crowd.people[l.who].pose.pos.z } : null } : null; },
+    /** (FLOOR_TIMELINE) the camera on foot: where it is (x, z), whether it's on its way somewhere, whether it's following */
+    floorView: () => ({ cam: [camera.position.x, camera.position.z], busy: rig.busy(clock), following: follow, misses: followMisses }),
+    /** where the camera would stand for `name` speaking at table k before they're in the room (x, z) */
+    floorAim: (k: number, name: string) => { const sp = spots[k], c = sp ? followAim(sp, -1, name, new THREE.Vector3()) : null; return c ? [c.x, c.z] : null; },
     /** where the hall's lift is (world x, z) */
     floorLift: () => { const p = hallView.lift.getWorldPosition(new THREE.Vector3()); return { x: p.x, z: p.z }; },
     /** the lift's chimes so far (someone walked in as the floor played) */
