@@ -24,6 +24,7 @@ export function floorModel(c: FloorClock, only?: number): FloorModel {
   const at = (u: number) => (tb ? seatFrom(c, only!, tOf(c, u)) : Math.max(0, latest(c, tOf(c, u))));
   return {
     clock: c, only, total: 1, count: N, label: tb ? 'Floor timeline, at your table' : 'Floor timeline',
+    about: 'The whole floor over time. People arrive with their first comment and leave an hour after their last: Hacker News doesn’t say when anyone stops reading.',
     at, start: (k) => starts[k] ?? 0,
     step: (u, n) => uOf(c, stepFloor(c, tOf(c, u), n, only)),
     home: () => (tb && tb.said.length ? uOf(c, tb.open) : starts[0] ?? 0),

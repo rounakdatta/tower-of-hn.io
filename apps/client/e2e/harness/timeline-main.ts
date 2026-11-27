@@ -102,7 +102,7 @@ const scrubber = new Scrubber(host);
 scrubber.show(lineModel(line, OTHERS), 0);
 document.body.classList.add('timeline');                  // (as main.ts does while it's shown: the subtitles make room on a phone)
 Object.assign(w, {
-  __scrubber: scrubber, __line: line, __turns: turns, __lineOf: lineOf, __valueText: valueText, __others: OTHERS,
+  __scrubber: scrubber, __line: line, __turns: turns, __lineOf: lineOf, __lineModel: lineModel, __valueText: valueText, __others: OTHERS,
   __calls: calls, __asked: asked, __keys: keys, __pointer: pointer, __pills: pills,
   __reset: () => { calls.scrub.length = calls.seek.length = calls.scrubbing.length = keys.length = 0; w.__moves = 0; },
 });

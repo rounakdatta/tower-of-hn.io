@@ -46,6 +46,8 @@ export interface ScrubModel {
   card(x: number): { when: string; around: string; k: number; by: string };
   /** a stretch to light on the line (the table you sit at, on the floor's), or null */
   band(): readonly [number, number] | null;
+  /** what a screen reader hears about the line, once (the floor's rule for when people leave), if anything */
+  readonly about?: string;
 }
 
 /** a conversation's own line (TIMELINE): `others` are the people in the room who aren't in it (for the count) */
@@ -133,7 +135,7 @@ export class Scrubber {
       + `<div class="tl-pos"><div class="tl-knob" role="slider" tabindex="0" aria-label="Conversation timeline" aria-valuemin="0"></div></div></div>`
       + `<div class="tl-guide"></div>`
       + `<div class="tl-card" aria-hidden="true"><div class="tl-when"><b></b><span></span></div><div class="tl-says"><b class="tl-by"></b><span class="tl-words"></span></div><div class="tl-note"></div></div>`
-      + `<div class="tl-hit"></div>`;
+      + `<div class="tl-hit"></div><span class="tl-about" id="tl-about" hidden></span>`;
     parent.appendChild(el);
     const $ = <T extends Element = HTMLElement>(s: string) => el.querySelector(s) as T;
     this.track = $('.tl-track'); this.pos = $('.tl-pos'); this.done = $('.tl-done'); this.lit = $('.tl-lit'); this.knob = $('.tl-knob'); this.hit = $('.tl-hit');
@@ -156,6 +158,10 @@ export class Scrubber {
     this.reset();
     this.m = m; this.on = true;
     this.knob.setAttribute('aria-label', m.label);
+    // (the line's own rules, said once to a screen reader: the floor's leaving rule)
+    const about = this.el.querySelector('.tl-about')!;
+    about.textContent = m.about ?? '';
+    if (m.about) this.knob.setAttribute('aria-describedby', 'tl-about'); else this.knob.removeAttribute('aria-describedby');
     this.t = this.view = Math.max(0, Math.min(t, m.total));
     for (const type of ['pointerdown', 'pointerup', 'pointercancel']) addEventListener(type, this.any as EventListener, true);
     this.refit();

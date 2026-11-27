@@ -430,13 +430,24 @@ function floorActors() {
     for (const sp of spots) { const k = sp.seats.findIndex((st) => st.name === p.name); if (k >= 0) sp.seats.splice(k, 1); }
   }
 }
+/** (record mode) how long each part of the building's frame takes, for the performance test's breakdown */
+const floorCosts: Record<string, number[]> = {};
+function costed<T>(name: string, f: () => T): T {
+  if (!recording) return f();
+  const a = performance.now(), r = f(), list = (floorCosts[name] ??= []);
+  list.push(performance.now() - a); if (list.length > 120) list.shift();
+  return r;
+}
 /** (FLOOR_TIMELINE) the map: the whole building, the tables lit as lively as they are at the floor's moment (not open
  *  yet: a faint ring), everyone in the room then, the table someone is speaking at, and you */
 let mapDots = new Float32Array(0);
 const mapYou = new THREE.Vector3();
+let mapAt = -1;
 function floorMap() {
   const c = floorMode.clock;
-  if (!c) return;
+  // (the map draws a dozen times a second: its dots are gathered only then)
+  if (!c || (clock - mapAt < 0.08 && mapAt >= 0)) return;
+  mapAt = clock;
   if (mapDots.length < c.people.length * 2) mapDots = new Float32Array(c.people.length * 2);
   let n = 0;
   for (let i = 0; i < c.people.length; i++) if (floorMode.here(i)) { const p = hallAudience.places[i]; mapDots[2 * n] = p.x; mapDots[2 * n + 1] = p.z; n++; }
@@ -1526,7 +1537,7 @@ function frame(dt: number, draw = true) {
       }
     }
   }
-  if (building) floorMode.frame(clock, dt);
+  if (building) costed('tables', () => floorMode.frame(clock, dt));
   // on foot beside a table: offer to sit down there
   if (mode === 'floor' && walk.enabled) {
     const here = nearTable();
@@ -1545,16 +1556,16 @@ function frame(dt: number, draw = true) {
     }
   } else if (mode === 'floor') {
     ui.sitDown(null);
-    if (building) { walkSubtitles(); floorMap(); const l = floorVoice.current(); mapYou.set(camera.position.x, 0, camera.position.z); ui.signs(mapYou, null, (s) => (l && l.spot === s ? l : null)); }
+    if (building) { walkSubtitles(); costed('map', floorMap); const l = floorVoice.current(); mapYou.set(camera.position.x, 0, camera.position.z); costed('signs', () => ui.signs(mapYou, null, (s) => (l && l.spot === s ? l : null))); }
   }
   neonTick(clock);
   if ((mode === 'floor' || mode === 'table') && !building && ++lampTick % 4 === 0) lampMoods(dt * 4);
   director.update(clock, dt);
   if (line) lineFrame(dt);
   if (building) {
-    floorActors();
+    costed('actors', floorActors);
     followFrame();
-    floorVoice.update(audio.now(), dt);
+    costed('voice', () => floorVoice.update(audio.now(), dt));
     if (!scrubber.scrubbing && !floorBefore) {
       if (mode === 'floor' && floorVoice.playing) floorShow(floorVoice.time());
       else if (mode === 'table') seatedFrame();
@@ -1566,7 +1577,7 @@ function frame(dt: number, draw = true) {
     // on foot, heads turn to whoever is speaking at the table you're with (seated, the director says who)
     if (mode === 'floor' && building) { const l = floorVoice.current(); if (l && l.who >= 0) audience.focus(crowd.headPos(l.who, focusAt), clock, l.who); }
     else if (mode === 'floor' && mixer.focus) { const l = mixer.speaking(mixer.focus); if (l && l.who >= 0) audience.focus(crowd.headPos(l.who, focusAt), clock, l.who); }
-    audience.update(camera, clock, dt);
+    if (building) costed('audience', () => audience.update(camera, clock, dt)); else audience.update(camera, clock, dt);
   }
   ui.update();
   if (dofOn) { uFocus.value = camera.position.distanceTo(rig.target); uBokeh.value = 2.4; }
@@ -1712,6 +1723,8 @@ if (recording) {
         drawn: hallAudience.drawn(), said: k, by: c && k >= 0 ? c.comments[k].by : null, playing: floorPlaying(), mode, line: !!floorLine, band: floorLine?.band() ?? null,
         valuetext: document.querySelector('#timeline .tl-knob')?.getAttribute('aria-valuetext') ?? '', flipped: floorMode.flipped, looked: floorMode.looked };
     },
+    /** (FLOOR_TIMELINE) what the building's own per-frame work costs, by part (ms, mean over the last 120 frames) */
+    floorCost: () => Object.fromEntries(Object.entries(floorCosts).map(([k, v]) => [k, +(v.reduce((a, b) => a + b, 0) / Math.max(1, v.length)).toFixed(4)])),
     /** (FLOOR_TIMELINE) the room to moment t, as a drag would put it there */
     floorAt: (t: number) => floorShow(t, true),
     /**

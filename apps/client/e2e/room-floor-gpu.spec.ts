@@ -10,6 +10,8 @@ type W = { __ready: boolean; __tohn: Record<string, (...a: unknown[]) => unknown
 const call = <T>(page: Page, fn: string, ...a: unknown[]) => page.evaluate(([fn, a]) => (window as unknown as W).__tohn[fn as string](...(a as unknown[])), [fn, a] as const) as Promise<T>;
 
 test.skip(!process.env.FLOOR_GPU, 'WebGPU sweeps only (FLOOR_GPU=1)');
+// (an adapter for WebGPU without a GPU: SwiftShader's Vulkan)
+test.use({ launchOptions: { args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader', '--disable-vulkan-surface', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] } });
 test.setTimeout(420_000);
 
 test('WebGPU: the building\'s shaders build with nothing on the console, and the floor draws at every moment', async ({ page }, info) => {
@@ -32,6 +34,7 @@ test('WebGPU: the building\'s shaders build with nothing on the console, and the
   }
   const r = await call<{ render: Record<string, number> }>(page, 'info');
   await info.attach('gpu.txt', { body: JSON.stringify({ gpu, webgpu: f.webgpu, render: r.render, said }, null, 1) });
-  expect(r.render.triangles ?? r.render.drawCalls ?? 1).toBeGreaterThan(0);
+  expect(f.webgpu, 'drawn by WebGPU, not the WebGL fallback').toBe(true);
+  expect((r.render.calls ?? 0) + (r.render.drawCalls ?? 0) + (r.render.triangles ?? 0)).toBeGreaterThan(0);
   expect(said.filter((x) => !/GPU stall due to ReadPixels|Automatic fallback to software WebGL|powerPreference/i.test(x)), 'the console').toEqual([]);
 });

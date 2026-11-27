@@ -251,16 +251,22 @@ test('cheap at any size: a scrub costs the CPU well under a millisecond a frame 
     await enter(page, fx);
     // (timed over runs of 20 frames: a phone's timer, as the browser emulates one, is coarser than a frame's work here)
     const ms = await page.evaluate(() => {
-      const t = (window as unknown as W).__tohn, end = (t.floor() as { end: number }).end, runs: number[] = [];
-      for (let r = 0; r < 24; r++) {
-        const a = performance.now();
-        for (let k = 0; k < 20; k++) { t.floorAt((end * (r * 20 + k)) / 480); t.frame(1 / 60, false); }
-        runs.push((performance.now() - a) / 20);
-      }
-      runs.sort((a, b) => a - b);
-      return { mean: runs.reduce((a, b) => a + b, 0) / runs.length, worst: runs[runs.length - 1] };
+      const t = (window as unknown as W).__tohn, end = (t.floor() as { end: number }).end;
+      const time = (f: (k: number) => void) => {
+        const runs: number[] = [];
+        for (let r = 0; r < 24; r++) { const a = performance.now(); for (let k = 0; k < 20; k++) f(r * 20 + k); runs.push((performance.now() - a) / 20); }
+        runs.sort((a, b) => a - b);
+        return { mean: runs.reduce((a, b) => a + b, 0) / runs.length, worst: runs[runs.length - 1] };
+      };
+      // (the seek alone: the floor's clock and the room's presence; a frame alone: everything else the app does each frame)
+      const seek = time((k) => t.floorAt((end * k) / 480));
+      t.floorAt(end / 2);
+      const frame = time(() => t.frame(1 / 60, false));
+      const both = time((k) => { t.floorAt((end * k) / 480); t.frame(1 / 60, false); });
+      return { ...both, seek: seek.mean, frame: frame.mean, parts: t.floorCost() as Record<string, number> };
     });
-    rows.push(`${fx}: a scrubbed frame (seek + frame, no draw) mean ${ms.mean.toFixed(3)} ms, worst run of 20 ${ms.worst.toFixed(3)} ms`);
+    rows.push(`${fx}: a scrubbed frame (seek + frame, no draw) mean ${ms.mean.toFixed(3)} ms (seek ${ms.seek.toFixed(3)}, frame ${ms.frame.toFixed(3)}), worst run of 20 ${ms.worst.toFixed(3)} ms; parts ${JSON.stringify(ms.parts)}`);
+    console.log(rows[rows.length - 1]);
     expect(ms.mean, `${fx}: a scrubbed frame's JavaScript`).toBeLessThan(1.0);
   }
   const heap = await page.evaluate(async () => {

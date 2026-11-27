@@ -16,7 +16,9 @@ type Moment = { k: number; by: string; start: number; end: number; joined: numbe
 type Win = {
   __calls: Calls; __keys: { key: string; prevented: boolean }[]; __pointer: { x: number; y: number; type: string; upAt: number }; __states: [number, string][]; __pills: Record<string, number>; __who: number;
   __line: { moments: Moment[]; total: number }; __others: number; __turns: Record<string, unknown>[]; __asked: Record<number, number>; __snippetMs: number;
-  __scrubber: { setTime(t: number, playing: boolean): void; show(l: unknown, others: number, t?: number): void; hide(): void; refresh(l: unknown, others?: number): void; scrubbing: boolean };
+  // (the scrubber takes a line's model: a conversation's is lineModel(line, others))
+  __scrubber: { setTime(t: number, playing: boolean): void; show(m: unknown, t?: number): void; hide(): void; refresh(m: unknown): void; scrubbing: boolean };
+  __lineModel: (l: unknown, others?: number) => unknown;
   __lineOf: (t: unknown[]) => { total: number }; __valueText: (l: unknown, t: number, o: number) => string; __reset(): void;
 };
 const phone = (info: TestInfo) => info.project.name === 'iphone' || info.project.name === 'pixel';
@@ -475,7 +477,7 @@ test('the card says who and when, and their words arrive after their name', asyn
 });
 
 test('people are counted with their thousands and never rounded up: 9,999 stays 9,999', async ({ page }) => {
-  await page.evaluate(() => { const W = window as unknown as Win; W.__scrubber.refresh({ ...W.__line }, 9998); });   // the opener, and 9,998 others in the room
+  await page.evaluate(() => { const W = window as unknown as Win; W.__scrubber.refresh(W.__lineModel({ ...W.__line }, 9998)); });   // the opener, and 9,998 others in the room
   await knob(page).focus();
   await expect(page.locator('.tl-when span')).toHaveText(' · 9,999 people');
   expect((await knobValue(page)).text).toBe('0 s in, 9,999 people, comment by tptacek');
@@ -579,7 +581,7 @@ test('a conversation that grows is redrawn, and the playhead keeps its place in 
   const grown = await page.evaluate(() => {
     const W = window as unknown as Win, more = Array.from({ length: 40 }, (_, i) => ({ id: 47000000 + i, by: `late${i}`, depth: 2, gapMs: 480, v: ['x.opus', 60, 'neutral', 0.3] }));
     const line = W.__lineOf([...W.__turns, ...more]);
-    W.__scrubber.refresh(line, W.__others);
+    W.__scrubber.refresh(W.__lineModel(line, W.__others));
     return line.total;
   });
   const after = await read();
@@ -595,16 +597,16 @@ test('seated at a new conversation it starts over; at one comment, or once you s
   await page.evaluate(() => (window as unknown as Win).__scrubber.setTime(2000, true));
   const short = await page.evaluate(() => {
     const W = window as unknown as Win, line = W.__lineOf(W.__turns.slice(0, 20));
-    W.__scrubber.show(line, 5, 0);
+    W.__scrubber.show(W.__lineModel(line, 5), 0);
     return line.total;
   });
   expect((await knobValue(page)).now, 'at the start of the new one').toBe('0');
   await expect(knob(page)).toHaveAttribute('aria-valuemax', String(Math.floor(short)));
   expect(await state(page)).toBe('rest');
-  await page.evaluate(() => { const W = window as unknown as Win; W.__scrubber.show(W.__lineOf(W.__turns.slice(0, 1)), 0, 0); });
+  await page.evaluate(() => { const W = window as unknown as Win; W.__scrubber.show(W.__lineModel(W.__lineOf(W.__turns.slice(0, 1)), 0), 0); });
   await expect(page.locator('.tl')).toHaveAttribute('data-state', 'hidden');
   await expect(knob(page), 'nothing to scrub: nothing to tab to').toBeHidden();
-  await page.evaluate(() => { const W = window as unknown as Win; W.__scrubber.show(W.__line, 12, 600); });
+  await page.evaluate(() => { const W = window as unknown as Win; W.__scrubber.show(W.__lineModel(W.__line, 12), 600); });
   await expect(page.locator('.tl')).toHaveAttribute('data-state', 'rest');
   expect((await knobValue(page)).now).toBe('600');
   await page.evaluate(() => (window as unknown as Win).__scrubber.hide());
